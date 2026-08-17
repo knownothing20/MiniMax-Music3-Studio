@@ -52,7 +52,8 @@ arrator.gguf`: the CUDA sidecar loads it, and from the interface a one-line idea
 | Track provenance | A 20-second render now stores duration 20, steps 30, LM CFG 1.5, top-k 50, DiT CFG 1.7, peak clip 10, MP3 128, output format and both seeds. Before this, everything left at an engine default was missing, because mm-server's replay request omits defaults. |
 | Packaged application, final build | The rebuilt single executable (18.8 MB) opens its window, hosts the service, reports the engine reachable, and its assistant answered a request through the user's own local GGUF. |
 | Offline honesty | With the service stopped, the interface says "Studio service is not responding" and how to recover, instead of the old behaviour: claiming no model profile was installed and asking for a 12 GB download that was already on disk. Verified by stopping and restarting the desktop process. |
-| Tests | `cargo test --workspace` — 53 passing. `npm --prefix app run build`, `tsc --noEmit` and `vitest` clean. |
+| OpenRouter catalog | Recognisers are published only behind `?output_modalities=transcription` and declare their output as "transcription"; fetching the plain listing found 38 audio-capable chat models and no dedicated recogniser. Merging both listings takes it to 57, Whisper included. |
+| Tests | `cargo test --workspace` — 65 passing. `npm --prefix app run build`, `tsc --noEmit` and `vitest` clean. |
 
 **Not verified:** perceptual audio quality has not been judged here — listen to
 the Q8 track and compare it against Light yourself. Full Native (28.6 GB) was
@@ -118,6 +119,7 @@ exposed the following, each fixed and committed separately:
 | Settings | **Extended** into a real provider matrix: music, speech-to-text, assistant and cover art each independently Local or OpenRouter, cloud models listed only from the live catalog, API key held by the service. |
 | Social profiles, comments, follows, public feed | **Removed.** A single-user desktop studio has no such service; the screens are gone rather than dead. |
 | Video Studio | **Restored in full.** The composer is model-independent and is kept exactly as it was: ten visualiser presets, particles, effects, text layers, random picsum backgrounds, Pexels search, album-art placement, live preview. Only the render path changed — frames are assembled by ffmpeg compiled to WebAssembly and shipped with the application, so export is offline. Verified: a rendered track produced a 2.3 MB H.264/AAC MP4. |
+| Karaoke / LRC | **Built.** The track's own lyrics are placed on a recogniser's clock and stored with it, so the video studio's karaoke layer and the `.lrc` download have something to read. Three recognisers, chosen in Settings: Parakeet TDT in-process over ONNX Runtime, whisper.cpp as a sidecar with a CUDA or CPU build, or OpenRouter. Off by default. |
 | Stem separation (Demucs) | **Removed** — it required the ACE Node service. See gaps. |
 | LoRA training / adapters lab | **Removed** — ACE adapter formats do not apply to Music3. See gaps. |
 | ACE-only conditioning: repaint, Flow Edit, DCW, audio2audio cover | **Removed** — no Music3 equivalent exists. |
@@ -146,6 +148,32 @@ reports a contract violation honestly rather than inventing a draft. A 0.6B
 model was used for that plumbing test and, as expected, could not hold the
 contract - draft quality is a model-size question, not a plumbing one.
 
+## Karaoke
+
+The words are known - the model sang the lyrics it was given - so the
+recogniser supplies timing only and its text is mistrusted; sung vocals come
+back mangled, and showing that back at the viewer is how karaoke ends up
+displaying nonsense. Each written line claims the earliest recognised words
+that resemble it, compared character by character, scanning forward so a
+repeated chorus consumes its occurrences in order. Lines nobody could place
+are interpolated between their neighbours, and lines beginning less than two
+seconds apart merge - the rule ACE Step Studio used.
+
+Verified on this machine, same 60-second track, three recognisers:
+
+| Recogniser | Result |
+| --- | --- |
+| Parakeet TDT 0.6B v3 (int8), in-process over ONNX Runtime 1.24.2 | 16 timed lines, first at 18.2 s, about 5 s of work |
+| whisper.cpp v1.9.2, CUDA build, large-v3-turbo, lyrics fed as the decoding prompt | 16 timed lines, first at 12.4 s |
+| OpenRouter, `openai/whisper-large-v3-turbo` | 16 timed lines, first at 30.0 s; 27 words and 5 segments came back with times |
+
+Two things worth knowing before choosing. A recogniser hears a dense mix as
+music: `whisper-base` returned "[Music]" for a 20-second render, and
+`deepgram/nova-3` returned nothing at all. And on OpenRouter only
+OpenAI-compatible providers accept `verbose_json` - `google/chirp-3`,
+`openai/gpt-transcribe` and `mistralai/voxtral-mini-transcribe` reject it with
+a 400, so the Whisper family is the practical choice there.
+
 ## Known gaps, with the work they need
 
 These are absent from the UI rather than present-but-dead:
@@ -155,8 +183,6 @@ These are absent from the UI rather than present-but-dead:
 * **Music3 adapter training.** Upstream `minimaxmusic.cpp` has a `training/`
   tree and a hiddens route; exposing it needs a dataset workflow and a training
   job contract.
-* **LRC / timed lyrics.** Needs word timings; OpenRouter transcription returns
-  text, so this needs either a timestamp-capable model or a local aligner.
 * **OpenRouter paid requests are unverified.** The catalog is verified live, and
   every request shape matches OpenRouter's documented contract (`/api/v1/images`
   with `{model, prompt}`; chat completions with `modalities: ["text","audio"]`,
