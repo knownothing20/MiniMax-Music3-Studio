@@ -249,6 +249,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [catalog, setCatalog] = useState<EngineCatalog | null>(null);
   const [assistantReady, setAssistantReady] = useState(false);
   const [assisting, setAssisting] = useState<'all' | 'lyrics' | 'prompt' | null>(null);
+  // A local model takes tens of seconds to answer. A spinner alone reads as a
+  // hung button, so the panel counts the seconds out loud.
+  const [assistSeconds, setAssistSeconds] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [mode, setMode] = useState<'simple' | 'studio'>('studio');
   const [assistInstruction, setAssistInstruction] = useState('');
@@ -267,6 +270,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     const id = setup?.selected_profile_id;
     return id ? PROFILE_LABEL[id] ?? id : '—';
   }, [setup, t]);
+
+  useEffect(() => {
+    if (!assisting) return;
+    setAssistSeconds(0);
+    const started = Date.now();
+    const timer = window.setInterval(() => setAssistSeconds(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [assisting]);
 
   const refreshSetup = useCallback(async () => {
     const response = await fetch('/setup/status');
@@ -527,9 +538,18 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 py-2.5 text-xs font-bold text-white transition hover:brightness-110 disabled:opacity-50"
               >
                 {assisting === 'all' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                {t('writeEverything')}
+                {assisting === 'all' ? `${t('assistantWriting')} · ${assistSeconds} ${t('secondsShort')}` : t('writeEverything')}
               </button>
             </Card>
+          )}
+
+          {/* Only for the icon buttons in the card headers: the big button
+              already says it in words. */}
+          {(assisting === 'lyrics' || assisting === 'prompt') && (
+            <div className="flex items-center gap-2 rounded-xl border border-pink-500/30 bg-pink-500/10 px-3 py-2 text-xs text-pink-700 dark:text-pink-200">
+              <Loader2 size={14} className="animate-spin" />
+              <span>{t('assistantWriting')} · {assistSeconds} {t('secondsShort')}</span>
+            </div>
           )}
 
           <Card

@@ -1281,4 +1281,6 @@ export const en = {
     stageLmHint: 'Writes the song as audio codes. CFG holds it to the description, top-k widens or narrows its choices, and the seed makes the same take repeatable.',
     stageOutput: 'Stage 3 · output',
     stageOutputHint: 'What is written to disk after the vocoder: loudness ceiling, container and bitrate.',
+    assistantWriting: 'The assistant is writing',
+    secondsShort: 's',
 };

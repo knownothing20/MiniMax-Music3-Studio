@@ -1276,4 +1276,6 @@ export const zh = {
     stageLmHint: '以音频码写出歌曲。CFG 让它更贴近描述，top-k 调整取样范围，种子让同一次演绎可复现。',
     stageOutput: '阶段 3 · 输出',
     stageOutputHint: '经声码器后写入磁盘的内容：响度上限、容器与码率。',
+    assistantWriting: '助手正在写作',
+    secondsShort: '秒',
 };

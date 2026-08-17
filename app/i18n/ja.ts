@@ -1276,4 +1276,6 @@ export const ja = {
     stageLmHint: '曲をオーディオコードとして書きます。CFG は説明への忠実さ、top-k は選択の幅、シードは同じテイクの再現性を決めます。',
     stageOutput: '段階 3 · 出力',
     stageOutputHint: 'ボコーダー後にディスクへ書き出す内容: ラウドネス上限、コンテナ、ビットレート。',
+    assistantWriting: 'アシスタントが執筆中',
+    secondsShort: '秒',
 };

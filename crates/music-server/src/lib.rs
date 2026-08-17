@@ -781,6 +781,46 @@ async fn openrouter_catalog(State(state): State<AppState>) -> Json<Value> {
     Json(serde_json::json!({ "models": catalog.catalog.as_ref().map(|catalog| &catalog.models), "refreshed_at": catalog.refreshed_at }))
 }
 
+
+/// The capability catalog, fetched if this process has not got it yet.
+///
+/// The catalog lives in memory, so it is empty after every restart. Telling
+/// the user to "refresh the catalog" at the moment they press a button is
+/// asking them to do the program's job - and the refresh button lives on
+/// another screen entirely.
+async fn catalog_for(state: &AppState) -> Result<providers::openrouter::CapabilityCatalog, String> {
+    if let Some(catalog) = state.openrouter_catalog.read().await.catalog.clone() {
+        return Ok(catalog);
+    }
+    let client = reqwest::Client::new();
+    let fetch = |path: &'static str| {
+        let client = client.clone();
+        async move {
+            client
+                .get(format!("{}{}", providers::openrouter::API_BASE_URL, path))
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await
+        }
+    };
+    let general = fetch(providers::openrouter::MODELS_PATH)
+        .await
+        .map_err(|error| format!("OpenRouter catalog request failed: {error}"))?;
+    let transcription = fetch(providers::openrouter::TRANSCRIPTION_MODELS_PATH).await.unwrap_or_default();
+    let parsed = if transcription.trim().is_empty() {
+        providers::openrouter::CapabilityCatalog::parse(&general)
+    } else {
+        providers::openrouter::CapabilityCatalog::parse_merged(&general, &transcription)
+    }
+    .map_err(|error| format!("OpenRouter catalog parse failed: {error}"))?;
+    let mut cached = state.openrouter_catalog.write().await;
+    cached.catalog = Some(parsed.clone());
+    cached.refreshed_at = Some(chrono_like_timestamp());
+    Ok(parsed)
+}
+
 async fn refresh_openrouter_catalog(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let client = reqwest::Client::new();
     let fetch = |path: &'static str| {
@@ -841,13 +881,9 @@ async fn create_openrouter_transcription(
     State(state): State<AppState>,
     Json(input): Json<OpenRouterTranscriptionRequest>,
 ) -> Result<Json<OpenRouterResponse>, (StatusCode, Json<ApiError>)> {
-    let catalog = state
-        .openrouter_catalog
-        .read()
+    let catalog = catalog_for(&state)
         .await
-        .catalog
-        .clone()
-        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "Refresh the OpenRouter catalog before transcribing audio.".into()))?;
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;
     let request = providers::openrouter::stt_request_for(
         &catalog,
         &input.model_id,
@@ -869,13 +905,9 @@ async fn create_openrouter_cover(
     State(state): State<AppState>,
     Json(input): Json<OpenRouterCoverRequest>,
 ) -> Result<Json<OpenRouterResponse>, (StatusCode, Json<ApiError>)> {
-    let catalog = state
-        .openrouter_catalog
-        .read()
+    let catalog = catalog_for(&state)
         .await
-        .catalog
-        .clone()
-        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "Refresh the OpenRouter catalog before generating a cover.".into()))?;
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;
     let request = providers::openrouter::request_for(
         &catalog,
         Capability::CoverArt,
@@ -896,13 +928,9 @@ async fn create_openrouter_completion(
     State(state): State<AppState>,
     Json(input): Json<OpenRouterCompletionRequest>,
 ) -> Result<Json<OpenRouterResponse>, (StatusCode, Json<ApiError>)> {
-    let catalog = state
-        .openrouter_catalog
-        .read()
+    let catalog = catalog_for(&state)
         .await
-        .catalog
-        .clone()
-        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "Refresh the OpenRouter catalog before using the assistant.".into()))?;
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;
     let request = providers::openrouter::request_for(
         &catalog,
         Capability::PromptEnhancement,
@@ -1321,13 +1349,7 @@ async fn karaoke_words_from_openrouter(
 ) -> anyhow::Result<Vec<(f64, String)>> {
     use base64::Engine as _;
     let model = config.openrouter_model.clone().unwrap_or_default();
-    let catalog = state
-        .openrouter_catalog
-        .read()
-        .await
-        .catalog
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("Refresh the OpenRouter catalog before using it for karaoke."))?;
+    let catalog = catalog_for(state).await.map_err(|error| anyhow::anyhow!(error))?;
     let bytes = std::fs::read(audio)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let format = std::path::Path::new(audio)
@@ -1409,13 +1431,9 @@ async fn assistant_write(
         }
         AssistantProvider::OpenRouter => {
             let model = config.openrouter_model.clone().unwrap_or_default();
-            let catalog = state
-                .openrouter_catalog
-                .read()
-                .await
-                .catalog
-                .clone()
-                .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "Refresh the OpenRouter catalog before using the assistant.".into()))?;
+            let catalog = catalog_for(&state)
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;
             catalog
                 .selected(Capability::PromptEnhancement, &model)
                 .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
