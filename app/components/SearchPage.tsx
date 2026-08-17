@@ -4,6 +4,7 @@ import { Song, Playlist } from '../types';
 import { songsApi, usersApi, playlistsApi, searchApi, UserProfile, getAudioUrl } from '../services/api';
 import { useI18n } from '../context/I18nContext';
 import { GENRE_KEYS } from '../data/genres';
+import { AlbumCover } from './AlbumCover';
 
 interface SearchPageProps {
   onPlaySong?: (song: Song, list?: Song[]) => void;
@@ -12,6 +13,9 @@ interface SearchPageProps {
   onNavigateToProfile?: (username: string) => void;
   onNavigateToSong?: (songId: string) => void;
   onNavigateToPlaylist?: (playlistId: string) => void;
+  /** Local Music3 library; when present search never talks to retired social APIs. */
+  localSongs?: Song[];
+  localPlaylists?: Playlist[];
 }
 
 
@@ -28,6 +32,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   onNavigateToProfile,
   onNavigateToSong,
   onNavigateToPlaylist,
+  localSongs,
+  localPlaylists,
 }) => {
   const { t } = useI18n();
   const [searchQuery, setSearchQuery] = useState('');
@@ -42,6 +48,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [copiedTag, setCopiedTag] = useState<string | null>(null);
+  const isNativeLibrary = localSongs !== undefined;
 
   const songsScrollRef = useRef<HTMLDivElement>(null);
   const creatorsScrollRef = useRef<HTMLDivElement>(null);
@@ -49,8 +56,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    if (isNativeLibrary) {
+      setLoading(false);
+      return;
+    }
     loadFeaturedContent();
-  }, []);
+  }, [isNativeLibrary]);
 
   const transformSong = (s: any): ExtendedSong => ({
     ...s,
@@ -127,6 +138,18 @@ export const SearchPage: React.FC<SearchPageProps> = ({
       return;
     }
 
+    if (isNativeLibrary) {
+      const needle = query.trim().toLocaleLowerCase();
+      const matches = (song: Song) => [song.title, song.style, song.lyrics, ...(song.tags || [])]
+        .some(value => value?.toLocaleLowerCase().includes(needle));
+      setSearchResults({
+        songs: (localSongs || []).filter(matches).slice(0, MAX_RESULTS),
+        creators: [],
+        playlists: (localPlaylists || []).filter(playlist => [playlist.name, playlist.description || '']
+          .some(value => value.toLocaleLowerCase().includes(needle))).slice(0, MAX_RESULTS),
+      });
+      return;
+    }
     setSearching(true);
     try {
       const results = await searchApi.search(query);
@@ -141,7 +164,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     } finally {
       setSearching(false);
     }
-  }, []);
+  }, [isNativeLibrary, localPlaylists, localSongs]);
 
   const handleSearchChange = (value: string) => {
     setSearchQuery(value);
@@ -189,9 +212,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     }
   };
 
-  const displaySongs = searchResults?.songs || featuredSongs;
+  const displaySongs = searchResults?.songs || (isNativeLibrary ? localSongs || [] : featuredSongs);
   const displayCreators = searchResults?.creators || featuredCreators;
-  const displayPlaylists = searchResults?.playlists || featuredPlaylists;
+  const displayPlaylists = searchResults?.playlists || (isNativeLibrary ? localPlaylists || [] : featuredPlaylists);
   const isSearching = searchQuery.trim().length > 0;
 
   return (
@@ -225,7 +248,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         <section className="mb-10">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-zinc-900 dark:text-white">
-              {isSearching ? `${t('songsMatching')} "${searchQuery}"` : t('featuredSongs')}
+              {isSearching ? `${t('songsMatching')} "${searchQuery}"` : isNativeLibrary ? 'Local Music3 library' : t('featuredSongs')}
               {isSearching && displaySongs.length > 0 && (
                 <span className="ml-2 text-sm font-normal text-zinc-500">({displaySongs.length})</span>
               )}
@@ -276,8 +299,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           ) : null}
         </section>
 
-        {/* Creators Section */}
-        <section className="mb-10">
+        {/* Creators only exist in the remote social service. */}
+        {!isNativeLibrary && <section className="mb-10">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-zinc-900 dark:text-white">
               {isSearching ? `${t('creatorsMatching')} "${searchQuery}"` : t('featuredCreators')}
@@ -333,13 +356,13 @@ export const SearchPage: React.FC<SearchPageProps> = ({
               {isSearching ? `${t('noCreatorsFound')} "${searchQuery}"` : t('noCreatorsYet')}
             </div>
           )}
-        </section>
+        </section>}
 
         {/* Playlists Section */}
         <section className="mb-10">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-zinc-900 dark:text-white">
-              {isSearching ? `${t('playlistsMatching')} "${searchQuery}"` : t('featuredPlaylists')}
+              {isSearching ? `${t('playlistsMatching')} "${searchQuery}"` : isNativeLibrary ? 'Local playlists' : t('featuredPlaylists')}
               {isSearching && displayPlaylists.length > 0 && (
                 <span className="ml-2 text-sm font-normal text-zinc-500">({displayPlaylists.length})</span>
               )}
@@ -397,8 +420,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           )}
         </section>
 
-        {/* Genres */}
-        <section className="mb-10">
+        {/* Genre chips are prompt helpers, not a fake remote catalog. */}
+        {!isNativeLibrary && <section className="mb-10">
           <h2 className="text-lg font-bold text-zinc-900 dark:text-white mb-4">{t('genres')}</h2>
           <div className="flex flex-wrap gap-2">
             {GENRE_KEYS.map((genreKey) => {
@@ -424,7 +447,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
               );
             })}
           </div>
-        </section>
+        </section>}
       </div>
     </div>
   );
@@ -459,11 +482,7 @@ const FeaturedSongCard: React.FC<FeaturedSongCardProps> = ({
       onMouseLeave={() => setIsHovered(false)}
     >
       <div className="relative w-12 h-12 rounded-lg overflow-hidden flex-shrink-0" onClick={onPlay}>
-        <img
-          src={song.coverUrl}
-          alt={song.title}
-          className="w-full h-full object-cover"
-        />
+        {song.coverUrl ? <img src={song.coverUrl} alt={song.title} className="w-full h-full object-cover" /> : <AlbumCover seed={song.id || song.title} size="full" className="h-full w-full" />}
         <div className={`absolute inset-0 bg-black/50 flex items-center justify-center transition-opacity ${isHovered || isPlaying ? 'opacity-100' : 'opacity-0'}`}>
           {isPlaying ? (
             <Pause size={16} className="text-white" fill="white" />

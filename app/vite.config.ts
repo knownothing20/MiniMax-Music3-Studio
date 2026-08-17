@@ -21,26 +21,13 @@ export default defineConfig(({ mode }) => {
           target: 'http://127.0.0.1:8765',
           changeOrigin: true,
         },
-        '/api': {
-          target: 'http://127.0.0.1:3001',
+        '/health': {
+          target: 'http://127.0.0.1:8765',
           changeOrigin: true,
         },
-        '/audio': {
-          target: 'http://127.0.0.1:3001',
-          changeOrigin: true,
-        },
-        '/editor': {
-          target: 'http://127.0.0.1:3001',
-          changeOrigin: true,
-        },
-        '/blog': {
-          target: 'http://127.0.0.1:3001',
-          changeOrigin: true,
-        },
-        '/demucs-web': {
-          target: 'http://127.0.0.1:3001',
-          changeOrigin: true,
-        },
+        // There is deliberately no proxy for the retired ACE Node service:
+        // the studio talks to the native Rust server only, so a stray legacy
+        // request fails loudly in development instead of silently 500-ing.
       },
     },
     optimizeDeps: {
