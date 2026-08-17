@@ -37,7 +37,13 @@ Everything below was executed, not inferred.
 | OpenRouter catalog | Live refresh returns 414 models: 414 text, 38 speech-to-text, 11 image, 2 music (`google/lyria-3-pro-preview`, `google/lyria-3-clip-preview`). No key needed for the catalog. |
 | Desktop application | Built and launched; window opens, hosts the service in-process, starts the engine, survives restart. |
 | Browser E2E | Every request the app issues is native (`/v1/*`, `/setup/*`, `/engine/*`, `/health`). Console is clean. **Zero** `/api/*` requests. |
-| Tests | `cargo test --workspace` — 49 passing. `npm --prefix app run build` and `tsc --noEmit` clean. |
+| Engine flags reach the process | Setting `--keep-loaded` and `--max-batch 3` in Settings restarts the engine and the flags appear on its real command line; if an engine this service did not start holds the port, the request fails with that reason instead of a false success. |
+| Component override | A render with a mixed set — Q8 language model with Q4 DiT — completed and stored those exact filenames in its provenance. |
+| Model catalogue | All 13 GGUF entries compared against the pinned Hugging Face revision: filenames, byte sizes and SHA-256 (LFS oid) match exactly, nothing missing and nothing extra. |
+| Engine defaults | Compared with upstream `request_init`: 60 s, 30 steps, seed -1, lm_seed -1, LM CFG 1.5, top-k 50, batches 1, DiT CFG 1.7, peak clip 10, MP3 128 kbps — the studio's quality baseline is identical. |
+| Packaged application | The built desktop executable opens its window, hosts the service in-process, and its own first-run screen starts the engine — which is also the proof that the packaged UI reaches the service. |
+| Localisation | Interface strings resolve through the catalogue in all five shipped languages; only technical identifiers (VRAM, GPU, DiT CFG, WAV/MP3, engine flag names) stay untranslated. |
+| Tests | `cargo test --workspace` — 50 passing. `npm --prefix app run build` and `tsc --noEmit` clean. |
 
 **Not verified:** perceptual audio quality has not been judged here — listen to
 the Q8 track and compare it against Light yourself. Full Native (28.6 GB) was
@@ -73,12 +79,21 @@ exposed the following, each fixed and committed separately:
 9. **The release was a launcher plus a second binary.** The service is now a
    library hosted inside the desktop executable.
 10. **The application still wore Dub Studio's icon.**
+11. **The packaged UI could not reach its own service.** Every request used a
+    relative path, which in the desktop build resolves against Tauri's asset
+    protocol; the first-run screen failed with `Unexpected token '<'`.
+12. **The catalogue refresh was sent as a GET** to a POST-only route, so Studio
+    tools reported cloud media as unavailable with a 405.
+13. **Half the interface was untranslated**, mixing English chrome into a
+    Russian UI.
 
 ## ACE → Music3 parity
 
 | ACE feature | State in this fork |
 | --- | --- |
-| Create panel (simple / custom) | **Carried over.** Full engine contract: caption, lyrics, duration, steps, LM CFG, top-k, DiT CFG, peak clip, both seeds, songs (LM batch), variations per song, `mp3/wav16/wav24/wav32`, MP3 bitrate. "Reset" restores the engine's own defaults. |
+| Create panel (simple / custom) | **Carried over.** Full engine contract: caption, lyrics, duration, steps, LM CFG, top-k, DiT CFG, peak clip, both seeds, songs (LM batch), variations per song, `mp3/wav16/wav24/wav32`, MP3 bitrate, and a per-request component override that can load any installed GGUF per role. "Reset" restores the engine's own defaults. |
+| Engine launch flags | **New.** Settings exposes the real `mm-server` flags: `--keep-loaded`, `--max-batch`, `--max-seq`, `--no-fa`, `--no-batch-cfg`, `--clamp-fp16`. They are read once at startup, so saving restarts the engine, and the create panel clamps songs per request to `--max-batch`. |
+| Deterministic re-render | **Extended.** The replay action opens a dialog prefilled from the track's own settings; steps, seed, DiT CFG and output format can change while the composition stays identical. |
 | Generation queue, stages, cancel, reset | **Carried over**, driving `/v1/music/jobs`. |
 | Progress | **Better than before.** ACE showed a fabricated percentage; the card now shows real progress parsed from the engine's AR-frame and DiT-window counters, plus a live engine-log panel. |
 | Library, playlists, rename, delete, favourites | **Carried over** on `/v1/library`. Favourites are local — there is no social service to sync with. |
