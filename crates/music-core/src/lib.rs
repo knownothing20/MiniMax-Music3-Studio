@@ -40,16 +40,20 @@ impl Default for StudioConfiguration {
                     local_engine: Some("minimaxmusic-cpp".into()),
                     cloud_model: None,
                 },
+                // Speech-to-text and prompt enhancement have no installed local
+                // engine in this build. Naming one here would advertise a
+                // capability the engine registry cannot serve, so both default
+                // to OpenRouter with no engine and no pre-selected model.
                 ProviderSelection {
                     capability: Capability::SpeechToText,
-                    mode: ExecutionMode::Local,
-                    local_engine: Some("parakeet-tdt".into()),
+                    mode: ExecutionMode::OpenRouter,
+                    local_engine: None,
                     cloud_model: None,
                 },
                 ProviderSelection {
                     capability: Capability::PromptEnhancement,
                     mode: ExecutionMode::OpenRouter,
-                    local_engine: Some("local-llm".into()),
+                    local_engine: None,
                     cloud_model: None,
                 },
                 ProviderSelection {

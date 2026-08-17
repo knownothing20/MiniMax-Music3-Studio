@@ -4,7 +4,7 @@
 //! must refresh `GET /api/v1/models`, let the user select a discovered model,
 //! then persist that selected id in the provider profile.
 
-use std::{collections::BTreeSet, env};
+use std::collections::BTreeSet;
 
 use anyhow::{bail, Context, Result};
 use music_core::Capability;
@@ -250,11 +250,9 @@ pub fn music_stream_request_for(
 /// The API key source is deliberately centralized so every cloud capability
 /// follows the same boundary and never accepts secrets from the frontend.
 pub fn authenticated_request_for(request: OpenRouterRequest) -> Result<AuthenticatedOpenRouterRequest> {
-    let api_key = env::var("OPENROUTER_API_KEY")
-        .context("OPENROUTER_API_KEY is required before calling OpenRouter")?;
-    if api_key.trim().is_empty() {
-        bail!("OPENROUTER_API_KEY is empty; configure an API key before calling OpenRouter");
-    }
+    let (api_key, _source) = crate::credentials::openrouter_api_key().context(
+        "No OpenRouter API key is configured. Add one in Studio settings, or export OPENROUTER_API_KEY before starting the server.",
+    )?;
     Ok(AuthenticatedOpenRouterRequest { request, api_key })
 }
 

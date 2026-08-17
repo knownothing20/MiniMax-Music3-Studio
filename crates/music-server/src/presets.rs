@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{process::Command, sync::OnceLock};
 
 use music_core::{Capability, ExecutionMode, StudioConfiguration};
 use serde::Serialize;
@@ -30,7 +30,7 @@ pub struct PresetApplication {
     pub selected_profile_changed: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hardware {
     pub gpu_name: String,
@@ -65,19 +65,29 @@ pub fn list() -> Vec<PresetView> {
         .collect()
 }
 
-pub fn hardware() -> Hardware {
-    let mut system = System::new();
-    system.refresh_memory();
-    let total_ram_gb = system.total_memory() as f64 / 1_000_000_000.0;
-    let (gpu_name, total_vram_gb) = nvidia_smi().unwrap_or_else(|| ("No NVIDIA GPU detected".into(), 0.0));
-    let has_gpu = total_vram_gb > 0.0;
-    let (recommended, reason) = recommend_for_hardware(&gpu_name, total_vram_gb);
-    Hardware { gpu_name, total_vram_gb, total_ram_gb, has_gpu, recommended, reason }
+/// `nvidia-smi` costs tens of milliseconds and the setup screen polls status
+/// once per second while a download runs. The machine's GPU does not change
+/// inside one process lifetime, so probe it once.
+fn probe() -> &'static Hardware {
+    static HARDWARE: OnceLock<Hardware> = OnceLock::new();
+    HARDWARE.get_or_init(|| {
+        let mut system = System::new();
+        system.refresh_memory();
+        let total_ram_gb = system.total_memory() as f64 / 1_000_000_000.0;
+        let (gpu_name, total_vram_gb) = nvidia_smi().unwrap_or_else(|| ("No NVIDIA GPU detected".into(), 0.0));
+        let has_gpu = total_vram_gb > 0.0;
+        let (recommended, reason) = recommend_for_hardware(&gpu_name, total_vram_gb);
+        Hardware { gpu_name, total_vram_gb, total_ram_gb, has_gpu, recommended, reason }
+    })
 }
 
-/// This follows Dub Studio's recommendation order: named 5090/4090 cards first,
-/// then VRAM tiers.  The lower cutoff is 9 GB rather than Dub's 7 GB because the
-/// complete Music3 Light set itself has a documented 9 GB warm footprint.
+pub fn hardware() -> Hardware {
+    probe().clone()
+}
+
+/// VRAM tiers follow the real strict peak of each complete five-component set.
+/// Full fidelity is the target whenever the card can hold it; the Light set is
+/// only ever the recommendation in the low-VRAM tier, never a quality default.
 fn recommend_for_hardware(gpu_name: &str, total_vram_gb: f64) -> (&'static str, String) {
     if total_vram_gb <= 0.0 {
         return (
@@ -90,8 +100,6 @@ fn recommend_for_hardware(gpu_name: &str, total_vram_gb: f64) -> (&'static str, 
         "native-full"
     } else if total_vram_gb >= 10.0 {
         "native-quality"
-    } else if total_vram_gb >= 11.0 {
-        "native-balanced"
     } else if total_vram_gb >= 9.0 {
         "native-efficient"
     } else {
@@ -104,12 +112,19 @@ fn recommend_for_hardware(gpu_name: &str, total_vram_gb: f64) -> (&'static str, 
 /// Chooses the complete local set on a clean install. This only records a
 /// selection; downloading any component remains a separate user action.
 pub fn recommended_local_profile() -> &'static str {
-    let (gpu_name, total_vram_gb) = nvidia_smi().unwrap_or_else(|| ("No NVIDIA GPU detected".into(), 0.0));
-    match recommend_for_hardware(&gpu_name, total_vram_gb).0 {
+    profile_for_preset(probe().recommended)
+}
+
+/// Maps a hardware preset onto the complete five-component profile it installs.
+pub fn profile_for_preset(preset_id: &str) -> &'static str {
+    match preset_id {
         "native-full" => "native",
         "native-quality" => "quality-q8",
         "native-balanced" => "balanced",
         "native-efficient" => "recommended-light",
+        // A machine without usable local VRAM still needs a named local target
+        // for the Model Manager; the quality set is the smallest set that is
+        // not advertised as a speed compromise.
         _ => "quality-q8",
     }
 }
@@ -192,5 +207,20 @@ mod tests {
         assert_eq!(recommend_for_hardware("RTX 4060 Ti", 9.0).0, "native-efficient");
         assert_eq!(recommend_for_hardware("RTX 4060", 8.0).0, "full-openrouter");
         assert_eq!(recommend_for_hardware("No NVIDIA GPU detected", 0.0).0, "full-openrouter");
+    }
+
+    /// A capable card must never be recommended the Light speed profile, and
+    /// every recommendation must name an installable complete profile.
+    #[test]
+    fn capable_hardware_never_recommends_the_light_profile() {
+        for vram in [10.0, 12.0, 16.0, 20.0, 24.0, 32.0] {
+            let preset = recommend_for_hardware("NVIDIA test card", vram).0;
+            let profile = profile_for_preset(preset);
+            assert_ne!(profile, "recommended-light", "{vram} GB must not select the Light set");
+            assert!(crate::model_manager::profile_exists(profile));
+        }
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 24.0).0), "native");
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 12.0).0), "quality-q8");
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 9.0).0), "recommended-light");
     }
 }

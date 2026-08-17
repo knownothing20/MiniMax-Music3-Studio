@@ -16,9 +16,13 @@ use tokio::{io::AsyncWriteExt, sync::RwLock};
 pub const ENGINE_ID: &str = "minimaxmusic-cpp";
 const REPOSITORY: &str = "Serveurperso/MiniMax-Music3-GGUF";
 const REVISION: &str = "9cdffedb54de2509ae55a6831a677645fb353a7d";
-// Hardware-specific startup can select Full Native. This portable catalog
-// default is Q8 quality; Light is only an explicit low-VRAM choice.
-const RECOMMENDED_PROFILE: &str = "quality-q8";
+
+/// The recommendation is a property of the machine, not of the catalog: a
+/// 24 GB card must land on Full Native and a 12 GB card on Q8 Quality. The
+/// Light set is only ever recommended in the low-VRAM tier.
+fn recommended_profile() -> &'static str {
+    crate::presets::recommended_local_profile()
+}
 
 #[derive(Clone)]
 pub struct ModelManager {
@@ -148,20 +152,23 @@ impl ModelManager {
             engine_id: ENGINE_ID,
             repository: REPOSITORY,
             revision: REVISION,
-            recommended_profile_id: RECOMMENDED_PROFILE,
+            recommended_profile_id: recommended_profile(),
             profiles: profiles(),
             components: components(),
         }
     }
 
-    pub async fn status(&self) -> ManagerStatus {
+    /// `target` is the set the user actually selected. Progress and readiness
+    /// are reported against it, so a machine that deliberately runs the Light
+    /// set is never told it is missing the hardware-recommended download.
+    pub async fn status(&self, target: Option<InstallRequest>) -> ManagerStatus {
         let active = self.state.read().await.active.clone();
         let root = self.root.clone();
         // SHA-256 over a GGUF can take seconds. Keep it off the Tokio request
         // workers so setup polling and cancellation remain available.
-        tokio::task::spawn_blocking(move || status_snapshot(root, active))
+        tokio::task::spawn_blocking(move || status_snapshot(root, active, target))
             .await
-            .unwrap_or_else(|_| status_snapshot(PathBuf::from("."), None))
+            .unwrap_or_else(|_| status_snapshot(PathBuf::from("."), None, None))
     }
 
     pub async fn install(&self, request: InstallRequest) -> Result<DownloadJob> {
@@ -197,9 +204,9 @@ impl ModelManager {
         Ok(job)
     }
 
-    pub async fn cancel(&self) -> Result<ManagerStatus> {
+    pub async fn cancel(&self, target: Option<InstallRequest>) -> Result<ManagerStatus> {
         self.cancelled.store(true, Ordering::SeqCst);
-        Ok(self.status().await)
+        Ok(self.status(target).await)
     }
 
     pub async fn download_job(&self, id: &str) -> Option<DownloadJob> {
@@ -376,7 +383,7 @@ fn resolve_install(request: InstallRequest) -> Result<ResolvedInstall> {
         bail!("select either a complete profile or an advanced component set, not both");
     }
     let profiles = profiles();
-    let profile = request.profile_id.unwrap_or_else(|| RECOMMENDED_PROFILE.into());
+    let profile = request.profile_id.unwrap_or_else(|| recommended_profile().into());
     let (profile_id, ids) = if request.component_ids.is_empty() {
         let selected = profiles.iter().find(|candidate| candidate.id == profile)
             .with_context(|| format!("unknown profile '{profile}'"))?;
@@ -428,7 +435,7 @@ fn preflight_space(root: &Path, selection: &ResolvedInstall) -> Result<()> {
     Ok(())
 }
 
-fn status_snapshot(root: PathBuf, active: Option<DownloadJob>) -> ManagerStatus {
+fn status_snapshot(root: PathBuf, active: Option<DownloadJob>, target: Option<InstallRequest>) -> ManagerStatus {
     let component_statuses: Vec<_> = components()
         .into_iter()
         .map(|component| ComponentStatus {
@@ -440,14 +447,16 @@ fn status_snapshot(root: PathBuf, active: Option<DownloadJob>) -> ManagerStatus 
             bytes: component.bytes,
         })
         .collect();
-    let recommended = resolve_install(InstallRequest { profile_id: Some(RECOMMENDED_PROFILE.into()), component_ids: vec![] }).ok();
+    let target = target
+        .and_then(|request| resolve_install(request).ok())
+        .or_else(|| resolve_install(InstallRequest { profile_id: Some(recommended_profile().into()), component_ids: vec![] }).ok());
     let installed = |id: &str| component_statuses.iter().find(|component| component.id == id).is_some_and(|component| component.installed);
-    let ready = recommended.as_ref().is_some_and(|selection| selection.components.iter().all(|component| installed(component.id)));
-    let download_pending = recommended.as_ref().map(|selection| selection.components.iter()
+    let ready = target.as_ref().is_some_and(|selection| selection.components.iter().all(|component| installed(component.id)));
+    let download_pending = target.as_ref().map(|selection| selection.components.iter()
         .filter(|component| !installed(component.id)).map(|component| component.bytes).sum()).unwrap_or_default();
     ManagerStatus {
         engine_id: ENGINE_ID, model_root: root.display().to_string(), first_run: !ready, ready, download_pending,
-        recommended_profile_id: RECOMMENDED_PROFILE.into(), active,
+        recommended_profile_id: recommended_profile().into(), active,
         installed_components: component_statuses.iter().filter(|component| component.installed).map(|component| component.id.into()).collect(),
         components: component_statuses,
     }
@@ -540,7 +549,7 @@ mod tests {
     #[test]
     fn recommended_profile_is_a_complete_runnable_set() {
         let selected = resolve_install(InstallRequest { profile_id: None, component_ids: vec![] }).unwrap();
-        assert_eq!(selected.profile_id.as_deref(), Some(RECOMMENDED_PROFILE));
+        assert_eq!(selected.profile_id.as_deref(), Some(recommended_profile()));
         assert_eq!(selected.components.len(), 5);
         validate_complete_set(&selected.components).unwrap();
     }
