@@ -176,10 +176,15 @@ impl ModelManager {
         fs::create_dir_all(&self.root)
             .with_context(|| format!("create model root {}", self.root.display()))?;
         preflight_space(&self.root, &selection)?;
+        // Progress starts from what is already published on disk. This uses the
+        // cheap size check rather than a SHA-256 sweep: hashing a resumed 10 GB
+        // set here would block this request — and every setup/status poll behind
+        // it — for tens of seconds. Each component is still hash-verified in
+        // `download_selection` before it is skipped or published.
         selection.already_present_bytes = selection
             .components
             .iter()
-            .filter(|component| verified_file(&self.root.join(component.filename), component).unwrap_or(false))
+            .filter(|component| published_component(&self.root.join(component.filename), component))
             .map(|component| component.bytes)
             .sum();
         let mut state = self.state.write().await;
@@ -275,6 +280,13 @@ impl ModelManager {
             fs::remove_file(&part)?;
         }
         let offset = fs::metadata(&part).map(|metadata| metadata.len()).unwrap_or(0);
+        // A resumed part can already hold the whole file — for example when the
+        // process stopped between the last chunk and the rename. Asking for
+        // `bytes=<size>-` is unsatisfiable and the server answers 416, so verify
+        // and publish what is on disk instead of restarting the transfer.
+        if offset == component.bytes {
+            return self.publish_verified_part(component, &part, &target).await;
+        }
         let url = format!(
             "https://huggingface.co/{REPOSITORY}/resolve/{REVISION}/{}?download=true",
             component.filename
@@ -302,14 +314,22 @@ impl ModelManager {
         }
         file.flush().await?;
         drop(file);
-        let actual = fs::metadata(&part)?.len();
+        self.publish_verified_part(component, &part, &target).await
+    }
+
+    /// Publishes a completed `.part` only after its SHA-256 matches the pinned
+    /// Hugging Face LFS oid, so a truncated or corrupted transfer can never be
+    /// presented to the engine as an installed component.
+    async fn publish_verified_part(&self, component: &Component, part: &Path, target: &Path) -> Result<()> {
+        let actual = fs::metadata(part)?.len();
         if actual != component.bytes {
             bail!("{} has {actual} bytes, expected {}", component.filename, component.bytes);
         }
-        if !verified_file_async(part.clone(), component.clone()).await? {
-            bail!("{} SHA-256 does not match the pinned Hugging Face LFS oid", component.filename);
+        if !verified_file_async(part.to_path_buf(), component.clone()).await? {
+            fs::remove_file(part).ok();
+            bail!("{} SHA-256 does not match the pinned Hugging Face LFS oid; the partial file was discarded so the next attempt starts clean", component.filename);
         }
-        fs::rename(&part, &target).with_context(|| format!("publish {}", target.display()))?;
+        fs::rename(part, target).with_context(|| format!("publish {}", target.display()))?;
         Ok(())
     }
 

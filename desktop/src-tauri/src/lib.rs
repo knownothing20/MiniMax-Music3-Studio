@@ -90,6 +90,15 @@ fn configure_studio_runtime_paths() {
             std::env::set_var("MINIMAX_STUDIO_SETTINGS_PATH", data_root.join("studio-settings.json"));
         }
     }
+    // Without this the service falls back to `<working directory>/data` for the
+    // library and media files. A Start Menu shortcut does not control the
+    // working directory, so an installed build would scatter or lose the user's
+    // library depending on how it was launched.
+    if std::env::var_os("MINIMAX_STUDIO_DATA_ROOT").is_none() {
+        unsafe {
+            std::env::set_var("MINIMAX_STUDIO_DATA_ROOT", &data_root);
+        }
+    }
 
     let location = primary_engine_location();
     let host = location.host.unwrap_or_else(|| "127.0.0.1".into());
@@ -339,18 +348,37 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    // The updater is configured only in release builds, where the signing
+    // public key and the release endpoint are injected into the config. The
+    // plugin refuses to initialise without that section and would take the
+    // whole window down with it, so a development build simply runs without an
+    // updater instead of crashing at launch.
+    let context = tauri::generate_context!();
+    let updater_configured = context
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .is_some_and(|value| !value.is_null());
+
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init());
+    if updater_configured {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .manage(ServerProcess(Mutex::new(child)))
         .manage(EngineProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![start_primary_engine_after_setup])
-        .setup(|app| {
-            spawn_update_check(app.handle().clone(), is_portable());
+        .setup(move |app| {
+            if updater_configured {
+                spawn_update_check(app.handle().clone(), is_portable());
+            }
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running MiniMax Music3 Studio");
 }
 
