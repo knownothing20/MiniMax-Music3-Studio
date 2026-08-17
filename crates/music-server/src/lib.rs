@@ -1772,6 +1772,7 @@ mod tests {
     #[test]
     fn persisted_settings_round_trip_a_complete_custom_component_selection() {
         let settings = PersistedStudioSettings {
+            engine_options: EngineOptions { keep_loaded: true, max_batch: Some(2), ..EngineOptions::default() },
             configuration: initial_configuration(),
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
@@ -1779,6 +1780,11 @@ mod tests {
         let restored: PersistedStudioSettings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert!(restored.selected_profile_id.is_none());
         assert_eq!(restored.selected_component_ids.unwrap(), vec!["lm-q8", "depth-q8", "condition-f32", "dit-q6", "vocoder-f32"]);
+        // Engine flags survive a restart, and the songs-per-request ceiling is
+        // derived from them rather than assumed.
+        assert!(restored.engine_options.keep_loaded);
+        assert_eq!(restored.engine_options.effective_max_batch(), 2);
+        assert_eq!(EngineOptions::default().effective_max_batch(), 1);
     }
 
     #[test]
