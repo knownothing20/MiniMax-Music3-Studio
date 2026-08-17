@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { Song } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Download, Heart, MoreVertical, Volume2, VolumeX, Maximize2, Repeat1, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -7,6 +7,7 @@ import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
 import { captionSummary } from '../services/examples';
+import { getCurrentLrcIndex, parseLrc } from '../services/lrc-parser';
 
 interface PlayerProps {
     currentSong: Song | null;
@@ -116,6 +117,31 @@ export const Player: React.FC<PlayerProps> = ({
     };
 
     const progressPercent = duration ? (currentTime / duration) * 100 : 0;
+
+    // The karaoke switch governs the whole feature: with it off, a track that
+    // already carries timings simply does not show them.
+    const [karaokeOn, setKaraokeOn] = useState(false);
+    useEffect(() => {
+        const read = () => void fetch('/v1/karaoke/status')
+            .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
+            .then((status: { enabled?: boolean }) => setKaraokeOn(status.enabled === true))
+            .catch(() => setKaraokeOn(false));
+        read();
+        const timer = window.setInterval(read, 15000);
+        return () => window.clearInterval(timer);
+    }, []);
+
+    // Karaoke: the line being sung right now, when this track has timings.
+    // Parsing is per track, not per tick.
+    const karaokeLines = useMemo(
+        () => (karaokeOn && currentSong?.lrcContent ? parseLrc(currentSong.lrcContent) : []),
+        [karaokeOn, currentSong?.lrcContent],
+    );
+    const karaokeLine = useMemo(() => {
+        if (karaokeLines.length === 0) return '';
+        const index = getCurrentLrcIndex(karaokeLines, currentTime);
+        return index >= 0 ? karaokeLines[index].text : '';
+    }, [karaokeLines, currentTime]);
 
     const handleDownload = async () => {
         if (!currentSong?.audioUrl) return;
@@ -621,7 +647,9 @@ export const Player: React.FC<PlayerProps> = ({
                         <h4 className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-white truncate">
                             {currentSong.title}
                         </h4>
-                        <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 truncate">{captionSummary(currentSong.style || '')}</p>
+                        <p className={`text-[10px] sm:text-xs truncate ${karaokeLine ? 'font-medium text-zinc-800 dark:text-zinc-100' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                            {karaokeLine || captionSummary(currentSong.style || '')}
+                        </p>
                     </div>
                     <button
                         onClick={onToggleLike}
