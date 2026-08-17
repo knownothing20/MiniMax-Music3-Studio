@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import {
+    Clapperboard,
     Edit3,
     Layers,
     Repeat,
@@ -20,6 +21,7 @@ interface SongDropdownMenuProps {
     onEditAudio?: () => void;
     onReusePrompt?: () => void;
     onReplayMusic?: () => void;
+    onExportVideo?: () => void;
     onAddToPlaylist?: () => void;
     onDownload?: () => void;
     onDelete?: () => void;
@@ -63,6 +65,7 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     onEditAudio,
     onReusePrompt,
     onReplayMusic,
+    onExportVideo,
     onAddToPlaylist,
     onDownload,
     onDelete,
@@ -161,6 +164,14 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
                     icon={<Edit3 size={14} />}
                     label={t('editAudio')}
                     onClick={onEditAudio ? () => handleAction(onEditAudio) : handleEditAudio}
+                />
+            )}
+            {onExportVideo && (
+                <MenuItem
+                    icon={<Clapperboard size={14} />}
+                    label={t('videoExport')}
+                    onClick={() => handleAction(onExportVideo)}
+                    disabled={!song.audioUrl}
                 />
             )}
             {onReusePrompt && (

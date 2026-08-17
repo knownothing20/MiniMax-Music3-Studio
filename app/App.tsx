@@ -8,6 +8,7 @@ import { LibraryView } from './components/LibraryView';
 import { CreatePlaylistModal, AddToPlaylistModal } from './components/PlaylistModals';
 import { CoverRegenModal } from './components/CoverRegenModal';
 import { ReplayModal } from './components/ReplayModal';
+import { VideoGeneratorModal } from './components/VideoGeneratorModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Song, Music3Request, Music3Job, View, Playlist } from './types';
 // Resizable panel hook
@@ -252,6 +253,7 @@ function AppContent() {
   // and RightSidebar. Updates songs.cover_url via /api/songs/:id/regen-cover.
   const [songForCoverRegen, setSongForCoverRegen] = useState<Song | null>(null);
   const [songForReplay, setSongForReplay] = useState<Song | null>(null);
+  const [songForVideo, setSongForVideo] = useState<Song | null>(null);
 
   // Settings Modal
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -1245,6 +1247,7 @@ function AppContent() {
                 onShowDetails={handleShowDetails}
                 onReusePrompt={handleReuse}
                 onReplayMusic={handleNativeReplay}
+                onExportVideo={setSongForVideo}
                 onDelete={handleDeleteSong}
                 onDeleteMany={handleDeleteSongs}
                 onSongUpdate={handleSongUpdate}
@@ -1270,6 +1273,7 @@ function AppContent() {
                   onOpenCoverRegen={() => selectedSong && openCoverRegen(selectedSong)}
                   onReuse={handleReuse}
                   onReplayMusic={handleNativeReplay}
+                onExportVideo={setSongForVideo}
                   onSongUpdate={handleSongUpdate}
                   isLiked={selectedSong ? likedSongIds.has(selectedSong.id) : false}
                   onToggleLike={toggleLike}
@@ -1382,6 +1386,11 @@ function AppContent() {
       {/* Cover regen modal — only mounted while a song is selected for regen.
           Unmounting on close revokes blob URLs (see CoverRegenModal cleanup
           effect) so generated previews don't leak across modal opens. */}
+      <VideoGeneratorModal
+        isOpen={Boolean(songForVideo)}
+        song={songForVideo}
+        onClose={() => setSongForVideo(null)}
+      />
       {songForReplay && (
         <ReplayModal
           song={songForReplay}
@@ -1417,6 +1426,7 @@ function AppContent() {
               onOpenCoverRegen={() => selectedSong && openCoverRegen(selectedSong)}
               onReuse={handleReuse}
               onReplayMusic={handleNativeReplay}
+              onExportVideo={setSongForVideo}
               onSongUpdate={handleSongUpdate}
               isLiked={selectedSong ? likedSongIds.has(selectedSong.id) : false}
               onToggleLike={toggleLike}

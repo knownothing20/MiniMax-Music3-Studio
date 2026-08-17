@@ -1173,4 +1173,12 @@ export const en = {
     noProfile: 'No profile',
     openRouterConfigured: 'OpenRouter configured',
     openRouterNotConfigured: 'OpenRouter not configured',
+    videoExport: 'Video export',
+    videoExportHint: 'Renders the cover held for the length of the track into an MP4. Encoding runs inside the application, so nothing is uploaded anywhere.',
+    videoRender: 'Render video',
+    videoLoadingEncoder: 'Loading the encoder…',
+    videoPreparing: 'Preparing the frame…',
+    videoEncoding: 'Encoding…',
+    videoDone: 'Done',
+    videoNeedsAudio: 'This track has no stored audio to render.',
 };

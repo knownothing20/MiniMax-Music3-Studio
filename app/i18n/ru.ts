@@ -1172,4 +1172,12 @@ export const ru = {
     noProfile: 'Нет профиля',
     openRouterConfigured: 'OpenRouter настроен',
     openRouterNotConfigured: 'OpenRouter не настроен',
+    videoExport: 'Экспорт видео',
+    videoExportHint: 'Собирает MP4: обложка на всю длину трека. Кодирование идёт внутри приложения, ничего никуда не загружается.',
+    videoRender: 'Собрать видео',
+    videoLoadingEncoder: 'Загружаем кодировщик…',
+    videoPreparing: 'Готовим кадр…',
+    videoEncoding: 'Кодируем…',
+    videoDone: 'Готово',
+    videoNeedsAudio: 'У этого трека нет сохранённого аудио.',
 };

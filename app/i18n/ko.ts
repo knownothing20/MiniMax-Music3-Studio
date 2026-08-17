@@ -1168,4 +1168,12 @@ export const ko = {
     noProfile: '프로필 없음',
     openRouterConfigured: 'OpenRouter 설정됨',
     openRouterNotConfigured: 'OpenRouter 미설정',
+    videoExport: '동영상 내보내기',
+    videoExportHint: '커버를 트랙 길이만큼 유지하는 MP4 를 만듭니다. 인코딩은 앱 내부에서 수행되며 아무것도 업로드되지 않습니다.',
+    videoRender: '동영상 생성',
+    videoLoadingEncoder: '인코더를 불러오는 중…',
+    videoPreparing: '프레임 준비 중…',
+    videoEncoding: '인코딩 중…',
+    videoDone: '완료',
+    videoNeedsAudio: '이 트랙에는 저장된 오디오가 없습니다.',
 };

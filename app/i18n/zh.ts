@@ -1168,4 +1168,12 @@ export const zh = {
     noProfile: '无配置',
     openRouterConfigured: 'OpenRouter 已配置',
     openRouterNotConfigured: 'OpenRouter 未配置',
+    videoExport: '视频导出',
+    videoExportHint: '生成 MP4：封面持续整首曲目。编码在应用内完成，不会上传任何内容。',
+    videoRender: '生成视频',
+    videoLoadingEncoder: '正在加载编码器…',
+    videoPreparing: '正在准备画面…',
+    videoEncoding: '正在编码…',
+    videoDone: '完成',
+    videoNeedsAudio: '该曲目没有可用的音频。',
 };

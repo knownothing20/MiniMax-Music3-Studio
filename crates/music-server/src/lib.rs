@@ -249,6 +249,11 @@ impl EngineOptions {
 }
 
 #[derive(Debug, Deserialize)]
+struct ProxyImageRequest {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenRouterSettingsRequest {
     /// `None` or an empty string clears the locally stored credential.
     api_key: Option<String>,
@@ -321,6 +326,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/engine/restart", post(restart_local_engine))
         .route("/v1/engine/logs", get(engine_logs))
         .route("/v1/system/resources", get(system_resources))
+        .route("/v1/proxy/image", get(proxy_image))
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
@@ -926,6 +932,55 @@ async fn system_resources() -> Json<Value> {
         "poll_interval_ms": resources::SUGGESTED_INTERVAL.as_millis() as u64,
         "resources": snapshot,
     }))
+}
+
+/// Fetches a remote image on behalf of the video composer.
+///
+/// The canvas has to stay untainted to read frames back, which a cross-origin
+/// image without CORS headers prevents. Only http(s) is accepted and the
+/// response must actually be an image, so this cannot be used to reach local
+/// services or to pull arbitrary files.
+async fn proxy_image(
+    State(state): State<AppState>,
+    axum::extract::Query(request): axum::extract::Query<ProxyImageRequest>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let url = reqwest::Url::parse(&request.url)
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, format!("invalid image url: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(api_error(StatusCode::BAD_REQUEST, "only http and https images can be proxied".into()));
+    }
+    if url.host_str().is_some_and(|host| host == "localhost" || host.starts_with("127.") || host == "0.0.0.0" || host == "[::1]") {
+        return Err(api_error(StatusCode::BAD_REQUEST, "loopback addresses cannot be proxied".into()));
+    }
+    let response = state
+        .music_server
+        .http
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("image request failed: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(api_error(StatusCode::BAD_GATEWAY, format!("image request returned {status}")));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    if !content_type.starts_with("image/") {
+        return Err(api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "the proxied url is not an image".into()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("reading the image failed: {error}")))?;
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes.to_vec()))
+        .expect("valid image response"))
 }
 
 async fn openrouter_settings() -> Json<Value> {

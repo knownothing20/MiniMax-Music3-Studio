@@ -23,6 +23,7 @@ interface SongListProps {
     onNavigateToProfile?: (username: string) => void;
     onReusePrompt?: (song: Song) => void;
     onReplayMusic?: (song: Song) => void;
+    onExportVideo?: (song: Song) => void;
     onDelete?: (song: Song) => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onDeleteMany?: (songs: Song[]) => void;
@@ -103,6 +104,7 @@ export const SongList: React.FC<SongListProps> = ({
     onNavigateToProfile,
     onReusePrompt,
     onReplayMusic,
+    onExportVideo,
     onDelete,
     onSongUpdate,
     onDeleteMany,
@@ -416,6 +418,7 @@ export const SongList: React.FC<SongListProps> = ({
                                     onNavigateToProfile={onNavigateToProfile}
                                     onReusePrompt={() => onReusePrompt?.(item.song)}
                                     onReplayMusic={item.song.nativeReplayAvailable ? () => onReplayMusic?.(item.song) : undefined}
+                                    onExportVideo={item.song.audioUrl ? () => onExportVideo?.(item.song) : undefined}
                                     onDelete={() => onDelete?.(item.song)}
                                     onSongUpdate={onSongUpdate}
                                     // Cancel button is also available during pre-flight (placeholder
@@ -482,6 +485,7 @@ interface SongItemProps {
     onNavigateToProfile?: (username: string) => void;
     onReusePrompt?: () => void;
     onReplayMusic?: () => void;
+    onExportVideo?: () => void;
     onDelete?: () => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onCancelJob?: () => void;
@@ -507,6 +511,7 @@ const SongItem: React.FC<SongItemProps> = ({
     onNavigateToProfile,
     onReusePrompt,
     onReplayMusic,
+    onExportVideo,
     onDelete,
     onSongUpdate,
     onCancelJob,
@@ -796,6 +801,7 @@ const SongItem: React.FC<SongItemProps> = ({
                                 isOwner={isOwner}
                                 onReusePrompt={onReusePrompt ? () => onReusePrompt?.(song) : undefined}
                                 onReplayMusic={onReplayMusic}
+                                onExportVideo={onExportVideo}
                                 onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                 onDelete={() => onDelete?.(song)}
                             />

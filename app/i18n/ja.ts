@@ -1168,4 +1168,12 @@ export const ja = {
     noProfile: 'プロファイルなし',
     openRouterConfigured: 'OpenRouter 設定済み',
     openRouterNotConfigured: 'OpenRouter 未設定',
+    videoExport: '動画書き出し',
+    videoExportHint: 'カバーを曲の長さだけ表示する MP4 を生成します。エンコードはアプリ内で行われ、どこにもアップロードしません。',
+    videoRender: '動画を生成',
+    videoLoadingEncoder: 'エンコーダーを読み込み中…',
+    videoPreparing: 'フレームを準備中…',
+    videoEncoding: 'エンコード中…',
+    videoDone: '完了',
+    videoNeedsAudio: 'このトラックには保存された音声がありません。',
 };
