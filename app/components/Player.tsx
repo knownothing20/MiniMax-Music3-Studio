@@ -5,7 +5,6 @@ import { useAuth } from '../context/AuthContext';
 import { useResponsive } from '../context/ResponsiveContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
-import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
 
 interface PlayerProps {
@@ -28,8 +27,6 @@ interface PlayerProps {
     onToggleRepeat: () => void;
     isLiked: boolean;
     onToggleLike: () => void;
-    onNavigateToSong?: (songId: string) => void;
-    onOpenVideo?: () => void;
     onReusePrompt?: () => void;
     onAddToPlaylist?: () => void;
     onDelete?: () => void;
@@ -56,8 +53,6 @@ export const Player: React.FC<PlayerProps> = ({
     onToggleRepeat,
     isLiked,
     onToggleLike,
-    onNavigateToSong,
-    onOpenVideo,
     onReusePrompt,
     onAddToPlaylist,
     onDelete,
@@ -72,7 +67,6 @@ export const Player: React.FC<PlayerProps> = ({
     const volumeHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [showDropdown, setShowDropdown] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const [shareModalOpen, setShareModalOpen] = useState(false);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
     const speedMenuRef = useRef<HTMLDivElement>(null);
 
@@ -178,7 +172,6 @@ export const Player: React.FC<PlayerProps> = ({
                                 <h2
                                     onClick={() => {
                                         setIsFullscreen(false);
-                                        onNavigateToSong?.(currentSong.id);
                                     }}
                                     className="text-xl font-bold text-zinc-900 dark:text-white truncate"
                                 >
@@ -278,11 +271,6 @@ export const Player: React.FC<PlayerProps> = ({
 
                     {/* Extra Actions */}
                     <div className="flex items-center justify-center gap-6 px-6 pb-6 text-zinc-400 dark:text-white/50">
-                        {onOpenVideo && (
-                            <button onClick={onOpenVideo} className="p-3 tap-highlight-none">
-                                <Maximize2 size={20} />
-                            </button>
-                        )}
                         <button
                             onClick={handleDownload}
                             className="p-3 tap-highlight-none"
@@ -307,20 +295,12 @@ export const Player: React.FC<PlayerProps> = ({
                                 isOwner={user?.id === currentSong.userId}
                                 position="center"
                                 direction="up"
-                                onCreateVideo={onOpenVideo}
                                 onReusePrompt={onReusePrompt}
                                 onAddToPlaylist={onAddToPlaylist}
                                 onDelete={onDelete}
-                                onShare={() => setShareModalOpen(true)}
                             />
                         </div>
                     )}
-
-                    <ShareModal
-                        isOpen={shareModalOpen}
-                        onClose={() => setShareModalOpen(false)}
-                        song={currentSong}
-                    />
                 </div>
             );
         }
@@ -439,7 +419,6 @@ export const Player: React.FC<PlayerProps> = ({
                                 <h2
                                     onClick={() => {
                                         setIsFullscreen(false);
-                                        onNavigateToSong?.(currentSong.id);
                                     }}
                                     className="text-2xl lg:text-3xl font-bold text-zinc-900 dark:text-white truncate cursor-pointer hover:underline"
                                 >
@@ -572,14 +551,6 @@ export const Player: React.FC<PlayerProps> = ({
                                 >
                                     <Heart size={22} fill={isLiked ? "currentColor" : "none"} />
                                 </button>
-                                {onOpenVideo && (
-                                    <button
-                                        onClick={onOpenVideo}
-                                        className="p-3 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 transition-colors"
-                                    >
-                                        <Maximize2 size={20} />
-                                    </button>
-                                )}
                                 <button
                                     onClick={handleDownload}
                                     className="p-3 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 transition-colors"
@@ -602,11 +573,9 @@ export const Player: React.FC<PlayerProps> = ({
                                             isOwner={user?.id === currentSong.userId}
                                             position="center"
                                             direction="up"
-                                            onCreateVideo={onOpenVideo}
                                             onReusePrompt={onReusePrompt}
                                             onAddToPlaylist={onAddToPlaylist}
                                             onDelete={onDelete}
-                                            onShare={() => setShareModalOpen(true)}
                                         />
                                     )}
                                 </div>
@@ -614,12 +583,6 @@ export const Player: React.FC<PlayerProps> = ({
                         </div>
                     </div>
                 </div>
-
-                <ShareModal
-                    isOpen={shareModalOpen}
-                    onClose={() => setShareModalOpen(false)}
-                    song={currentSong}
-                />
             </div>
         );
     }
@@ -654,13 +617,10 @@ export const Player: React.FC<PlayerProps> = ({
                         {!currentSong.coverUrl && <AlbumCover seed={currentSong.id || currentSong.title} size="full" className="w-full h-full" />}
                     </div>
                     <div className="overflow-hidden min-w-0">
-                        <h4
-                            onClick={() => onNavigateToSong?.(currentSong.id)}
-                            className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-white truncate cursor-pointer hover:underline"
-                        >
+                        <h4 className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-white truncate">
                             {currentSong.title}
                         </h4>
-                        <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 truncate hover:underline cursor-pointer">{currentSong.creator || 'Unknown Artist'}</p>
+                        <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 truncate">{currentSong.style || ''}</p>
                     </div>
                     <button
                         onClick={onToggleLike}
@@ -813,21 +773,13 @@ export const Player: React.FC<PlayerProps> = ({
                             isOwner={user?.id === currentSong.userId}
                             position="right"
                             direction="up"
-                            onCreateVideo={onOpenVideo}
                             onReusePrompt={onReusePrompt}
                             onAddToPlaylist={onAddToPlaylist}
                             onDelete={onDelete}
-                            onShare={() => setShareModalOpen(true)}
                         />
                     </div>
                 </div>
             </div>
-
-            <ShareModal
-                isOpen={shareModalOpen}
-                onClose={() => setShareModalOpen(false)}
-                song={currentSong}
-            />
         </div>
     );
 };

@@ -2,14 +2,12 @@ import React, { useEffect, useRef } from 'react';
 import { Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import {
-    Video,
     Edit3,
     Layers,
     Repeat,
     ListPlus,
     Download,
     Trash2,
-    Share2
 } from 'lucide-react';
 
 interface SongDropdownMenuProps {
@@ -19,18 +17,14 @@ interface SongDropdownMenuProps {
     isOwner?: boolean;
     position?: 'left' | 'right';
     direction?: 'up' | 'down';
-    onCreateVideo?: () => void;
     onEditAudio?: () => void;
-    onExtractStems?: () => void;
     onReusePrompt?: () => void;
     onReplayMusic?: () => void;
     onAddToPlaylist?: () => void;
     onDownload?: () => void;
-    onShare?: () => void;
     onDelete?: () => void;
     onUseAsReference?: () => void;
     onCoverSong?: () => void;
-    allowStemExtraction?: boolean;
 }
 
 interface MenuItemProps {
@@ -68,18 +62,14 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     isOwner = false,
     position = 'right',
     direction = 'down',
-    onCreateVideo,
     onEditAudio,
-    onExtractStems,
     onReusePrompt,
     onReplayMusic,
     onAddToPlaylist,
     onDownload,
-    onShare,
     onDelete,
     onUseAsReference,
     onCoverSong,
-    allowStemExtraction = true,
 }) => {
     const { t } = useI18n();
     const menuRef = useRef<HTMLDivElement>(null);
@@ -122,21 +112,12 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
         const audioUrl = song.audioUrl.startsWith('http')
             ? song.audioUrl
             : `${window.location.origin}${song.audioUrl}`;
-        window.open(`/editor?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
+        // AudioMass is a fully client-side editor shipped as static assets, so
+        // it runs without any backend service.
+        window.open(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
         onClose();
     };
 
-    const handleExtractStems = () => {
-        if (!song.audioUrl) return;
-        const baseUrl = window.location.port === '3000'
-            ? `${window.location.protocol}//${window.location.hostname}:3001`
-            : window.location.origin;
-        const audioUrl = song.audioUrl.startsWith('http')
-            ? song.audioUrl
-            : `${baseUrl}${song.audioUrl}`;
-        window.open(`${baseUrl}/demucs-web/?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
-        onClose();
-    };
 
     const handleDownload = async () => {
         if (!song.audioUrl) return;
@@ -148,7 +129,8 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
 
             const link = document.createElement('a');
             link.href = url;
-            link.download = `${song.title || 'song'}.mp3`;
+            const extension = song.audioUrl.split('.').pop()?.toLowerCase() === 'wav' ? 'wav' : 'mp3';
+            link.download = `${song.title || 'song'}.${extension}`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -178,23 +160,11 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
             onClick={(e) => e.stopPropagation()}
         >
             {/* Creative Actions */}
-            <MenuItem
-                icon={<Video size={14} />}
-                label={t('createVideo')}
-                onClick={() => handleAction(onCreateVideo)}
-            />
             {isOwner && (
                 <MenuItem
                     icon={<Edit3 size={14} />}
                     label={t('editAudio')}
                     onClick={onEditAudio ? () => handleAction(onEditAudio) : handleEditAudio}
-                />
-            )}
-            {allowStemExtraction && (
-                <MenuItem
-                    icon={<Layers size={14} />}
-                    label={t('extractStems')}
-                    onClick={onExtractStems ? () => handleAction(onExtractStems) : handleExtractStems}
                 />
             )}
             {onReusePrompt && (
@@ -240,11 +210,6 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
                 icon={<Download size={14} />}
                 label={t('download')}
                 onClick={onDownload ? () => handleAction(onDownload) : handleDownload}
-            />
-            <MenuItem
-                icon={<Share2 size={14} />}
-                label={t('share')}
-                onClick={() => handleAction(onShare)}
             />
 
             {/* Owner-only Actions */}

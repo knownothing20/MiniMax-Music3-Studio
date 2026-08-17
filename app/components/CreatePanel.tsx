@@ -283,7 +283,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </div>
             <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${ready ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
               <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              {ready ? 'Engine ready' : 'Profile required'}
+              {ready ? t('engineReady') : t('profileRequired')}
             </span>
           </div>
 
@@ -329,10 +329,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-200 py-2.5 text-xs font-semibold text-zinc-700 transition-colors hover:border-pink-400 hover:text-pink-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-zinc-200"
               >
                 {assisting ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} className="text-pink-500" />}
-                Draft caption & lyrics
+                {t('draftWithAssistant')}
               </button>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wide text-zinc-500">Quick start</span>
+                <span className="text-xs font-bold uppercase tracking-wide text-zinc-500">{t('quickStart')}</span>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {TEMPLATES.map(template => (
@@ -369,7 +369,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 className={`${CONTROL} h-44 resize-none font-mono text-xs`}
               />
             </Field>
-            <Field label={`${t('title') || 'Title'} (library only)`}>
+            <Field label={`${t('title')} · ${t('libraryOnly')}`}>
               <input value={title} onChange={event => setTitle(event.target.value)} placeholder="Untitled" className={CONTROL} />
             </Field>
           </div>
@@ -378,10 +378,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
                 <Music2 size={14} />
-                Quality
+                {t('quality')}
               </div>
               <button type="button" onClick={restoreQuality} className="text-[11px] font-semibold text-pink-600 hover:text-pink-500">
-                Reset to engine defaults
+                {t('resetToDefaults')}
               </button>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -400,7 +400,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           >
             <span className="flex items-center gap-2">
               <Settings2 size={16} />
-              Advanced
+              {t('advanced')}
             </span>
             <ChevronDown size={16} className={showAdvanced ? 'rotate-180 transition-transform' : 'transition-transform'} />
           </button>
@@ -453,7 +453,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           >
             <span className="flex items-center gap-2">
               <Terminal size={16} />
-              Engine log
+              {t('engineLog')}
             </span>
             <ChevronDown size={16} className={showLogs ? 'rotate-180 transition-transform' : 'transition-transform'} />
           </button>
@@ -465,10 +465,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
 
           <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
             <span>
-              Profile: <b className="text-zinc-700 dark:text-zinc-200">{profileLabel}</b>
+              {t('profile')}: <b className="text-zinc-700 dark:text-zinc-200">{profileLabel}</b>
             </span>
             <button type="button" onClick={() => void refreshSetup().catch((reason: Error) => setError(reason.message))} className="hover:text-pink-500">
-              Refresh
+              {t('refresh')}
             </button>
           </div>
           {setup?.hardware?.reason && (

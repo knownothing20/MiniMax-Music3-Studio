@@ -71,7 +71,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                     <div className="space-y-4">
                         <div className="flex items-center gap-2 text-zinc-900 dark:text-white">
                             <Palette size={20} />
-                            <h3 className="font-semibold">Providers</h3>
+                            <h3 className="font-semibold">{t('providers')}</h3>
                         </div>
                         <div className="pl-7"><ProviderSettings /></div>
                     </div>

@@ -1018,7 +1018,9 @@ async fn run_openrouter_music_generation(state: AppState, job_id: String, stream
         let audio = openrouter_stream::decode_audio_sse(&sse)?;
         let job = state.jobs.read().await.get(&job_id).cloned().context("cloud music job disappeared before import")?;
         let imported_song = state.library.import_generated_song(library::GeneratedSongInput {
-            title: job.title.clone(), caption: job.caption.clone(), lyrics: job.lyrics.clone(), generation_settings: job.generation_settings.clone(),
+            title: job.title.clone(),
+            metadata: serde_json::json!({ "duration_seconds": job.duration_seconds }),
+            caption: job.caption.clone(), lyrics: job.lyrics.clone(), generation_settings: job.generation_settings.clone(),
             replay_request: None, audio_codes: None, engine_id: "openrouter".into(), profile_id: None,
             source: "openrouter_generation".into(), audio_extension: "wav", audio,
         })?;
@@ -1094,8 +1096,17 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
         let audio_codes = replay.get("audio_codes").filter(|value| value.as_str().is_some_and(|value| !value.is_empty())).context("replay request has no audio_codes")?.clone();
         let mut generation_settings = replay.clone();
         generation_settings.as_object_mut().context("replay request is not a JSON object")?.remove("audio_codes");
+        // The engine returns audio, not metadata. Duration and the identifying
+        // seeds come from the replay request, so the library row can show a real
+        // length instead of "unknown" and the track can be traced back.
+        let metadata = serde_json::json!({
+            "duration_seconds": replay.get("duration").and_then(Value::as_f64),
+            "seed": replay.get("seed"),
+            "lm_seed": replay.get("lm_seed"),
+            "output_format": replay.get("output_format"),
+        });
         let imported_song = state.library.import_generated_song(library::GeneratedSongInput {
-            title: job.title.clone(), caption, lyrics, generation_settings, replay_request: Some(replay), audio_codes: Some(audio_codes),
+            title: job.title.clone(), metadata, caption, lyrics, generation_settings, replay_request: Some(replay), audio_codes: Some(audio_codes),
             engine_id: job.engine_id.clone(), profile_id: profile_id.clone(),
             source: "local_generation".into(),
             audio_extension: mm_result::audio_extension(&track.audio_content_type)?, audio: track.audio,

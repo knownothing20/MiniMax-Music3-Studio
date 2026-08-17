@@ -5,19 +5,16 @@ import { updateNativeSong } from '../services/nativeLibrary';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
-import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
 
 interface RightSidebarProps {
     song: Song | null;
     onClose?: () => void;
-    onOpenVideo?: () => void;
     onOpenCoverRegen?: () => void;
     onReuse?: (song: Song) => void;
     onReplayMusic?: (song: Song) => void;
     onSongUpdate?: (song: Song) => void;
     onNavigateToProfile?: (username: string) => void;
-    onNavigateToSong?: (songId: string) => void;
     isLiked?: boolean;
     onToggleLike?: (songId: string) => void;
     onDelete?: (song: Song) => void;
@@ -27,13 +24,12 @@ interface RightSidebarProps {
     currentSong?: Song | null;
 }
 
-export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpenVideo, onOpenCoverRegen, onReuse, onReplayMusic, onSongUpdate, onNavigateToProfile, onNavigateToSong, isLiked, onToggleLike, onDelete, onAddToPlaylist, onPlay, isPlaying, currentSong }) => {
+export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpenCoverRegen, onReuse, onReplayMusic, onSongUpdate, onNavigateToProfile, onNavigateToSong, isLiked, onToggleLike, onDelete, onAddToPlaylist, onPlay, isPlaying, currentSong }) => {
     const { user } = useAuth();
     const { t } = useI18n();
     const [showMenu, setShowMenu] = useState(false);
     const [isOwner, setIsOwner] = useState(false);
     const [tagsExpanded, setTagsExpanded] = useState(false);
-    const [shareModalOpen, setShareModalOpen] = useState(false);
     const [copiedStyle, setCopiedStyle] = useState(false);
     const [copiedLyrics, setCopiedLyrics] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -260,12 +256,10 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                     isOpen={showMenu}
                                     onClose={() => setShowMenu(false)}
                                     isOwner={isOwner}
-                                    onCreateVideo={onOpenVideo}
                                     onReusePrompt={() => onReuse?.(song)}
                                     onReplayMusic={song.nativeReplayAvailable ? () => onReplayMusic?.(song) : undefined}
                                     onDelete={() => onDelete?.(song)}
                                     onAddToPlaylist={() => onAddToPlaylist?.(song)}
-                                    onShare={() => setShareModalOpen(true)}
                                 />
                             </div>
                         </div>
@@ -288,13 +282,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
 
                     {/* Main Actions */}
                     <div className="flex items-center justify-between px-3 py-2.5 bg-zinc-200/80 dark:bg-black/40 backdrop-blur-sm rounded-2xl border border-zinc-300/50 dark:border-white/5">
-                        <button
-                            onClick={onOpenVideo}
-                            title={t('createVideo')}
-                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"
-                        >
-                            <Video size={18} strokeWidth={1.5} />
-                        </button>
                         {/* Cover regen — only meaningful for owner; backend would 403 anyway */}
                         {isOwner && (
                             <button
@@ -348,7 +335,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                 active={isLiked}
                                 onClick={() => onToggleLike?.(song.id)}
                             />
-                            <ActionButton icon={<Share2 size={22} />} onClick={() => setShareModalOpen(true)} />
                         </div>
                         <div className="flex items-center gap-2">
                             <button
@@ -657,14 +643,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
 
                 </div>
             </div>
-
-            {song && (
-                <ShareModal
-                    isOpen={shareModalOpen}
-                    onClose={() => setShareModalOpen(false)}
-                    song={song}
-                />
-            )}
         </div>
     );
 };
