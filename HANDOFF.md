@@ -44,7 +44,10 @@ Everything below was executed, not inferred.
 | Packaged application | The built desktop executable opens its window, hosts the service in-process, and its own first-run screen starts the engine — which is also the proof that the packaged UI reaches the service. |
 | Localisation | Interface strings resolve through the catalogue in all five shipped languages; only technical identifiers (VRAM, GPU, DiT CFG, WAV/MP3, engine flag names) stay untranslated. |
 | Video export | Rendered end to end from the restored Video Studio: frames captured from the canvas, encoded locally, 2.3 MB MP4 downloaded. |
-| Tests | `cargo test --workspace` — 50 passing. `npm --prefix app run build` and `tsc --noEmit` clean. |
+| Request form against the reference implementations | Rebuilt from the engine's own client, ComfyUI's native nodes, MiniMax's model card and their two demo Spaces. Loading an official demo prompt fills three panes of 1360/1430/1871 characters and 1606 characters of lyrics; the fields grow with their content. |
+| Assistant runtime | llama.cpp b9966 CUDA (162 MB) and CPU (18 MB) runtimes downloaded, unpacked into their own directories and resolved CUDA-first; the CUDA libraries (391 MB) are tracked separately by their own marker. The extracted `llama-server.exe` ran on the GPU as a CUDA compute process, answered `/v1/chat/completions`, and `/v1/assistant/write` reached it and reported a contract violation from a deliberately undersized 0.6B model instead of inventing a draft. |
+| Library data root | Started outside the desktop shell, the service now opens the same library the desktop application does; before this it silently created an empty one under `<cwd>/data`. |
+| Tests | `cargo test --workspace` — 51 passing. `npm --prefix app run build`, `tsc --noEmit` and `vitest` clean. |
 
 **Not verified:** perceptual audio quality has not been judged here — listen to
 the Q8 track and compare it against Light yourself. Full Native (28.6 GB) was
@@ -92,7 +95,7 @@ exposed the following, each fixed and committed separately:
 
 | ACE feature | State in this fork |
 | --- | --- |
-| Create panel (simple / custom) | **Carried over.** Full engine contract: caption, lyrics, duration, steps, LM CFG, top-k, DiT CFG, peak clip, both seeds, songs (LM batch), variations per song, `mp3/wav16/wav24/wav32`, MP3 bitrate, and a per-request component override that can load any installed GGUF per role. "Reset" restores the engine's own defaults. |
+| Create panel (simple / custom) | **Rebuilt around this model.** The description is a structured caption in three labelled panes - Global metadata, Vocal details, Arrangement - because that is the document shape Music3 was trained on, and lyrics carry bracketed section tags. Duration is a maximum, capped at the 9000 frames at 25 fps of the model card; caption plus lyrics are checked against the 5000 token budget before submitting. An empty field means "engine default" and is shown as the placeholder, so the request stays sparse like the reference client. Also present: instrumental, randomise seed, LM batch, variations, steps, both CFG scales, top-k, peak clip, `mp3/wav16/wav24/wav32`, MP3 bitrate, audio codes, per-request component override, prompt open/save, and the 61 official demo prompts. Laid out as cards with titled headers - one for the description, one for lyrics, one for quality, one Advanced toggle - not a stack of accordions. |
 | Engine launch flags | **New.** Settings exposes the real `mm-server` flags: `--keep-loaded`, `--max-batch`, `--max-seq`, `--no-fa`, `--no-batch-cfg`, `--clamp-fp16`. They are read once at startup, so saving restarts the engine, and the create panel clamps songs per request to `--max-batch`. |
 | Deterministic re-render | **Extended.** The replay action opens a dialog prefilled from the track's own settings; steps, seed, DiT CFG and output format can change while the composition stays identical. |
 | Generation queue, stages, cancel, reset | **Carried over**, driving `/v1/music/jobs`. |
@@ -104,7 +107,7 @@ exposed the following, each fixed and committed separately:
 | Download / export track | **Carried over.** |
 | Audio editor (AudioMass) | **Carried over** as local static assets; no backend needed. |
 | Cover art | **Re-implemented.** Pollinations is gone with the ACE backend; covers are generated through catalog-verified OpenRouter image models or taken from a file, then stored with the track. |
-| Caption / lyrics assistant | **Re-implemented** on `/v1/openrouter/completions`, enabled only when a catalog-verified text model is configured. |
+| Caption / lyrics assistant | **Re-implemented as an optional extra, never a requirement.** Music3 needs no language model - its own LM emits audio codes, not text - so with nothing configured the assistant controls do not appear and the manual form is unaffected. Three providers: a model Studio downloads and runs itself (Gemma 4 E4B or 12B QAT with the pinned llama.cpp b9966 runtime, CUDA first, CPU fallback), any OpenAI-compatible server the user already runs, or OpenRouter. The prompt follows the contract MiniMax's own demo uses. Configured in Settings → Writing assistant. |
 | Resource monitor | **Restored and extended.** The first port dropped it. Now: GPU load, VRAM, temperature, power draw, RAM, CPU, engine process memory — all measured, with a dockable pop-out panel. |
 | Model manager, GPU presets, first run | **Carried over and corrected** — five-component profiles, custom component builder, checksum-verified resumable downloads, hardware-aware recommendation, nothing downloaded automatically. |
 | Settings | **Extended** into a real provider matrix: music, speech-to-text, assistant and cover art each independently Local or OpenRouter, cloud models listed only from the live catalog, API key held by the service. |
@@ -113,6 +116,30 @@ exposed the following, each fixed and committed separately:
 | Stem separation (Demucs) | **Removed** — it required the ACE Node service. See gaps. |
 | LoRA training / adapters lab | **Removed** — ACE adapter formats do not apply to Music3. See gaps. |
 | ACE-only conditioning: repaint, Flow Edit, DCW, audio2audio cover | **Removed** — no Music3 equivalent exists. |
+
+## The optional writing assistant
+
+Off by default and never required. `Settings → Writing assistant` offers:
+
+* **Downloaded model** - Studio fetches a GGUF and the llama.cpp runtime into
+  `<data root>/assistant`, then runs `llama-server` as a sidecar on first use
+  and keeps it loaded. Sizes were read from the live endpoints with HEAD
+  requests and a file counts as installed only when its size matches exactly;
+  downloads resume. Runtimes unpack per flavour (`runtime/cuda`, `runtime/cpu`)
+  so the CUDA libraries sit beside the binary that links them and the CPU build
+  never shadows the GPU one. Nothing is fetched until the button is pressed.
+* **OpenRouter** - model chosen from the live catalog, filtered to models that
+  declare the text capability, billed to the user's key.
+* **Local server** - any OpenAI-compatible base URL (llama.cpp, LM Studio,
+  Ollama). Studio starts nothing in this mode.
+
+Verified on this machine: the CUDA and CPU runtimes download, unpack and
+resolve CUDA-first; the extracted `llama-server.exe` runs on the GPU
+(`nvidia-smi` lists it as a CUDA compute process) and answers
+`/v1/chat/completions`; the assistant route reaches it, parses the reply and
+reports a contract violation honestly rather than inventing a draft. A 0.6B
+model was used for that plumbing test and, as expected, could not hold the
+contract - draft quality is a model-size question, not a plumbing one.
 
 ## Known gaps, with the work they need
 
@@ -157,6 +184,7 @@ These are absent from the UI rather than present-but-dead:
 | Generation, status, cancel, replay | `/v1/music/jobs`, `/v1/music/jobs/{id}`, `/v1/music/replay` |
 | Library, media, covers, playlists, import | `/v1/library/*` |
 | OpenRouter | `/v1/openrouter/settings`, `/catalog`, `/catalog/refresh`, `/completions`, `/transcriptions`, `/covers` |
+| Optional writing assistant | `/v1/assistant/status`, `/v1/assistant/write`, `/v1/assistant/runtime`, `/runtime/install`, `/runtime/start`, `/runtime/stop` |
 
 ## Model policy
 
