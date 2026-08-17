@@ -1039,4 +1039,5 @@ export const ko = {
     importAudioHint: 'MP3 또는 WAV. 파일을 끌어다 놓거나 선택하세요.',
     chooseFiles: '파일 선택',
     allSongs: '모든 곡',
+    maxBatchHint: '요청당 여러 트랙을 생성하려면 설정 → 로컬 엔진에서 --max-batch 를 높여야 합니다. 초과 요청은 거부됩니다.',
 };

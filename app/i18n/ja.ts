@@ -1039,4 +1039,5 @@ export const ja = {
     importAudioHint: 'MP3 または WAV。ファイルをドロップするか選択してください。',
     chooseFiles: 'ファイルを選択',
     allSongs: 'すべての曲',
+    maxBatchHint: '1 リクエストで複数曲を生成するには、設定 → ローカルエンジンで --max-batch を上げる必要があります。超過したリクエストは拒否されます。',
 };

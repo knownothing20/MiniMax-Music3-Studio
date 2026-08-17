@@ -27,6 +27,52 @@ pub struct MmServerLaunchConfig {
     pub models_root: PathBuf,
     pub host: String,
     pub port: u16,
+    pub options: MmServerOptions,
+}
+
+/// The launch flags upstream `mm-server` accepts, as documented by its usage
+/// text. They change how the engine uses the GPU for the whole session, so they
+/// belong to the process, not to a single request — changing one requires a
+/// restart of the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MmServerOptions {
+    /// `--keep-loaded`: hold every module in VRAM between jobs instead of
+    /// evicting between stages. Much faster back-to-back generation, at the
+    /// cost of a permanently higher VRAM footprint.
+    pub keep_loaded: bool,
+    /// `--max-batch`: language-model batch limit.
+    pub max_batch: Option<u32>,
+    /// `--max-seq`: language-model KV cache size; defaults to the model context.
+    pub max_seq: Option<u32>,
+    /// `--no-fa`: disable flash attention.
+    pub disable_flash_attention: bool,
+    /// `--no-batch-cfg`: run classifier-free guidance as two separate forwards.
+    pub split_cfg_forwards: bool,
+    /// `--clamp-fp16`: clamp hidden states to the FP16 range.
+    pub clamp_fp16: bool,
+}
+
+impl MmServerOptions {
+    fn apply(&self, command: &mut Command) {
+        if self.keep_loaded {
+            command.arg("--keep-loaded");
+        }
+        if let Some(max_batch) = self.max_batch {
+            command.arg("--max-batch").arg(max_batch.to_string());
+        }
+        if let Some(max_seq) = self.max_seq {
+            command.arg("--max-seq").arg(max_seq.to_string());
+        }
+        if self.disable_flash_attention {
+            command.arg("--no-fa");
+        }
+        if self.split_cfg_forwards {
+            command.arg("--no-batch-cfg");
+        }
+        if self.clamp_fp16 {
+            command.arg("--clamp-fp16");
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +87,7 @@ pub struct MmServerLocation {
     pub configured_models_root: Option<PathBuf>,
     pub host: Option<String>,
     pub port: Option<u16>,
+    pub options: MmServerOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +125,7 @@ impl MmServerLocation {
             models_root,
             host,
             port: self.port.unwrap_or(DEFAULT_PORT),
+            options: self.options,
         })
     }
 }
@@ -118,7 +166,9 @@ impl MmServerSupervisor {
             .arg("--host")
             .arg(&self.config.host)
             .arg("--port")
-            .arg(self.config.port.to_string())
+            .arg(self.config.port.to_string());
+        self.config.options.apply(&mut command);
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -325,6 +375,7 @@ mod tests {
             configured_models_root: None,
             host: None,
             port: None,
+            options: MmServerOptions::default(),
         }
         .resolve()
         .unwrap();
@@ -333,6 +384,32 @@ mod tests {
         assert!(config.executable.ends_with(executable.file_name().unwrap()));
         assert!(config.models_root.ends_with("models"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The flags must reach the process exactly as upstream documents them: a
+    /// silently dropped `--keep-loaded` looks like the setting simply does
+    /// nothing.
+    #[test]
+    fn options_become_launch_flags() {
+        let mut command = Command::new("mm-server");
+        MmServerOptions {
+            keep_loaded: true,
+            max_batch: Some(2),
+            max_seq: Some(9000),
+            disable_flash_attention: true,
+            split_cfg_forwards: true,
+            clamp_fp16: true,
+        }
+        .apply(&mut command);
+        let arguments: Vec<String> = command.get_args().map(|value| value.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            arguments,
+            vec!["--keep-loaded", "--max-batch", "2", "--max-seq", "9000", "--no-fa", "--no-batch-cfg", "--clamp-fp16"]
+        );
+
+        let mut default_command = Command::new("mm-server");
+        MmServerOptions::default().apply(&mut default_command);
+        assert_eq!(default_command.get_args().count(), 0);
     }
 
     #[test]

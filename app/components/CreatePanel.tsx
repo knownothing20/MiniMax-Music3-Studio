@@ -29,6 +29,7 @@ type SetupStatus = {
   selected_profile_id?: string | null;
   selected_component_ids?: string[] | null;
   recommended_profile_id?: string;
+  effective_max_batch?: number;
   hardware?: { gpuName?: string; totalVramGb?: number; recommended?: string; reason?: string };
 };
 
@@ -257,7 +258,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
         lm_seed: parseSeed(lmSeed, 'LM seed'),
         lm_cfg: lmCfg,
         lm_top_k: topK,
-        lm_batch_size: lmBatch,
+        lm_batch_size: Math.min(lmBatch, maxSongs),
         synth_batch_size: synthBatch,
         dit_cfg: ditCfg,
         peak_clip: peakClip,
@@ -270,7 +271,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     }
   };
 
-  const totalTracks = lmBatch * synthBatch;
+  // `--max-batch` is a launch flag of the engine and it rejects any request
+  // above it, so the control never offers more than the engine will accept.
+  const maxSongs = Math.max(1, setup?.effective_max_batch ?? 1);
+  const totalTracks = Math.min(lmBatch, maxSongs) * synthBatch;
 
   return (
     <section className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-suno-panel dark:text-white">
@@ -414,13 +418,18 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <NumberField label={t('peakClipLabel')} value={peakClip} min={0} max={1000} step={1} onChange={setPeakClip} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <NumberField label={t('songsLmBatch')} value={lmBatch} min={1} max={4} step={1} onChange={setLmBatch} />
+                <NumberField label={t('songsLmBatch')} value={Math.min(lmBatch, maxSongs)} min={1} max={maxSongs} step={1} onChange={setLmBatch} disabled={maxSongs === 1} />
                 <NumberField label={t('variationsPerSong')} value={synthBatch} min={1} max={9} step={1} onChange={setSynthBatch} />
               </div>
               <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
                 This request renders <b>{totalTracks}</b> {totalTracks === 1 ? 'track' : 'tracks'}: each song samples its own LM
                 stream, each variation re-runs flow matching on the same condition track.
               </p>
+              {maxSongs === 1 && (
+                <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
+                  {t('maxBatchHint')}
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <Field label={t('ditSeed')}>
                   <input inputMode="numeric" value={seed} onChange={event => setSeed(event.target.value)} placeholder="Random" className={CONTROL} />

@@ -1039,4 +1039,5 @@ export const zh = {
     importAudioHint: 'MP3 或 WAV。拖放文件到此处或选择文件。',
     chooseFiles: '选择文件',
     allSongs: '全部歌曲',
+    maxBatchHint: '每次请求生成多首曲目需要在设置 → 本地引擎中提高 --max-batch；超出限制的请求会被引擎拒绝。',
 };

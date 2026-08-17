@@ -26,11 +26,14 @@ async function responseError(response: Response): Promise<Error> {
   }
 }
 
+/// Every native OpenRouter route is a POST. Sending a bodyless request as a
+/// GET made the catalog refresh fail with 405 and surfaced in the UI as
+/// "cloud media is unavailable".
 async function jsonRequest<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, body === undefined ? undefined : {
+  const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body ?? {}),
   });
   if (!response.ok) throw await responseError(response);
   return response.json() as Promise<T>;

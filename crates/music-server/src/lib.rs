@@ -41,6 +41,7 @@ struct AppState {
     library: library::Library,
     /// Owned local engine process, when this service started one.
     engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
+    engine_options: Arc<RwLock<EngineOptions>>,
 }
 
 #[derive(Clone)]
@@ -192,6 +193,8 @@ struct ReplayMusicJobRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedStudioSettings {
+    #[serde(default)]
+    engine_options: EngineOptions,
     configuration: StudioConfiguration,
     selected_profile_id: Option<String>,
     #[serde(default)]
@@ -210,6 +213,39 @@ struct OpenRouterTranscriptionRequest {
     audio_base64: String,
     audio_format: String,
     language: Option<String>,
+}
+
+/// Launch flags for the local engine process. They are a property of the
+/// running engine, so changing one restarts it; upstream has no way to apply
+/// them to a live server.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct EngineOptions {
+    keep_loaded: bool,
+    max_batch: Option<u32>,
+    max_seq: Option<u32>,
+    disable_flash_attention: bool,
+    split_cfg_forwards: bool,
+    clamp_fp16: bool,
+}
+
+impl EngineOptions {
+    /// `--max-batch` defaults to 1 upstream, and `lm_batch_size` may not exceed
+    /// it, so this is also the number of songs one request can render.
+    fn effective_max_batch(&self) -> u32 {
+        self.max_batch.unwrap_or(1).max(1)
+    }
+
+    fn to_engine(self) -> music_engine::mm_server::MmServerOptions {
+        music_engine::mm_server::MmServerOptions {
+            keep_loaded: self.keep_loaded,
+            max_batch: self.max_batch,
+            max_seq: self.max_seq,
+            disable_flash_attention: self.disable_flash_attention,
+            split_cfg_forwards: self.split_cfg_forwards,
+            clamp_fp16: self.clamp_fp16,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +307,7 @@ pub async fn serve() -> anyhow::Result<()> {
         openrouter_catalog: Arc::new(RwLock::new(OpenRouterCatalogState::default())),
         library: library::Library::open_default()?,
         engine: Arc::new(tokio::sync::Mutex::new(None)),
+        engine_options: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.engine_options).unwrap_or_default())),
     };
 
     let app = Router::new()
@@ -280,6 +317,8 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/engine/presets", get(engine_presets))
         .route("/engine/preset", post(apply_engine_preset))
         .route("/engine/start", post(start_local_engine))
+        .route("/engine/options", get(engine_options).put(update_engine_options))
+        .route("/engine/restart", post(restart_local_engine))
         .route("/v1/engine/logs", get(engine_logs))
         .route("/v1/system/resources", get(system_resources))
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
@@ -478,7 +517,7 @@ async fn start_local_engine(State(state): State<AppState>) -> Result<Json<Value>
 
     let mut supervisor = state.engine.lock().await;
     if supervisor.is_none() {
-        let location = engine_location();
+        let location = engine_location(*state.engine_options.read().await);
         let config = location
             .resolve()
             .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("The local engine runtime was not found: {error}")))?;
@@ -497,9 +536,83 @@ async fn start_local_engine(State(state): State<AppState>) -> Result<Json<Value>
     })))
 }
 
+async fn engine_options(State(state): State<AppState>) -> Json<Value> {
+    let options = *state.engine_options.read().await;
+    Json(serde_json::json!({
+        "options": options,
+        "effective_max_batch": options.effective_max_batch(),
+        "restart_required_to_apply": true,
+    }))
+}
+
+/// Stores the launch flags and restarts the engine if it is running, because
+/// upstream reads them once at startup.
+async fn update_engine_options(
+    State(state): State<AppState>,
+    Json(request): Json<EngineOptions>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if request.max_batch.is_some_and(|value| value == 0 || value > 8) {
+        return Err(api_error(StatusCode::BAD_REQUEST, "max_batch must be between 1 and 8".into()));
+    }
+    if request.max_seq.is_some_and(|value| value < 512) {
+        return Err(api_error(StatusCode::BAD_REQUEST, "max_seq must be at least 512".into()));
+    }
+    let changed = {
+        let mut options = state.engine_options.write().await;
+        let changed = *options != request;
+        *options = request;
+        changed
+    };
+    let _ = persist_studio_settings(&state).await;
+
+    let mut restarted = false;
+    if changed && state.music_server.health().await {
+        restart_engine(&state).await.map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error))?;
+        restarted = true;
+    }
+    Ok(Json(serde_json::json!({
+        "options": request,
+        "effective_max_batch": request.effective_max_batch(),
+        "engine_restarted": restarted,
+    })))
+}
+
+async fn restart_local_engine(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    restart_engine(&state).await.map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error))?;
+    Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "restarted": true })))
+}
+
+async fn restart_engine(state: &AppState) -> Result<(), String> {
+    let mut supervisor = state.engine.lock().await;
+    let owned = supervisor.is_some();
+    if let Some(engine) = supervisor.as_mut() {
+        tokio::task::block_in_place(|| engine.stop(std::time::Duration::from_secs(10)))
+            .map_err(|error| format!("stopping the local engine failed: {error}"))?;
+    }
+    // Launch flags are read once at engine startup. If something this service
+    // does not own is still listening, starting again would silently reuse it
+    // and the new flags would never take effect — report that instead of
+    // claiming a restart that did not happen.
+    if !owned && state.music_server.health().await {
+        return Err(
+            "An engine that this application did not start is already running on the engine port.              Close it and try again, otherwise the new options cannot be applied."
+                .into(),
+        );
+    }
+    let options = *state.engine_options.read().await;
+    let config = engine_location(options)
+        .resolve()
+        .map_err(|error| format!("the local engine runtime was not found: {error}"))?;
+    let mut engine = music_engine::mm_server::MmServerSupervisor::new(config).map_err(|error| error.to_string())?;
+    tokio::task::block_in_place(|| engine.ensure_started(std::time::Duration::from_secs(60)))
+        .map_err(|error| format!("the local engine did not start: {error}"))?;
+    *supervisor = Some(engine);
+    Ok(())
+}
+
 /// Where the packaged or developer-built `mm-server` lives. Every value is an
 /// explicit override or a documented default; nothing is downloaded here.
-fn engine_location() -> music_engine::mm_server::MmServerLocation {
+fn engine_location(options: EngineOptions) -> music_engine::mm_server::MmServerLocation {
     let configured_executable = env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from);
     let bundle_root = env::var_os("MINIMAX_MM_SERVER_ROOT")
         .map(PathBuf::from)
@@ -512,6 +625,7 @@ fn engine_location() -> music_engine::mm_server::MmServerLocation {
         configured_models_root: env::var_os("MINIMAX_MUSIC_MODELS_ROOT").map(PathBuf::from),
         host: env::var("MINIMAX_MM_SERVER_HOST").ok(),
         port: env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse().ok()),
+        options: options.to_engine(),
     }
 }
 
@@ -737,6 +851,7 @@ fn load_studio_settings(path: &PathBuf) -> Option<PersistedStudioSettings> {
 
 async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
     let settings = PersistedStudioSettings {
+        engine_options: *state.engine_options.read().await,
         configuration: state.configuration.read().await.clone(),
         selected_profile_id: state.selected_profile_id.read().await.clone(),
         selected_component_ids: state.selected_component_ids.read().await.clone(),
@@ -781,6 +896,8 @@ async fn compose_setup_status(state: &AppState, manager_status: model_manager::M
         fields.insert("selected_profile_id".into(), serde_json::to_value(selected_profile_id).unwrap_or(Value::Null));
         fields.insert("selected_component_ids".into(), serde_json::to_value(selected_component_ids).unwrap_or(Value::Null));
         fields.insert("hardware".into(), serde_json::to_value(presets::hardware()).unwrap_or(Value::Null));
+        fields.insert("engine_options".into(), serde_json::to_value(*state.engine_options.read().await).unwrap_or(Value::Null));
+        fields.insert("effective_max_batch".into(), Value::from(state.engine_options.read().await.effective_max_batch()));
         fields.insert("ready".into(), Value::Bool(selected_set_ready));
         fields.insert("first_run".into(), Value::Bool(!selected_set_ready));
         if selected_set_ready { fields.insert("download_pending".into(), Value::from(0_u64)); }

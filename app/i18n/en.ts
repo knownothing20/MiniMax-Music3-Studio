@@ -1044,4 +1044,5 @@ export const en = {
     importAudioHint: 'MP3 or WAV. Drop files here, or choose them.',
     chooseFiles: 'Choose files',
     allSongs: 'All songs',
+    maxBatchHint: 'Rendering more than one song per request needs a higher --max-batch in Settings → Local engine; the engine rejects requests above it.',
 };

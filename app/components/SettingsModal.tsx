@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
 import { ProviderSettings } from './ProviderSettings';
+import { EngineSettings } from './EngineSettings';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -74,6 +75,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                             <h3 className="font-semibold">{t('providers')}</h3>
                         </div>
                         <div className="pl-7"><ProviderSettings /></div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="pl-7"><EngineSettings /></div>
                     </div>
 
                     {/* Language Section */}
