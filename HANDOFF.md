@@ -47,7 +47,11 @@ Everything below was executed, not inferred.
 | Request form against the reference implementations | Rebuilt from the engine's own client, ComfyUI's native nodes, MiniMax's model card and their two demo Spaces. Loading an official demo prompt fills three panes of 1360/1430/1871 characters and 1606 characters of lyrics; the fields grow with their content. |
 | Assistant runtime | llama.cpp b9966 CUDA (162 MB) and CPU (18 MB) runtimes downloaded, unpacked into their own directories and resolved CUDA-first; the CUDA libraries (391 MB) are tracked separately by their own marker. The extracted `llama-server.exe` ran on the GPU as a CUDA compute process, answered `/v1/chat/completions`, and `/v1/assistant/write` reached it and reported a contract violation from a deliberately undersized 0.6B model instead of inventing a draft. |
 | Library data root | Started outside the desktop shell, the service now opens the same library the desktop application does; before this it silently created an empty one under `<cwd>/data`. |
-| Tests | `cargo test --workspace` — 51 passing. `npm --prefix app run build`, `tsc --noEmit` and `vitest` clean. |
+| Own GGUF as the assistant | The managed mode also runs a model already on the machine. Verified against `D:\Projects\TEMP\dungeon-ultimate\models	ext
+arrator.gguf`: the CUDA sidecar loads it, and from the interface a one-line idea became three caption sections of 704 / 531 / 1293 characters plus tagged lyrics in about a minute. Nothing was copied or re-downloaded. |
+| Track provenance | A 20-second render now stores duration 20, steps 30, LM CFG 1.5, top-k 50, DiT CFG 1.7, peak clip 10, MP3 128, output format and both seeds. Before this, everything left at an engine default was missing, because mm-server's replay request omits defaults. |
+| Packaged application, final build | The rebuilt single executable (18.8 MB) opens its window, hosts the service, reports the engine reachable, and its assistant answered a request through the user's own local GGUF. |
+| Tests | `cargo test --workspace` — 53 passing. `npm --prefix app run build`, `tsc --noEmit` and `vitest` clean. |
 
 **Not verified:** perceptual audio quality has not been judged here — listen to
 the Q8 track and compare it against Light yourself. Full Native (28.6 GB) was
