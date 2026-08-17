@@ -1199,7 +1199,7 @@ export const zh = {
     lmSeedShort: 'LM 种子',
     seedShort: '种子',
     variationsBatch: '变体数',
-    audioCodesHint: '复用已渲染曲目时填入，替代自回归阶段。',
+    audioCodesHint: '模型会把音频码与曲目一同保存；“重放”据此跳过自回归阶段重新渲染。',
     openPrompt: '打开',
     savePrompt: '保存',
     examplePrompt: '示例',

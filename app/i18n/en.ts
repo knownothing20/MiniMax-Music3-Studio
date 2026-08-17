@@ -1204,7 +1204,7 @@ export const en = {
     lmSeedShort: 'LM seed',
     seedShort: 'Seed',
     variationsBatch: 'Variations',
-    audioCodesHint: 'Filled when reusing a rendered song; it replaces the autoregressive stage.',
+    audioCodesHint: 'The model stores its audio codes with the track; replay re-renders it without the autoregressive stage.',
     openPrompt: 'Open',
     savePrompt: 'Save',
     examplePrompt: 'Example',

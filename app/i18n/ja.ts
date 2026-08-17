@@ -1199,7 +1199,7 @@ export const ja = {
     lmSeedShort: 'LM シード',
     seedShort: 'シード',
     variationsBatch: 'バリエーション',
-    audioCodesHint: 'レンダリング済み曲を再利用する際に入り、自己回帰段階を置き換えます。',
+    audioCodesHint: 'モデルはオーディオコードを曲と一緒に保存します。リプレイは自己回帰段階なしで再レンダリングします。',
     openPrompt: '開く',
     savePrompt: '保存',
     examplePrompt: '例',

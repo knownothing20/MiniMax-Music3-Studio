@@ -81,6 +81,10 @@ pub struct ManagerStatus {
     pub active: Option<DownloadJob>,
     pub components: Vec<ComponentStatus>,
     pub installed_components: Vec<String>,
+    /// The five files the selected set actually resolves to. The panel used to
+    /// print "profile default" beside every role, which says nothing about
+    /// what is loaded.
+    pub profile_files: Option<ProfileModelFiles>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,7 +105,7 @@ pub struct DownloadJob {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ProfileModelFiles {
     pub lm_model: String,
     pub depth_model: String,
@@ -496,9 +500,27 @@ fn status_snapshot(root: PathBuf, active: Option<DownloadJob>, target: Option<In
     let ready = target.as_ref().is_some_and(|selection| selection.components.iter().all(|component| installed(component.id)));
     let download_pending = target.as_ref().map(|selection| selection.components.iter()
         .filter(|component| !installed(component.id)).map(|component| component.bytes).sum()).unwrap_or_default();
+    // What the five roles actually resolve to, so the panel can name the files
+    // instead of saying "profile default".
+    let profile_files = target.as_ref().and_then(|selection| {
+        let file = |kind: &str| {
+            selection
+                .components
+                .iter()
+                .find(|component| component.kind == kind)
+                .map(|component| component.filename.to_string())
+        };
+        Some(ProfileModelFiles {
+            lm_model: file("lm")?,
+            depth_model: file("depth")?,
+            cond_model: file("condition")?,
+            dit_model: file("dit")?,
+            vae_model: file("vocoder")?,
+        })
+    });
     ManagerStatus {
         engine_id: ENGINE_ID, model_root: root.display().to_string(), first_run: !ready, ready, download_pending,
-        recommended_profile_id: recommended_profile().into(), active,
+        recommended_profile_id: recommended_profile().into(), active, profile_files,
         installed_components: component_statuses.iter().filter(|component| component.installed).map(|component| component.id.into()).collect(),
         components: component_statuses,
     }

@@ -1199,7 +1199,7 @@ export const ko = {
     lmSeedShort: 'LM 시드',
     seedShort: '시드',
     variationsBatch: '변형',
-    audioCodesHint: '렌더링된 트랙을 재사용할 때 채워지며 자기회귀 단계를 대체합니다.',
+    audioCodesHint: '모델이 오디오 코드를 트랙과 함께 저장하며, 리플레이는 자기회귀 단계 없이 다시 렌더링합니다.',
     openPrompt: '열기',
     savePrompt: '저장',
     examplePrompt: '예시',

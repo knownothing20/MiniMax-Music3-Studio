@@ -1203,7 +1203,7 @@ export const ru = {
     lmSeedShort: 'LM seed',
     seedShort: 'Seed',
     variationsBatch: 'Вариации',
-    audioCodesHint: 'Заполняется при пересборке готового трека — заменяет авторегрессионный этап.',
+    audioCodesHint: 'Аудиокоды модель сохраняет с треком сама — «Повторить» пересобирает его без авторегрессии.',
     openPrompt: 'Открыть',
     savePrompt: 'Сохранить',
     examplePrompt: 'Пример',

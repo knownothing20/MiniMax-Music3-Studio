@@ -35,8 +35,11 @@ interface CreatePanelProps {
 
 type EngineDefaults = Partial<Record<string, number | string>>;
 
+type ProfileFiles = { lm_model: string; depth_model: string; cond_model: string; dit_model: string; vae_model: string };
+
 type SetupStatus = {
   ready?: boolean;
+  profile_files?: ProfileFiles | null;
   engine_ready?: boolean;
   selected_profile_id?: string | null;
   selected_component_ids?: string[] | null;
@@ -230,7 +233,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [synthBatch, setSynthBatch] = useState('');
   const [seed, setSeed] = useState('');
   const [peakClip, setPeakClip] = useState('');
-  const [mp3Bitrate, setMp3Bitrate] = useState('');
+  // Quality first, not "quick listen": the engine's own defaults are mp3 at
+  // 128 kbps, which throws away what the vocoder produced.
+  const [mp3Bitrate, setMp3Bitrate] = useState('320');
+  // The engine's own default is 128 kbps, which throws away what the vocoder
+  // produced; 320 is the top the encoder offers and costs a few megabytes.
   const [format, setFormat] = useState<Music3Request['output_format']>('mp3');
   const [models, setModels] = useState<Record<string, string>>({});
 
@@ -314,7 +321,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     setName(''); setGlobalMetadata(''); setVocalDetails(''); setArrangement(''); setLyrics(''); setInstrumental(false);
     setDuration(''); setLmBatch(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed('');
-    setPeakClip(''); setMp3Bitrate(''); setFormat('mp3'); setModels({});
+    setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
     setError(null);
   };
 
@@ -451,7 +458,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const resetParameters = () => {
     setDuration(''); setLmBatch(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed(''); setRandomizeSeed(true);
-    setPeakClip(''); setMp3Bitrate(''); setFormat('mp3'); setModels({});
+    setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
   };
 
   const overBudget = promptTokens > MAX_PROMPT_TOKENS;
@@ -700,9 +707,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                       <input value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={placeholder('lm_seed')} inputMode="numeric" className={CONTROL} />
                     </Field>
                   </div>
-                  <Field label={t('audioCodes')} hint={t('audioCodesHint')}>
-                    <textarea value={audioCodes} onChange={event => setAudioCodes(event.target.value)} rows={3} className={`${CONTROL} mt-2 resize-y font-mono text-[11px]`} />
-                  </Field>
                 </Stage>
 
                 <div className="border-t border-zinc-100 pt-4 dark:border-white/5">
@@ -751,7 +755,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                           })}
                           className={CONTROL}
                         >
-                          <option value="">{t('profileDefault')}</option>
+                          <option value="">
+                            {(() => {
+                              // Name the file the profile actually loads: "profile
+                              // default" beside every role told the user nothing.
+                              const inUse = setup?.profile_files?.[role.key as keyof ProfileFiles];
+                              return inUse ? `${t('profileDefault')} · ${inUse.replace('MiniMax-Music3-', '')}` : t('profileDefault');
+                            })()}
+                          </option>
                           {role.options.map(option => <option key={option} value={option}>{option.replace('MiniMax-Music3-', '')}</option>)}
                         </select>
                       </div>
