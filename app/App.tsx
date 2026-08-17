@@ -82,7 +82,7 @@ function saveNativeLikedSongIds(ids: Set<string>): void {
 
 function NativeUnavailableView({ title, detail }: { title: string; detail: string }): React.ReactElement {
   return (
-    <div className="flex h-full min-h-0 flex-1 items-center justify-center overflow-y-auto bg-white px-6 py-10 dark:bg-suno-DEFAULT">
+    <div className="flex h-full min-h-0 flex-1 items-center justify-center overflow-y-auto bg-white px-6 py-10 dark:bg-suno">
       <section className="w-full max-w-xl rounded-2xl border border-amber-500/30 bg-amber-500/5 p-6 text-center shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-400">Native Music3</p>
         <h1 className="mt-2 text-xl font-bold text-zinc-950 dark:text-white">{title}</h1>
@@ -1232,7 +1232,7 @@ function AppContent() {
             {/* Song List */}
             <div className={`
               ${!mobileShowList ? 'hidden md:flex' : 'flex'}
-              min-h-0 min-w-0 flex-1 flex-col h-full overflow-hidden bg-white dark:bg-suno-DEFAULT transition-colors duration-300
+              min-h-0 min-w-0 flex-1 flex-col h-full overflow-hidden bg-white dark:bg-suno transition-colors duration-300
             `}>
               <SongList
                 songs={songs}
@@ -1308,7 +1308,7 @@ function AppContent() {
   };
 
   return (
-    <div className="flex h-[100dvh] min-h-0 min-w-0 flex-col overflow-hidden bg-white dark:bg-suno-DEFAULT text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-colors duration-300">
+    <div className="flex h-[100dvh] min-h-0 min-w-0 flex-col overflow-hidden bg-white dark:bg-suno text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-colors duration-300">
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <Sidebar
           currentView={currentView}

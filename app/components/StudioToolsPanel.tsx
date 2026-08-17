@@ -41,7 +41,7 @@ export function StudioToolsPanel(): React.ReactElement {
   const engines = capabilities?.engines ?? [];
 
   return (
-    <div className="flex-1 overflow-y-auto bg-white dark:bg-suno-DEFAULT px-5 py-6 md:px-8">
+    <div className="flex-1 overflow-y-auto bg-white dark:bg-suno px-5 py-6 md:px-8">
       <div className="mx-auto max-w-6xl space-y-6">
         <div className="flex items-start justify-between gap-4">
           <div>

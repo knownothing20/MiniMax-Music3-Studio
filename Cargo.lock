@@ -703,6 +703,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "music-core",
+ "music-engine",
  "reqwest",
  "rusqlite",
  "serde",

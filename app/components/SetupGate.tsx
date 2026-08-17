@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Download, Loader2, Square, X } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import {
   componentKindLabel,
   componentPrecision,
@@ -22,6 +21,7 @@ type DownloadJob = {
 
 type SetupStatus = {
   ready: boolean;
+  hardware?: { gpuName?: string; totalVramGb?: number; recommended?: string; reason?: string };
   engine_ready: boolean;
   engine_id: string;
   first_run: boolean;
@@ -78,7 +78,12 @@ export const SetupGate: React.FC<{ onReady: () => void }> = ({ onReady }) => {
     let nextStatus: SetupStatus = await statusResponse.json();
     const nextCatalog: Catalog = await catalogResponse.json();
     if (nextStatus.ready && !nextStatus.engine_ready) {
-      await invoke('start_primary_engine_after_setup');
+      // The service starts its own engine. Going through a Tauri command here
+      // meant the studio could not start generation when it was opened in a
+      // browser, and the failure surfaced as "cannot read properties of
+      // undefined (reading 'invoke')".
+      const startResponse = await fetch('/engine/start', { method: 'POST' });
+      if (!startResponse.ok) throw new Error(await errorMessage(startResponse));
       const engineResponse = await fetch('/setup/status');
       if (!engineResponse.ok) throw new Error(await errorMessage(engineResponse));
       nextStatus = await engineResponse.json();
@@ -173,7 +178,7 @@ export const SetupGate: React.FC<{ onReady: () => void }> = ({ onReady }) => {
   };
 
   return (
-    <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-white px-5 py-10 dark:bg-suno-DEFAULT">
+    <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-white px-5 py-10 dark:bg-suno">
       <div className="w-full max-w-2xl">
         <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-pink-500">
           <span className="h-2 w-2 rounded-full bg-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.75)]" />
@@ -185,7 +190,9 @@ export const SetupGate: React.FC<{ onReady: () => void }> = ({ onReady }) => {
         {error && <div className="mt-5 flex gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"><X size={16} className="mt-0.5 shrink-0" />{error}</div>}
 
         <div className="mt-5 rounded-xl border border-pink-300/50 bg-pink-50 px-4 py-3 text-sm text-zinc-700 dark:border-pink-500/25 dark:bg-pink-500/10 dark:text-zinc-200">
-          <span className="font-semibold text-pink-600 dark:text-pink-400">Recommended:</span> the native minimaxmusic.cpp Light profile is preselected. It is resumable and validates every downloaded component before enabling generation.
+          <span className="font-semibold text-pink-600 dark:text-pink-400">Recommended for this machine:</span>{' '}
+          {status?.hardware?.reason || 'the profile matching the detected GPU is preselected'}. Downloads are resumable and every
+          component is checksum-verified before generation is enabled.
         </div>
 
         {status?.ready && !status.engine_ready && <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">

@@ -65,7 +65,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const recent = useMemo(() => songs.slice(0, 12), [songs]);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-white px-5 py-6 dark:bg-suno-DEFAULT md:px-8">
+    <div className="flex-1 overflow-y-auto bg-white px-5 py-6 dark:bg-suno md:px-8">
       <div className="mx-auto max-w-5xl">
         <h1 className="text-2xl font-bold text-zinc-900 dark:text-white">{t('search')}</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">

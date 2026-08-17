@@ -39,6 +39,8 @@ struct AppState {
     settings_path: PathBuf,
     openrouter_catalog: Arc<RwLock<OpenRouterCatalogState>>,
     library: library::Library,
+    /// Owned local engine process, when this service started one.
+    engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
 }
 
 #[derive(Clone)]
@@ -264,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
         settings_path,
         openrouter_catalog: Arc::new(RwLock::new(OpenRouterCatalogState::default())),
         library: library::Library::open_default()?,
+        engine: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     let app = Router::new()
@@ -272,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/configuration", get(configuration).put(update_configuration))
         .route("/engine/presets", get(engine_presets))
         .route("/engine/preset", post(apply_engine_preset))
+        .route("/engine/start", post(start_local_engine))
         .route("/v1/engine/logs", get(engine_logs))
         .route("/v1/system/resources", get(system_resources))
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
@@ -452,6 +456,57 @@ async fn update_configuration(
     *state.configuration.write().await = configuration.clone();
     let _ = persist_studio_settings(&state).await;
     Json(configuration)
+}
+
+/// Starts the local `minimaxmusic.cpp` runtime.
+///
+/// The service owns this, not the desktop shell: the studio has to work when it
+/// is opened in a browser during development, and a UI that could only start
+/// the engine through a Tauri command failed with "cannot read properties of
+/// undefined" outside the packaged app. If a healthy engine is already
+/// listening the call is a no-op and never spawns a second process.
+async fn start_local_engine(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if state.music_server.health().await {
+        return Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "started": false, "reachable": true })));
+    }
+
+    let mut supervisor = state.engine.lock().await;
+    if supervisor.is_none() {
+        let location = engine_location();
+        let config = location
+            .resolve()
+            .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("The local engine runtime was not found: {error}")))?;
+        *supervisor = Some(
+            music_engine::mm_server::MmServerSupervisor::new(config)
+                .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?,
+        );
+    }
+    let engine = supervisor.as_mut().expect("supervisor was created above");
+    let started = tokio::task::block_in_place(|| engine.ensure_started(std::time::Duration::from_secs(60)))
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("The local engine did not start: {error}")))?;
+    Ok(Json(serde_json::json!({
+        "engine_id": PRIMARY_MUSIC_ENGINE_ID,
+        "started": matches!(started, music_engine::mm_server::StartOutcome::Started),
+        "reachable": true,
+    })))
+}
+
+/// Where the packaged or developer-built `mm-server` lives. Every value is an
+/// explicit override or a documented default; nothing is downloaded here.
+fn engine_location() -> music_engine::mm_server::MmServerLocation {
+    let configured_executable = env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from);
+    let bundle_root = env::var_os("MINIMAX_MM_SERVER_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| configured_executable.as_ref().and_then(|path| path.parent().map(std::path::Path::to_path_buf)))
+        .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().map(|parent| parent.join("resources").join("minimaxmusic-cpp"))))
+        .unwrap_or_else(|| PathBuf::from("resources/minimaxmusic-cpp"));
+    music_engine::mm_server::MmServerLocation {
+        bundle_root,
+        configured_executable,
+        configured_models_root: env::var_os("MINIMAX_MUSIC_MODELS_ROOT").map(PathBuf::from),
+        host: env::var("MINIMAX_MM_SERVER_HOST").ok(),
+        port: env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse().ok()),
+    }
 }
 
 async fn engine_presets(State(state): State<AppState>) -> Json<Value> {
