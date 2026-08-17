@@ -51,6 +51,7 @@ Everything below was executed, not inferred.
 arrator.gguf`: the CUDA sidecar loads it, and from the interface a one-line idea became three caption sections of 704 / 531 / 1293 characters plus tagged lyrics in about a minute. Nothing was copied or re-downloaded. |
 | Track provenance | A 20-second render now stores duration 20, steps 30, LM CFG 1.5, top-k 50, DiT CFG 1.7, peak clip 10, MP3 128, output format and both seeds. Before this, everything left at an engine default was missing, because mm-server's replay request omits defaults. |
 | Packaged application, final build | The rebuilt single executable (18.8 MB) opens its window, hosts the service, reports the engine reachable, and its assistant answered a request through the user's own local GGUF. |
+| Offline honesty | With the service stopped, the interface says "Studio service is not responding" and how to recover, instead of the old behaviour: claiming no model profile was installed and asking for a 12 GB download that was already on disk. Verified by stopping and restarting the desktop process. |
 | Tests | `cargo test --workspace` — 53 passing. `npm --prefix app run build`, `tsc --noEmit` and `vitest` clean. |
 
 **Not verified:** perceptual audio quality has not been judged here — listen to
@@ -223,6 +224,16 @@ remaining acceptance path is a clean machine:
 install → first launch with no weights → choose and download a profile
 → engine starts → generate → play → restart → updater check → portable check
 ```
+
+## Running a locally built desktop binary
+
+`scripts/build-release.ps1` builds the C++ runtime into
+`desktop/src-tauri/resources/minimaxmusic-cpp` and Tauri bundles it, so an
+installed build finds its engine on its own. A plain `cargo build --release`
+inside `desktop/src-tauri` does **not** do that: the engine has to be next to
+the executable, in `target/release/resources/minimaxmusic-cpp`, or pointed at
+with `MINIMAX_MM_SERVER_BIN`. Without it the application starts, serves the
+interface and shows the engine as unavailable.
 
 ## Commands
 
