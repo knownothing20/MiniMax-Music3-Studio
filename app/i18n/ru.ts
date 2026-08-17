@@ -1191,7 +1191,7 @@ export const ru = {
     arrangementSection: 'Аранжировка',
     arrangementPlaceholder: 'Instrument Lifecycle Description (Primary/Secondary Layering): Primary: … Secondary: … Groove & Foundation Progression: … Embellishments, Textures & Spatial FX: …',
     randomizeSeed: 'Случайный seed',
-    maxDuration: 'Макс. длительность, с',
+    maxDuration: 'Длительность, с',
     maxDurationHint: 'Это максимум, а не цель: модель может закончить песню раньше. До 360 секунд.',
     lyricsHint: 'Теги секций на отдельной строке: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro].',
     lmConfiguration: 'Настройки LM',

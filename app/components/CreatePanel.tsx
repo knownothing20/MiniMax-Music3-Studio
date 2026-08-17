@@ -78,12 +78,60 @@ const numberOrUndefined = (value: string): number | undefined => {
 /** A rough token estimate, only used to warn before the engine rejects it. */
 const estimateTokens = (text: string) => Math.ceil(text.trim().length / 3.6);
 
+const ICON =
+  'rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-black dark:hover:bg-white/10 dark:hover:text-white disabled:opacity-40';
+
 const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
   <label className="block">
     <span className={LABEL}>{label}</span>
     {children}
     {hint && <span className="mt-1 block text-[11px] leading-4 text-zinc-500">{hint}</span>}
   </label>
+);
+
+/** A card with a titled header strip, the way the panels are built elsewhere. */
+const Card: React.FC<{ title: string; actions?: React.ReactNode; children: React.ReactNode }> = ({ title, actions, children }) => (
+  <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
+    <div className="flex items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2 dark:border-white/5 dark:bg-white/5">
+      <span className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{title}</span>
+      {actions && <div className="flex items-center gap-1">{actions}</div>}
+    </div>
+    <div className="p-3">{children}</div>
+  </div>
+);
+
+/** Grows with its content: these sections run to a thousand characters. */
+const AutoTextarea: React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement> & { minRows?: number }> = ({ minRows = 3, value, ...rest }) => {
+  const node = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const element = node.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${Math.max(element.scrollHeight, minRows * 20)}px`;
+  }, [value, minRows]);
+  return <textarea ref={node} value={value} rows={minRows} {...rest} />;
+};
+
+/** One labelled section of the structured caption. */
+const Pane: React.FC<{
+  label: string;
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+}> = ({ label, value, placeholder, onChange }) => (
+  <div className="rounded-lg border border-zinc-200 bg-zinc-50 focus-within:border-pink-500 dark:border-white/10 dark:bg-black/25">
+    <div className="flex items-center justify-between px-2.5 pt-2">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</span>
+      <span className="text-[10px] tabular-nums text-zinc-400">{value.length}</span>
+    </div>
+    <AutoTextarea
+      value={value}
+      minRows={4}
+      onChange={event => onChange(event.target.value)}
+      placeholder={placeholder}
+      className="w-full resize-none bg-transparent px-2.5 pb-2.5 pt-1 text-sm leading-5 text-zinc-900 outline-none dark:text-white"
+    />
+  </div>
 );
 
 export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerating, activeJobCount = 0, initialData }) => {
@@ -119,7 +167,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [catalog, setCatalog] = useState<EngineCatalog | null>(null);
   const [assistantReady, setAssistantReady] = useState(false);
   const [assisting, setAssisting] = useState<'all' | 'lyrics' | 'prompt' | null>(null);
-  const [openSection, setOpenSection] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [mode, setMode] = useState<'simple' | 'studio'>('studio');
   const [assistInstruction, setAssistInstruction] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -319,19 +367,13 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     { key: 'vae_model', label: 'VAE', options: catalog?.models?.vae ?? [] },
   ];
 
-  const section = (id: string, title: string, body: React.ReactNode) => (
-    <div className={CARD}>
-      <button
-        type="button"
-        onClick={() => setOpenSection(current => (current === id ? null : id))}
-        className="flex w-full items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
-      >
-        {title}
-        <ChevronDown size={15} className={openSection === id ? 'rotate-180 transition-transform' : 'transition-transform'} />
-      </button>
-      {openSection === id && <div className="mt-3 space-y-3">{body}</div>}
-    </div>
-  );
+  const resetParameters = () => {
+    setDuration(''); setLmBatch(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
+    setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed(''); setRandomizeSeed(true);
+    setPeakClip(''); setMp3Bitrate(''); setFormat('mp3'); setModels({});
+  };
+
+  const overBudget = promptTokens > MAX_PROMPT_TOKENS;
 
   return (
     <section className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-suno-panel dark:text-white">
@@ -348,55 +390,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </span>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => promptFile.current?.click()} className={TOOL}><FolderOpen size={13} /> {t('openPrompt')}</button>
-            <button type="button" onClick={savePrompt} className={TOOL}><Save size={13} /> {t('savePrompt')}</button>
-            <button type="button" onClick={loadExample} className={TOOL}><Dices size={13} /> {t('examplePrompt')}</button>
-            <button type="button" onClick={reset} className={TOOL}><RotateCcw size={13} /> {t('resetPrompt')}</button>
-            <input
-              ref={promptFile}
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={event => { const file = event.target.files?.[0]; if (file) void openPrompt(file); event.target.value = ''; }}
-            />
-          </div>
-
-          {assistantReady && (
-            <div className={CARD}>
-              <div className="mb-2 grid grid-cols-2 rounded-lg border border-zinc-200 p-1 dark:border-white/10">
-                {(['studio', 'simple'] as const).map(value => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setMode(value)}
-                    className={`rounded-md py-1.5 text-[11px] font-semibold transition-colors ${mode === value ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500'}`}
-                  >
-                    {value === 'studio' ? t('studioMode') : t('simpleMode')}
-                  </button>
-                ))}
-              </div>
-              {mode === 'simple' ? (
-                <>
-                  <Field label={t('songIdea')} hint={t('songIdeaHint')}>
-                    <textarea value={assistInstruction} onChange={event => setAssistInstruction(event.target.value)} rows={3} placeholder={t('songIdeaPlaceholder')} className={`${CONTROL} resize-y`} />
-                  </Field>
-                  <button
-                    type="button"
-                    onClick={() => void askAssistant('all')}
-                    disabled={assisting !== null || !assistInstruction.trim()}
-                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 py-2.5 text-xs font-bold text-white disabled:opacity-50"
-                  >
-                    {assisting === 'all' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                    {t('writeEverything')}
-                  </button>
-                </>
-              ) : (
-                <p className="text-[11px] leading-4 text-zinc-500">{t('studioModeHint')}</p>
-              )}
-            </div>
-          )}
-
           {!ready && (
             <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
@@ -404,175 +397,235 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </div>
           )}
 
-          <div className={CARD}>
-            <Field label={t('title')}>
-              <input value={name} onChange={event => setName(event.target.value)} placeholder={t('untitled')} className={CONTROL} />
-            </Field>
-          </div>
-
-          <div className={CARD}>
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <span className={LABEL}>{t('captionStructured')}</span>
-              <label className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-                <input type="checkbox" checked={instrumental} onChange={event => setInstrumental(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
-                {t('instrumental')}
-              </label>
+          {assistantReady && (
+            <div className="grid grid-cols-2 gap-1 rounded-xl border border-zinc-200 bg-white p-1 dark:border-white/5 dark:bg-suno-card">
+              {(['studio', 'simple'] as const).map(value => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setMode(value)}
+                  className={`rounded-lg py-1.5 text-[11px] font-semibold transition-colors ${mode === value ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'}`}
+                >
+                  {value === 'studio' ? t('studioMode') : t('simpleMode')}
+                </button>
+              ))}
             </div>
-            <p className="mb-3 text-[11px] leading-4 text-zinc-500">{t('captionStructuredHint')}</p>
+          )}
 
-            <div className="space-y-3">
-              <Field label={t('globalMetadata')}>
-                <textarea value={globalMetadata} onChange={event => setGlobalMetadata(event.target.value)} rows={5} placeholder={t('globalMetadataPlaceholder')} className={`${CONTROL} resize-y leading-5`} />
-              </Field>
-              <Field label={t('vocalDetails')}>
-                <textarea value={vocalDetails} onChange={event => setVocalDetails(event.target.value)} rows={4} placeholder={t('vocalDetailsPlaceholder')} className={`${CONTROL} resize-y leading-5`} />
-              </Field>
-              <Field label={t('arrangementSection')}>
-                <textarea value={arrangement} onChange={event => setArrangement(event.target.value)} rows={5} placeholder={t('arrangementPlaceholder')} className={`${CONTROL} resize-y leading-5`} />
-              </Field>
-            </div>
-
-            {assistantReady && (
-              <button
-                type="button"
-                onClick={() => void askAssistant('prompt')}
-                disabled={assisting !== null}
-                className={`${TOOL} mt-3 w-full justify-center py-2 disabled:opacity-50`}
-              >
-                {assisting === 'prompt' ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} className="text-pink-500" />}
-                {t('writeCaption')}
-              </button>
-            )}
-          </div>
-
-          <div className={CARD}>
-            <Field label={t('lyrics')} hint={t('lyricsHint')}>
-              <textarea
-                value={lyrics}
-                onChange={event => setLyrics(event.target.value)}
-                rows={10}
-                placeholder={'[Intro]\n\n[Verse]\n…\n\n[Chorus]\n…'}
-                className={`${CONTROL} resize-y font-mono text-xs leading-5`}
+          {assistantReady && mode === 'simple' && (
+            <Card title={t('songIdea')}>
+              <AutoTextarea
+                value={assistInstruction}
+                minRows={3}
+                onChange={event => setAssistInstruction(event.target.value)}
+                placeholder={t('songIdeaPlaceholder')}
+                className={`${CONTROL} resize-none`}
               />
-            </Field>
-            {assistantReady && (
+              <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('songIdeaHint')}</p>
               <button
                 type="button"
-                onClick={() => void askAssistant('lyrics')}
-                disabled={assisting !== null}
-                className={`${TOOL} mt-2 w-full justify-center py-2 disabled:opacity-50`}
+                onClick={() => void askAssistant('all')}
+                disabled={assisting !== null || !assistInstruction.trim()}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 py-2.5 text-xs font-bold text-white transition hover:brightness-110 disabled:opacity-50"
               >
-                {assisting === 'lyrics' ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} className="text-pink-500" />}
-                {t('writeLyrics')}
+                {assisting === 'all' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                {t('writeEverything')}
               </button>
-            )}
-            <p className={`mt-2 text-[11px] ${promptTokens > MAX_PROMPT_TOKENS ? 'text-rose-600 dark:text-rose-300' : 'text-zinc-500'}`}>
-              {t('promptBudget')}: ~{promptTokens} / {MAX_PROMPT_TOKENS}
-            </p>
-          </div>
+            </Card>
+          )}
 
-          <div className={CARD}>
-            <span className={LABEL}>{t('lmConfiguration')}</span>
-            <div className="grid grid-cols-3 gap-2">
+          <Card
+            title={t('captionStructured')}
+            actions={
+              <>
+                {assistantReady && (
+                  <button type="button" onClick={() => void askAssistant('prompt')} disabled={assisting !== null} className={ICON} title={t('writeCaption')}>
+                    {assisting === 'prompt' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} className="text-pink-500" />}
+                  </button>
+                )}
+                <button type="button" onClick={loadExample} className={ICON} title={t('examplePrompt')}><Dices size={14} /></button>
+                <button type="button" onClick={() => promptFile.current?.click()} className={ICON} title={t('openPrompt')}><FolderOpen size={14} /></button>
+                <button type="button" onClick={savePrompt} className={ICON} title={t('savePrompt')}><Save size={14} /></button>
+                <button type="button" onClick={reset} className={ICON} title={t('resetPrompt')}><RotateCcw size={14} /></button>
+                <input
+                  ref={promptFile}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={event => { const file = event.target.files?.[0]; if (file) void openPrompt(file); event.target.value = ''; }}
+                />
+              </>
+            }
+          >
+            <input
+              value={name}
+              onChange={event => setName(event.target.value)}
+              placeholder={t('untitled')}
+              className="w-full border-0 bg-transparent p-0 text-lg font-bold text-zinc-900 outline-none placeholder:text-zinc-300 dark:text-white dark:placeholder:text-zinc-600"
+            />
+            <p className="mb-3 mt-1 text-[11px] leading-4 text-zinc-500">{t('captionStructuredHint')}</p>
+            <div className="space-y-2">
+              <Pane label={t('globalMetadata')} value={globalMetadata} onChange={setGlobalMetadata} placeholder={t('globalMetadataPlaceholder')} />
+              <Pane label={t('vocalDetails')} value={vocalDetails} onChange={setVocalDetails} placeholder={t('vocalDetailsPlaceholder')} />
+              <Pane label={t('arrangementSection')} value={arrangement} onChange={setArrangement} placeholder={t('arrangementPlaceholder')} />
+            </div>
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+              <input type="checkbox" checked={instrumental} onChange={event => setInstrumental(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
+              {t('instrumental')}
+            </label>
+          </Card>
+
+          <Card
+            title={t('lyrics')}
+            actions={
+              <>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums ${overBudget ? 'bg-rose-500/10 text-rose-600 dark:text-rose-300' : 'bg-zinc-200/70 text-zinc-500 dark:bg-white/10 dark:text-zinc-400'}`} title={t('promptBudget')}>
+                  {promptTokens} / {MAX_PROMPT_TOKENS}
+                </span>
+                {assistantReady && (
+                  <button type="button" onClick={() => void askAssistant('lyrics')} disabled={assisting !== null} className={ICON} title={t('writeLyrics')}>
+                    {assisting === 'lyrics' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} className="text-pink-500" />}
+                  </button>
+                )}
+                <button type="button" onClick={() => setLyrics('')} className={ICON} title={t('resetPrompt')}><RotateCcw size={14} /></button>
+              </>
+            }
+          >
+            <AutoTextarea
+              value={lyrics}
+              minRows={10}
+              onChange={event => setLyrics(event.target.value)}
+              placeholder={'[intro]\n\n[verse]\n…\n\n[chorus]\n…'}
+              className={`${CONTROL} resize-none font-mono text-xs leading-5`}
+            />
+            <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('lyricsHint')}</p>
+            {overBudget && <p className="mt-1 text-[11px] leading-4 text-rose-600 dark:text-rose-300">{t('promptTooLong')}</p>}
+          </Card>
+
+          <Card
+            title={t('quality')}
+            actions={
+              <button type="button" onClick={resetParameters} className="rounded-md px-2 py-1 text-[10px] font-semibold text-zinc-500 transition-colors hover:bg-zinc-200 hover:text-black dark:hover:bg-white/10 dark:hover:text-white">
+                {t('resetToDefaults')}
+              </button>
+            }
+          >
+            <div className="grid grid-cols-3 items-end gap-2">
               <Field label={t('maxDuration')}>
                 <input value={duration} onChange={event => setDuration(event.target.value)} placeholder={placeholder('duration')} inputMode="decimal" className={CONTROL} />
               </Field>
-              <Field label={t('lmBatch')}>
-                <input value={lmBatch} onChange={event => setLmBatch(event.target.value)} placeholder={placeholder('lm_batch_size')} inputMode="numeric" disabled={maxSongs === 1} className={CONTROL} />
-              </Field>
-              <Field label={t('lmSeedShort')}>
-                <input value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={placeholder('lm_seed')} inputMode="numeric" className={CONTROL} />
-              </Field>
-            </div>
-            <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
-            {maxSongs === 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('maxBatchHint')}</p>}
-            {totalTracks > 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('renderCountPrefix')} <b>{totalTracks}</b></p>}
-          </div>
-
-          {section('advanced-lm', t('advancedLm'), (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <Field label={t('cfgScale')}>
-                  <input value={lmCfg} onChange={event => setLmCfg(event.target.value)} placeholder={placeholder('lm_cfg')} inputMode="decimal" className={CONTROL} />
-                </Field>
-                <Field label={t('topK')}>
-                  <input value={lmTopK} onChange={event => setLmTopK(event.target.value)} placeholder={placeholder('lm_top_k')} inputMode="numeric" className={CONTROL} />
-                </Field>
-              </div>
-              <Field label={t('audioCodes')} hint={t('audioCodesHint')}>
-                <textarea value={audioCodes} onChange={event => setAudioCodes(event.target.value)} rows={3} className={`${CONTROL} resize-y font-mono text-[11px]`} />
-              </Field>
-            </>
-          ))}
-
-          {section('flow', t('flowMatching'), (
-            <div className="grid grid-cols-2 gap-2">
               <Field label={t('ditSteps')}>
                 <input value={steps} onChange={event => setSteps(event.target.value)} placeholder={placeholder('steps')} inputMode="numeric" className={CONTROL} />
               </Field>
               <Field label={t('cfgScale')}>
                 <input value={ditCfg} onChange={event => setDitCfg(event.target.value)} placeholder={placeholder('dit_cfg')} inputMode="decimal" className={CONTROL} />
               </Field>
+            </div>
+            <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
+
+            <div className="mt-3 grid grid-cols-3 items-end gap-2 border-t border-zinc-100 pt-3 dark:border-white/5">
+              <Field label={t('lmBatch')}>
+                <input value={lmBatch} onChange={event => setLmBatch(event.target.value)} placeholder={placeholder('lm_batch_size')} inputMode="numeric" disabled={maxSongs === 1} className={CONTROL} />
+              </Field>
               <Field label={t('variationsBatch')}>
                 <input value={synthBatch} onChange={event => setSynthBatch(event.target.value)} placeholder={placeholder('synth_batch_size')} inputMode="numeric" className={CONTROL} />
               </Field>
               <Field label={t('seedShort')}>
-                <input value={seed} onChange={event => setSeed(event.target.value)} placeholder={placeholder('seed')} inputMode="numeric" disabled={randomizeSeed} className={CONTROL} />
-                <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-                  <input type="checkbox" checked={randomizeSeed} onChange={event => setRandomizeSeed(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
-                  {t('randomizeSeed')}
-                </label>
+                <input value={seed} onChange={event => setSeed(event.target.value)} placeholder={randomizeSeed ? '—' : placeholder('seed')} inputMode="numeric" disabled={randomizeSeed} className={CONTROL} />
               </Field>
             </div>
-          ))}
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <label className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                <input type="checkbox" checked={randomizeSeed} onChange={event => setRandomizeSeed(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
+                {t('randomizeSeed')}
+              </label>
+              {totalTracks > 1 && <span className="text-[11px] text-zinc-500">{t('renderCountPrefix')} <b className="text-zinc-700 dark:text-zinc-200">{totalTracks}</b></span>}
+            </div>
+            {maxSongs === 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('maxBatchHint')}</p>}
+          </Card>
 
-          {section('post', t('postProcessing'), (
-            <>
-              <div className="grid grid-cols-3 gap-2">
-                <Field label={t('peakClipLabel')}>
-                  <input value={peakClip} onChange={event => setPeakClip(event.target.value)} placeholder={placeholder('peak_clip')} inputMode="numeric" className={CONTROL} />
-                </Field>
-                <Field label={t('mp3Bitrate')}>
-                  <input value={mp3Bitrate} onChange={event => setMp3Bitrate(event.target.value)} placeholder={placeholder('mp3_bitrate')} inputMode="numeric" disabled={format !== 'mp3'} className={CONTROL} />
-                </Field>
-                <Field label={t('outputFormat')}>
-                  <select value={format} onChange={event => setFormat(event.target.value as Music3Request['output_format'])} className={CONTROL}>
-                    <option value="mp3">MP3</option>
-                    <option value="wav16">WAV16</option>
-                    <option value="wav24">WAV24</option>
-                    <option value="wav32">WAV32</option>
-                  </select>
-                </Field>
+          <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(current => !current)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-zinc-500 transition-colors hover:text-black dark:text-zinc-400 dark:hover:text-white"
+            >
+              {t('advanced')}
+              <ChevronDown size={15} className={showAdvanced ? 'rotate-180 transition-transform' : 'transition-transform'} />
+            </button>
+            {showAdvanced && (
+              <div className="space-y-4 border-t border-zinc-100 p-3 dark:border-white/5">
+                <div>
+                  <span className={LABEL}>{t('advancedLm')}</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label={t('cfgScale')}>
+                      <input value={lmCfg} onChange={event => setLmCfg(event.target.value)} placeholder={placeholder('lm_cfg')} inputMode="decimal" className={CONTROL} />
+                    </Field>
+                    <Field label={t('topK')}>
+                      <input value={lmTopK} onChange={event => setLmTopK(event.target.value)} placeholder={placeholder('lm_top_k')} inputMode="numeric" className={CONTROL} />
+                    </Field>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <Field label={t('lmSeedShort')}>
+                      <input value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={placeholder('lm_seed')} inputMode="numeric" className={CONTROL} />
+                    </Field>
+                  </div>
+                  <Field label={t('audioCodes')} hint={t('audioCodesHint')}>
+                    <textarea value={audioCodes} onChange={event => setAudioCodes(event.target.value)} rows={3} className={`${CONTROL} mt-2 resize-y font-mono text-[11px]`} />
+                  </Field>
+                </div>
+
+                <div className="border-t border-zinc-100 pt-3 dark:border-white/5">
+                  <span className={LABEL}>{t('postProcessing')}</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Field label={t('peakClipLabel')}>
+                      <input value={peakClip} onChange={event => setPeakClip(event.target.value)} placeholder={placeholder('peak_clip')} inputMode="numeric" className={CONTROL} />
+                    </Field>
+                    <Field label={t('mp3Bitrate')}>
+                      <input value={mp3Bitrate} onChange={event => setMp3Bitrate(event.target.value)} placeholder={placeholder('mp3_bitrate')} inputMode="numeric" disabled={format !== 'mp3'} className={CONTROL} />
+                    </Field>
+                    <Field label={t('outputFormat')}>
+                      <select value={format} onChange={event => setFormat(event.target.value as Music3Request['output_format'])} className={CONTROL}>
+                        <option value="mp3">MP3</option>
+                        <option value="wav16">WAV16</option>
+                        <option value="wav24">WAV24</option>
+                        <option value="wav32">WAV32</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('peakClipHint')}</p>
+                </div>
+
+                <div className="border-t border-zinc-100 pt-3 dark:border-white/5">
+                  <span className={LABEL}>{t('componentOverride')}</span>
+                  <p className="mb-2 text-[11px] leading-4 text-zinc-500">{t('componentOverrideHint')}</p>
+                  <div className="space-y-2">
+                    {roles.map(role => (
+                      <div key={role.key} className="grid grid-cols-[64px_1fr] items-center gap-2">
+                        <span className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{role.label}</span>
+                        <select
+                          value={models[role.key] ?? ''}
+                          onChange={event => setModels(current => {
+                            const next = { ...current };
+                            if (event.target.value) next[role.key] = event.target.value;
+                            else delete next[role.key];
+                            return next;
+                          })}
+                          className={CONTROL}
+                        >
+                          <option value="">{t('profileDefault')}</option>
+                          {role.options.map(option => <option key={option} value={option}>{option.replace('MiniMax-Music3-', '')}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                  {Object.keys(models).length > 0 && Object.keys(models).length < 5 && (
+                    <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">{t('componentOverridePartial')}</p>
+                  )}
+                </div>
               </div>
-              <p className="text-[11px] leading-4 text-zinc-500">{t('peakClipHint')}</p>
-            </>
-          ))}
-
-          {section('models', t('componentOverride'), (
-            <>
-              <p className="text-[11px] leading-4 text-zinc-500">{t('componentOverrideHint')}</p>
-              {roles.map(role => (
-                <Field key={role.key} label={role.label}>
-                  <select
-                    value={models[role.key] ?? ''}
-                    onChange={event => setModels(current => {
-                      const next = { ...current };
-                      if (event.target.value) next[role.key] = event.target.value;
-                      else delete next[role.key];
-                      return next;
-                    })}
-                    className={CONTROL}
-                  >
-                    <option value="">{t('profileDefault')}</option>
-                    {role.options.map(option => <option key={option} value={option}>{option.replace('MiniMax-Music3-', '')}</option>)}
-                  </select>
-                </Field>
-              ))}
-              {Object.keys(models).length > 0 && Object.keys(models).length < 5 && (
-                <p className="text-[11px] text-amber-600 dark:text-amber-300">{t('componentOverridePartial')}</p>
-              )}
-            </>
-          ))}
+            )}
+          </div>
 
           <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
             <span>{t('profile')}: <b className="text-zinc-700 dark:text-zinc-200">{profileLabel}</b></span>

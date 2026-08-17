@@ -1187,7 +1187,7 @@ export const ja = {
     arrangementSection: 'アレンジ',
     arrangementPlaceholder: 'Instrument Lifecycle Description … Groove & Foundation Progression: …',
     randomizeSeed: 'シードをランダム化',
-    maxDuration: '最大長さ（秒）',
+    maxDuration: '長さ（秒）',
     maxDurationHint: '目標ではなく上限です。モデルは早く終わることがあります。最大 360 秒。',
     lyricsHint: 'セクションタグは各行に単独で: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]。',
     lmConfiguration: 'LM 設定',

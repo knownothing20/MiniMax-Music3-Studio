@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { API_BASE } from './apiBase';
 import { mapNativeLibrarySong } from './nativeLibrary';
 
 describe('mapNativeLibrarySong', () => {
@@ -29,7 +30,7 @@ describe('mapNativeLibrarySong', () => {
       created_at: '1',
     });
 
-    expect(withAudio.audioUrl).toBe('/v1/library/media/song%20id%2Fwith%20space');
+    expect(withAudio.audioUrl).toBe(`${API_BASE}/v1/library/media/song%20id%2Fwith%20space`);
     expect(withAudio.nativeReplayAvailable).toBe(true);
     expect(withoutAudio.audioUrl).toBeUndefined();
     expect(withoutAudio.nativeReplayAvailable).toBe(false);
