@@ -68,3 +68,19 @@ export function randomExample(): Music3Example {
 }
 
 export const exampleCount = examples.length;
+
+/**
+ * A caption for this model is a labelled document, so showing it raw in a list
+ * subtitle reads as "Global Metadata Basic Attributes: bpm is 118. key is ...".
+ * This keeps the description and drops the scaffolding.
+ */
+export function captionSummary(caption: string): string {
+  const skip = /^(global metadata|vocal details|arrangement)/i;
+  const technical = /(bpm|key|scale|tempo|time signature) is/i;
+  return caption
+    .split(/[\n.]/)
+    .map(part => part.trim())
+    .filter(part => part.length > 0 && !skip.test(part) && !technical.test(part))
+    .join('. ')
+    .trim();
+}

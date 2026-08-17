@@ -6,6 +6,7 @@ import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
 import { updateNativeSong } from '../services/nativeLibrary';
+import { captionSummary } from '../services/examples';
 
 interface SongListProps {
     songs: Song[];
@@ -711,7 +712,7 @@ const SongItem: React.FC<SongItemProps> = ({
                         {song.nativeReplayAvailable && <span title={t('replayAvailable')} className="rounded bg-zinc-200/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide dark:bg-white/10">replay</span>}
                     </div>
                     <p className="text-xs text-zinc-500 dark:text-zinc-500 line-clamp-2 pt-1 font-medium max-w-2xl">
-                        {song.style}
+                        {captionSummary(song.style)}
                     </p>
                     {song.isGenerating && (
                         <div className="pt-2">

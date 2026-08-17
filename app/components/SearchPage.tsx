@@ -4,6 +4,7 @@ import { Song, Playlist } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { GENRE_KEYS } from '../data/genres';
 import { AlbumCover } from './AlbumCover';
+import { captionSummary } from '../services/examples';
 
 /**
  * Local search.
@@ -182,7 +183,7 @@ const SongGrid: React.FC<{
             </span>
           </span>
           <span className="mt-2 block truncate text-sm font-semibold text-zinc-900 dark:text-white">{song.title}</span>
-          <span className="block truncate text-xs text-zinc-500">{song.style}</span>
+          <span className="block truncate text-xs text-zinc-500">{captionSummary(song.style)}</span>
         </button>
       );
     })}

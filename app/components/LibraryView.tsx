@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
 import { useI18n } from '../context/I18nContext';
+import { captionSummary } from '../services/examples';
 
 interface LibraryViewProps {
   allSongs: Song[];
@@ -143,7 +144,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                 
                                 <div className="flex-1 min-w-0">
                                     <div className="text-zinc-900 dark:text-white font-medium truncate">{song.title}</div>
-                                    <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">{song.style}</div>
+                                    <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">{captionSummary(song.style)}</div>
                                 </div>
                                 
                                 <div className="hidden text-sm font-mono text-zinc-500 dark:text-zinc-400 sm:block">{song.duration}</div>
@@ -206,7 +207,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                 
                                 <div className="flex-1 min-w-0">
                                     <div className="text-zinc-900 dark:text-white font-medium truncate">{song.title}</div>
-                                    <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">{song.style}</div>
+                                    <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">{captionSummary(song.style)}</div>
                                 </div>
                                 
                                 <div className="hidden text-sm font-mono text-zinc-500 dark:text-zinc-400 sm:block">{song.duration}</div>
