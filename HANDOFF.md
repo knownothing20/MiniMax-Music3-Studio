@@ -43,6 +43,7 @@ Everything below was executed, not inferred.
 | Engine defaults | Compared with upstream `request_init`: 60 s, 30 steps, seed -1, lm_seed -1, LM CFG 1.5, top-k 50, batches 1, DiT CFG 1.7, peak clip 10, MP3 128 kbps — the studio's quality baseline is identical. |
 | Packaged application | The built desktop executable opens its window, hosts the service in-process, and its own first-run screen starts the engine — which is also the proof that the packaged UI reaches the service. |
 | Localisation | Interface strings resolve through the catalogue in all five shipped languages; only technical identifiers (VRAM, GPU, DiT CFG, WAV/MP3, engine flag names) stay untranslated. |
+| Video export | Rendered end to end from the restored Video Studio: frames captured from the canvas, encoded locally, 2.3 MB MP4 downloaded. |
 | Tests | `cargo test --workspace` — 50 passing. `npm --prefix app run build` and `tsc --noEmit` clean. |
 
 **Not verified:** perceptual audio quality has not been judged here — listen to
@@ -108,7 +109,7 @@ exposed the following, each fixed and committed separately:
 | Model manager, GPU presets, first run | **Carried over and corrected** — five-component profiles, custom component builder, checksum-verified resumable downloads, hardware-aware recommendation, nothing downloaded automatically. |
 | Settings | **Extended** into a real provider matrix: music, speech-to-text, assistant and cover art each independently Local or OpenRouter, cloud models listed only from the live catalog, API key held by the service. |
 | Social profiles, comments, follows, public feed | **Removed.** A single-user desktop studio has no such service; the screens are gone rather than dead. |
-| Video renderer | **Removed** — it required the ACE Node render service. See gaps. |
+| Video Studio | **Restored in full.** The composer is model-independent and is kept exactly as it was: ten visualiser presets, particles, effects, text layers, random picsum backgrounds, Pexels search, album-art placement, live preview. Only the render path changed — frames are assembled by ffmpeg compiled to WebAssembly and shipped with the application, so export is offline. Verified: a rendered track produced a 2.3 MB H.264/AAC MP4. |
 | Stem separation (Demucs) | **Removed** — it required the ACE Node service. See gaps. |
 | LoRA training / adapters lab | **Removed** — ACE adapter formats do not apply to Music3. See gaps. |
 | ACE-only conditioning: repaint, Flow Edit, DCW, audio2audio cover | **Removed** — no Music3 equivalent exists. |
@@ -117,9 +118,6 @@ exposed the following, each fixed and committed separately:
 
 These are absent from the UI rather than present-but-dead:
 
-* **Video renderer.** ACE rendered server-side. A native replacement is
-  plausible with the `@ffmpeg/ffmpeg` dependency already in the app, or with an
-  ffmpeg sidecar; it needs a render pipeline and a job contract.
 * **Stem separation.** Needs a native separator sidecar (BSRoformer.cpp is the
   model Dub Studio uses) plus a job contract.
 * **Music3 adapter training.** Upstream `minimaxmusic.cpp` has a `training/`
