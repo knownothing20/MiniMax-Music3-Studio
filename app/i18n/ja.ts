@@ -1271,4 +1271,9 @@ export const ja = {
     optionalExtrasHint: 'これらがなくても音楽は作れます。必要になったら設定から追加できます。',
     assistantOptionalPurpose: 'アイデアから説明と歌詞を書きます',
     karaokeOptionalPurpose: 'プレイヤーとビデオ用に歌詞のタイミングを付けます',
+    instrumentalHint: 'ボーカルなし: 歌詞は使われません。',
+    stageLm: '段階 1 · 言語モデル',
+    stageLmHint: '曲をオーディオコードとして書きます。CFG は説明への忠実さ、top-k は選択の幅、シードは同じテイクの再現性を決めます。',
+    stageOutput: '段階 3 · 出力',
+    stageOutputHint: 'ボコーダー後にディスクへ書き出す内容: ラウドネス上限、コンテナ、ビットレート。',
 };

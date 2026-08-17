@@ -89,6 +89,77 @@ const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode 
   </label>
 );
 
+/** The toggle used throughout the studio: a real switch, not a tick box. */
+const Switch: React.FC<{ checked: boolean; onChange: (value: boolean) => void; label: string; hint?: string }> = ({ checked, onChange, label, hint }) => (
+  <div className="flex items-center justify-between gap-3">
+    <div className="min-w-0">
+      <span className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</span>
+      {hint && <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">{hint}</p>}
+    </div>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative h-5 w-10 shrink-0 rounded-full transition-colors ${checked ? 'bg-pink-500' : 'bg-zinc-300 dark:bg-zinc-600'}`}
+    >
+      <span className={`absolute top-[2px] h-4 w-4 rounded-full bg-white shadow-sm transition-all ${checked ? 'left-[22px]' : 'left-[2px]'}`} />
+    </button>
+  </div>
+);
+
+/**
+ * A number you drag, with the value beside it.
+ *
+ * An empty field means "engine default", and that has to survive: the slider
+ * shows the default until it is touched, and the reset action puts it back.
+ */
+const SliderRow: React.FC<{
+  label: string;
+  value: string;
+  fallback: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix?: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}> = ({ label, value, fallback, min, max, step, suffix, onChange, disabled }) => {
+  const current = value.trim() === '' ? fallback : Number(value);
+  const shown = Number.isFinite(current) ? current : fallback;
+  const decimals = step < 1 ? String(step).split('.')[1]?.length ?? 1 : 0;
+  return (
+    <div className={disabled ? 'opacity-50' : undefined}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</span>
+        <span className="text-[11px] tabular-nums text-zinc-600 dark:text-zinc-300">
+          {shown.toFixed(decimals)}{suffix ?? ''}
+          {value.trim() === '' && <span className="ml-1 text-zinc-400">·</span>}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={shown}
+        disabled={disabled}
+        onChange={event => onChange(event.target.value)}
+        className="mt-1.5 h-1 w-full cursor-pointer accent-pink-500"
+      />
+    </div>
+  );
+};
+
+/** A group inside Advanced: what this stage is, and what these knobs do. */
+const Stage: React.FC<{ title: string; hint: string; children: React.ReactNode }> = ({ title, hint, children }) => (
+  <section>
+    <h4 className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{title}</h4>
+    <p className="mb-3 mt-0.5 text-[11px] leading-4 text-zinc-500">{hint}</p>
+    {children}
+  </section>
+);
+
 /** A card with a titled header strip, the way the panels are built elsewhere. */
 const Card: React.FC<{ title: string; actions?: React.ReactNode; children: React.ReactNode }> = ({ title, actions, children }) => (
   <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
@@ -412,22 +483,27 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </div>
           )}
 
-          {assistantReady && (
-            <div className="grid grid-cols-2 gap-1 rounded-xl border border-zinc-200 bg-white p-1 dark:border-white/5 dark:bg-suno-card">
-              {(['studio', 'simple'] as const).map(value => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setMode(value)}
-                  className={`rounded-lg py-1.5 text-[11px] font-semibold transition-colors ${mode === value ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'}`}
-                >
-                  {value === 'studio' ? t('studioMode') : t('simpleMode')}
-                </button>
-              ))}
-            </div>
+          <div className="flex items-center rounded-lg border border-zinc-300 bg-zinc-200 p-1 dark:border-white/5 dark:bg-black/40">
+            {(['studio', 'simple'] as const).map(value => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setMode(value)}
+                className={`flex-1 rounded-md py-1.5 text-xs font-semibold transition-all ${mode === value ? 'bg-white text-black shadow-sm dark:bg-zinc-800 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
+              >
+                {value === 'studio' ? t('studioMode') : t('simpleMode')}
+              </button>
+            ))}
+          </div>
+
+          {mode === 'simple' && !assistantReady && (
+            <Card title={t('songIdea')}>
+              <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantNeedsModel')}</p>
+              <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantHint')}</p>
+            </Card>
           )}
 
-          {assistantReady && mode === 'simple' && (
+          {mode === 'simple' && assistantReady && (
             <Card title={t('songIdea')}>
               <AutoTextarea
                 value={assistInstruction}
@@ -484,10 +560,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               <Pane label={t('vocalDetails')} value={vocalDetails} onChange={setVocalDetails} placeholder={t('vocalDetailsPlaceholder')} />
               <Pane label={t('arrangementSection')} value={arrangement} onChange={setArrangement} placeholder={t('arrangementPlaceholder')} />
             </div>
-            <label className="mt-3 flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-              <input type="checkbox" checked={instrumental} onChange={event => setInstrumental(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
-              {t('instrumental')}
-            </label>
+            <div className="mt-3 border-t border-zinc-100 pt-3 dark:border-white/5">
+              <Switch checked={instrumental} onChange={setInstrumental} label={t('instrumental')} hint={t('instrumentalHint')} />
+            </div>
           </Card>
 
           <Card
@@ -525,36 +600,67 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               </button>
             }
           >
-            <div className="grid grid-cols-3 items-end gap-2">
-              <Field label={t('maxDuration')}>
-                <input value={duration} onChange={event => setDuration(event.target.value)} placeholder={placeholder('duration')} inputMode="decimal" className={CONTROL} />
-              </Field>
-              <Field label={t('ditSteps')}>
-                <input value={steps} onChange={event => setSteps(event.target.value)} placeholder={placeholder('steps')} inputMode="numeric" className={CONTROL} />
-              </Field>
-              <Field label={t('cfgScale')}>
-                <input value={ditCfg} onChange={event => setDitCfg(event.target.value)} placeholder={placeholder('dit_cfg')} inputMode="decimal" className={CONTROL} />
-              </Field>
+            <div className="space-y-3">
+              <SliderRow
+                label={t('maxDuration')}
+                value={duration}
+                fallback={Number(defaults.duration ?? 60)}
+                min={10}
+                max={MAX_DURATION_SECONDS}
+                step={5}
+                suffix=" s"
+                onChange={setDuration}
+              />
+              <p className="text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
+              <SliderRow
+                label={t('ditSteps')}
+                value={steps}
+                fallback={Number(defaults.steps ?? 30)}
+                min={8}
+                max={80}
+                step={1}
+                onChange={setSteps}
+              />
+              <SliderRow
+                label={t('cfgScale')}
+                value={ditCfg}
+                fallback={Number(defaults.dit_cfg ?? 1.7)}
+                min={1}
+                max={5}
+                step={0.1}
+                onChange={setDitCfg}
+              />
             </div>
-            <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
 
-            <div className="mt-3 grid grid-cols-3 items-end gap-2 border-t border-zinc-100 pt-3 dark:border-white/5">
-              <Field label={t('lmBatch')}>
-                <input value={lmBatch} onChange={event => setLmBatch(event.target.value)} placeholder={placeholder('lm_batch_size')} inputMode="numeric" disabled={maxSongs === 1} className={CONTROL} />
-              </Field>
-              <Field label={t('variationsBatch')}>
-                <input value={synthBatch} onChange={event => setSynthBatch(event.target.value)} placeholder={placeholder('synth_batch_size')} inputMode="numeric" className={CONTROL} />
-              </Field>
-              <Field label={t('seedShort')}>
-                <input value={seed} onChange={event => setSeed(event.target.value)} placeholder={randomizeSeed ? '—' : placeholder('seed')} inputMode="numeric" disabled={randomizeSeed} className={CONTROL} />
-              </Field>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-              <label className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-                <input type="checkbox" checked={randomizeSeed} onChange={event => setRandomizeSeed(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
-                {t('randomizeSeed')}
-              </label>
-              {totalTracks > 1 && <span className="text-[11px] text-zinc-500">{t('renderCountPrefix')} <b className="text-zinc-700 dark:text-zinc-200">{totalTracks}</b></span>}
+            <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 dark:border-white/5">
+              <SliderRow
+                label={t('lmBatch')}
+                value={lmBatch}
+                fallback={Number(defaults.lm_batch_size ?? 1)}
+                min={1}
+                max={Math.max(1, maxSongs)}
+                step={1}
+                disabled={maxSongs === 1}
+                onChange={setLmBatch}
+              />
+              <SliderRow
+                label={t('variationsBatch')}
+                value={synthBatch}
+                fallback={Number(defaults.synth_batch_size ?? 1)}
+                min={1}
+                max={4}
+                step={1}
+                onChange={setSynthBatch}
+              />
+              <Switch checked={randomizeSeed} onChange={setRandomizeSeed} label={t('randomizeSeed')} />
+              {!randomizeSeed && (
+                <Field label={t('seedShort')}>
+                  <input value={seed} onChange={event => setSeed(event.target.value)} placeholder={placeholder('seed')} inputMode="numeric" className={CONTROL} />
+                </Field>
+              )}
+              {totalTracks > 1 && (
+                <p className="text-[11px] text-zinc-500">{t('renderCountPrefix')} <b className="text-zinc-700 dark:text-zinc-200">{totalTracks}</b></p>
+              )}
             </div>
             {maxSongs === 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('maxBatchHint')}</p>}
           </Card>
@@ -570,17 +676,26 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </button>
             {showAdvanced && (
               <div className="space-y-4 border-t border-zinc-100 p-3 dark:border-white/5">
-                <div>
-                  <span className={LABEL}>{t('advancedLm')}</span>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Field label={t('cfgScale')}>
-                      <input value={lmCfg} onChange={event => setLmCfg(event.target.value)} placeholder={placeholder('lm_cfg')} inputMode="decimal" className={CONTROL} />
-                    </Field>
-                    <Field label={t('topK')}>
-                      <input value={lmTopK} onChange={event => setLmTopK(event.target.value)} placeholder={placeholder('lm_top_k')} inputMode="numeric" className={CONTROL} />
-                    </Field>
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
+                <Stage title={t('stageLm')} hint={t('stageLmHint')}>
+                  <div className="space-y-3">
+                    <SliderRow
+                      label={t('cfgScale')}
+                      value={lmCfg}
+                      fallback={Number(defaults.lm_cfg ?? 1.5)}
+                      min={1}
+                      max={5}
+                      step={0.1}
+                      onChange={setLmCfg}
+                    />
+                    <SliderRow
+                      label={t('topK')}
+                      value={lmTopK}
+                      fallback={Number(defaults.lm_top_k ?? 50)}
+                      min={1}
+                      max={200}
+                      step={1}
+                      onChange={setLmTopK}
+                    />
                     <Field label={t('lmSeedShort')}>
                       <input value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={placeholder('lm_seed')} inputMode="numeric" className={CONTROL} />
                     </Field>
@@ -588,16 +703,24 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                   <Field label={t('audioCodes')} hint={t('audioCodesHint')}>
                     <textarea value={audioCodes} onChange={event => setAudioCodes(event.target.value)} rows={3} className={`${CONTROL} mt-2 resize-y font-mono text-[11px]`} />
                   </Field>
-                </div>
+                </Stage>
 
-                <div className="border-t border-zinc-100 pt-3 dark:border-white/5">
-                  <span className={LABEL}>{t('postProcessing')}</span>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Field label={t('peakClipLabel')}>
-                      <input value={peakClip} onChange={event => setPeakClip(event.target.value)} placeholder={placeholder('peak_clip')} inputMode="numeric" className={CONTROL} />
-                    </Field>
+                <div className="border-t border-zinc-100 pt-4 dark:border-white/5">
+                  <Stage title={t('stageOutput')} hint={t('stageOutputHint')}>
+                  <SliderRow
+                    label={t('peakClipLabel')}
+                    value={peakClip}
+                    fallback={Number(defaults.peak_clip ?? 10)}
+                    min={0}
+                    max={30}
+                    step={1}
+                    onChange={setPeakClip}
+                  />
+                  <div className="mt-3 grid grid-cols-2 gap-2">
                     <Field label={t('mp3Bitrate')}>
-                      <input value={mp3Bitrate} onChange={event => setMp3Bitrate(event.target.value)} placeholder={placeholder('mp3_bitrate')} inputMode="numeric" disabled={format !== 'mp3'} className={CONTROL} />
+                      <select value={mp3Bitrate || String(defaults.mp3_bitrate ?? 128)} onChange={event => setMp3Bitrate(event.target.value)} disabled={format !== 'mp3'} className={CONTROL}>
+                        {['128', '192', '256', '320'].map(rate => <option key={rate} value={rate}>{rate} kbps</option>)}
+                      </select>
                     </Field>
                     <Field label={t('outputFormat')}>
                       <select value={format} onChange={event => setFormat(event.target.value as Music3Request['output_format'])} className={CONTROL}>
@@ -609,11 +732,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                     </Field>
                   </div>
                   <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('peakClipHint')}</p>
+                  </Stage>
                 </div>
 
-                <div className="border-t border-zinc-100 pt-3 dark:border-white/5">
-                  <span className={LABEL}>{t('componentOverride')}</span>
-                  <p className="mb-2 text-[11px] leading-4 text-zinc-500">{t('componentOverrideHint')}</p>
+                <div className="border-t border-zinc-100 pt-4 dark:border-white/5">
+                  <Stage title={t('componentOverride')} hint={t('componentOverrideHint')}>
                   <div className="space-y-2">
                     {roles.map(role => (
                       <div key={role.key} className="grid grid-cols-[64px_1fr] items-center gap-2">
@@ -637,6 +760,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                   {Object.keys(models).length > 0 && Object.keys(models).length < 5 && (
                     <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">{t('componentOverridePartial')}</p>
                   )}
+                  </Stage>
                 </div>
               </div>
             )}

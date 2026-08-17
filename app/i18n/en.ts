@@ -1276,4 +1276,9 @@ export const en = {
     optionalExtrasHint: 'The studio makes music without any of these. Add them later from Settings if you want them.',
     assistantOptionalPurpose: 'Writes the description and lyrics from an idea',
     karaokeOptionalPurpose: 'Times the lyrics for the player and the video studio',
+    instrumentalHint: 'No vocals: the lyrics are ignored.',
+    stageLm: 'Stage 1 · language model',
+    stageLmHint: 'Writes the song as audio codes. CFG holds it to the description, top-k widens or narrows its choices, and the seed makes the same take repeatable.',
+    stageOutput: 'Stage 3 · output',
+    stageOutputHint: 'What is written to disk after the vocoder: loudness ceiling, container and bitrate.',
 };

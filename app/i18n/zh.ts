@@ -1271,4 +1271,9 @@ export const zh = {
     optionalExtrasHint: '没有这些工作室也能生成音乐。需要时可稍后在设置中添加。',
     assistantOptionalPurpose: '根据创意撰写描述与歌词',
     karaokeOptionalPurpose: '为播放器与视频生成歌词时间轴',
+    instrumentalHint: '纯音乐：忽略歌词。',
+    stageLm: '阶段 1 · 语言模型',
+    stageLmHint: '以音频码写出歌曲。CFG 让它更贴近描述，top-k 调整取样范围，种子让同一次演绎可复现。',
+    stageOutput: '阶段 3 · 输出',
+    stageOutputHint: '经声码器后写入磁盘的内容：响度上限、容器与码率。',
 };

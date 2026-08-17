@@ -18,6 +18,7 @@ base64.workspace = true
 axum.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
+include_dir.workspace = true
 music-core = { path = "../music-core" }
 music-engine = { path = "../music-engine" }
 reqwest.workspace = true

@@ -1271,4 +1271,9 @@ export const ko = {
     optionalExtrasHint: '이것들이 없어도 음악은 만들어집니다. 필요하면 나중에 설정에서 추가하세요.',
     assistantOptionalPurpose: '아이디어로 설명과 가사를 씁니다',
     karaokeOptionalPurpose: '플레이어와 비디오용으로 가사 타이밍을 만듭니다',
+    instrumentalHint: '보컬 없음: 가사는 사용되지 않습니다.',
+    stageLm: '1단계 · 언어 모델',
+    stageLmHint: '곡을 오디오 코드로 씁니다. CFG 는 설명 충실도, top-k 는 선택 폭, 시드는 같은 테이크의 재현성을 정합니다.',
+    stageOutput: '3단계 · 출력',
+    stageOutputHint: '보코더 이후 디스크에 기록되는 것: 음량 상한, 컨테이너, 비트레이트.',
 };

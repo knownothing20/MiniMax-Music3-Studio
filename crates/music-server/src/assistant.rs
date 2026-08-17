@@ -18,13 +18,15 @@ use serde_json::Value;
 
 /// The caption contract, transcribed from MiniMax's official demo so the three
 /// fields carry exactly the labelled structure the model expects.
-const CAPTION_CONTRACT: &str = r#"The three caption fields follow the exact labeled style the model was trained on. Be concrete and musical; describe an energy arc and instrument lifecycles, never a static equipment list or decorative adjectives. Never contradict an explicit user constraint: instrumental stays instrumental; never reverse a required vocal gender, tempo limit, required instrument, or exclusion. Do not quote or paraphrase lyric lines inside the caption. Total caption length roughly 250-400 words.
+const CAPTION_CONTRACT: &str = r#"The three caption fields follow the exact labeled style the model was trained on, and the rules below are MiniMax's own, from the music-caption-rewriter skill they publish with the model.
 
-global_metadata: one paragraph, in order: "Basic Attributes: bpm is <number>. key is <letter>, and scale is <major|minor>. <Genre / Subgenre>." then "Global Emotional Progression: <how the emotion evolves from the opening through the final section>." then "Application Scenarios & Imagery: <two or three vivid listening scenarios>." then "Sonics & Production Profile: <soundstage, frequency balance, dynamics, production character>."
+Be concrete and musical: describe an energy arc and instrument lifecycles, never a static equipment list or decorative adjectives. Preserve every explicit user constraint - an instrumental request stays instrumental, and a required vocal gender, tempo limit, required instrument or exclusion is never reversed. Do not invent a precise key, BPM, vocal gender or production technique when a broader description is sufficient; use a range or a qualitative tempo instead. Never quote, paraphrase or summarise a lyric line inside the caption, and never include a song title or track id. Total caption length roughly 250-450 English words. Write in English unless the user explicitly asks for another language.
 
-vocal_details: one paragraph: "Vocal Gender & Timbre: Singer A (<Male|Female>), <timbre and register>." then "Vocal Style: <delivery, and how it shifts per section>." then "Harmony/Backing Vocals: <where harmonies or doubles appear and their character>." then "Vocal FX: <restrained treatment: reverb, delay, light compression>." For instrumental pieces write "Instrumental, no vocals." and name the instrument or texture carrying the lead melodic role.
+global_metadata: genre and subgenres, tempo, emotional progression, and the overall sonic and production profile, in this order: "Basic Attributes: bpm is <number or range>. key is <letter>, and scale is <major|minor>. <Genre / Subgenre>." then "Global Emotional Progression: <how the emotion evolves from the opening through the final section>." then "Application Scenarios & Imagery: <two or three vivid listening scenarios>." then "Sonics & Production Profile: <soundstage, frequency balance, dynamics, production character>." Include key and scale only when explicit or musically useful.
 
-arrangement: one paragraph: "Instrument Lifecycle Description (Primary/Secondary Layering): Primary: <core instruments present start to finish and their role>. Secondary: <instruments that enter, exit or intensify, and in which sections>." then "Groove & Foundation Progression: <how drums, bass and groove develop across sections>." then "Embellishments, Textures & Spatial FX: <fills, textures, transitional gestures, stereo and space treatment where relevant>." State what enters, exits, changes or intensifies for every section of the song, aligned with the lyric section tags."#;
+vocal_details: for vocal music describe the lead configuration, timbre, register, delivery, harmony or backing vocals and restrained vocal effects: "Vocal Gender & Timbre: Singer A (<Male|Female>), <timbre and register>." then "Vocal Style: <delivery, and how it shifts per section>." then "Harmony/Backing Vocals: <where harmonies or doubles appear and their character>." then "Vocal FX: <restrained treatment: reverb, delay, light compression>." For instrumental music state that the piece is instrumental and name the instrument or texture carrying the lead melodic role. Do not invent lyrical subject matter.
+
+arrangement: the song as a section-by-section timeline: "Instrument Lifecycle Description (Primary/Secondary Layering): Primary: <core instruments present start to finish and their role>. Secondary: <instruments that enter, exit or intensify, and in which sections>." then "Groove & Foundation Progression: <how drums, bass and groove develop across sections>." then "Embellishments, Textures & Spatial FX: <fills, textures, transitional gestures, stereo and space treatment where relevant>." For every section say what enters, exits, changes or intensifies, aligned with the lyric section tags, and keep transitions musically plausible. Prefer concrete musical changes over decorative prose."#;
 
 /// The lyric rules, likewise transcribed: the tag vocabulary and the structure
 /// sizing are what keep the sung result aligned with the requested length.
@@ -113,6 +115,29 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
 
 /// The user message, carrying whichever side of the song already exists so the
 /// two halves stay coherent.
+/// Complete reference captions from MiniMax's own template library, chosen by
+/// the skill's genre router. The skill's whole method is to show the model
+/// two or three captions from the right family rather than describe the style
+/// in the abstract.
+fn references_for(request: &AssistRequest) -> String {
+    let brief = format!("{} {} {}", request.description, request.instruction, request.global_metadata);
+    let references = crate::skill::references(&brief);
+    if references.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from("
+
+Reference captions from MiniMax's own library, in the style family this request routes to. Use them for musical identity, section logic and level of detail. Do not copy their sentences, key, bpm, instruments or story - write a new caption for this request.
+");
+    for (index, reference) in references.iter().enumerate() {
+        block.push_str(&format!("
+--- reference {} ---
+{}
+", index + 1, reference.trim()));
+    }
+    block
+}
+
 pub fn user_message(request: &AssistRequest) -> String {
     let instruction = request.instruction.trim();
     let description = request.description.trim();
@@ -203,6 +228,25 @@ pub fn content_of(response: &Value) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The published rules must reach the model itself, whichever provider is
+    /// answering: the same system message is what `chat_body` sends to a local
+    /// sidecar, to a server the user runs, or to OpenRouter.
+    #[test]
+    fn minimax_own_caption_rules_are_in_the_request_that_goes_out() {
+        for target in [AssistTarget::All, AssistTarget::Prompt] {
+            let mut sample = request(target);
+            sample.target = target;
+            let (system, _) = instructions(&sample);
+            assert!(system.contains("music-caption-rewriter"), "the skill is not cited for {target:?}");
+            assert!(system.contains("Global Emotional Progression"), "caption shape missing for {target:?}");
+            assert!(system.contains("250-450"), "length rule missing for {target:?}");
+
+            let body = chat_body("any-model", &system, "idea");
+            let sent = body["messages"][0]["content"].as_str().unwrap_or_default();
+            assert!(sent.contains("Instrument Lifecycle Description"), "the contract never reached the body");
+        }
+    }
 
     #[test]
     fn an_answer_that_arrives_as_reasoning_is_still_an_answer() {

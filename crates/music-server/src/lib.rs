@@ -8,6 +8,7 @@ mod credentials;
 mod model_manager;
 mod presets;
 mod resources;
+mod skill;
 mod library;
 mod mm_result;
 mod openrouter_stream;
