@@ -2,6 +2,7 @@ mod providers;
 mod credentials;
 mod model_manager;
 mod presets;
+mod resources;
 mod library;
 mod mm_result;
 mod openrouter_stream;
@@ -266,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/engine/presets", get(engine_presets))
         .route("/engine/preset", post(apply_engine_preset))
         .route("/v1/engine/logs", get(engine_logs))
+        .route("/v1/system/resources", get(system_resources))
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
@@ -275,6 +277,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/library/import", post(import_library_audio))
         .route("/v1/library/songs/{id}", get(library_song).put(update_library_song).delete(delete_library_song))
         .route("/v1/library/media/{song_id}", get(library_media))
+        .route("/v1/library/songs/{id}/cover", get(library_cover).put(store_library_cover))
         .route("/v1/library/playlists", get(library_playlists).post(create_library_playlist))
         .route("/v1/library/playlists/{id}", get(library_playlist).put(update_library_playlist).delete(delete_library_playlist))
         .route("/setup/status", get(setup_status))
@@ -353,6 +356,45 @@ fn parse_single_byte_range(value: &str, total: usize) -> Option<(usize, usize)> 
     let end = if end.is_empty() { total - 1 } else { end.parse::<usize>().ok()?.min(total - 1) };
     (end >= start).then_some((start, end))
 }
+#[derive(Debug, Deserialize)]
+struct StoreCoverRequest {
+    /// Raw base64 image bytes, without a data-URL prefix.
+    image_base64: String,
+    media_type: String,
+}
+
+/// Cover art is Studio-side metadata: a track keeps working without one, so a
+/// missing cover is a 404 the UI answers with its generated placeholder art
+/// rather than an error state.
+async fn library_cover(State(state): State<AppState>, Path(id): Path<String>) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let song = state.library.get_song(&id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
+    let (path, media_type) = state.library.cover_path_for_song(&song).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "This song has no stored cover image".into()))?;
+    let bytes = tokio::fs::read(&path).await.map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read cover: {error}")))?;
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, media_type)
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(bytes))
+        .expect("valid cover response"))
+}
+
+async fn store_library_cover(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<StoreCoverRequest>,
+) -> Result<Json<library::Song>, (StatusCode, Json<ApiError>)> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let image = STANDARD
+        .decode(request.image_base64.trim())
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, format!("cover image is not valid base64: {error}")))?;
+    state
+        .library
+        .store_song_cover(&id, &image, &request.media_type)
+        .map(Json)
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))
+}
+
 async fn create_library_song(State(state):State<AppState>,Json(input):Json<library::SongInput>)->Result<(StatusCode,Json<library::Song>),(StatusCode,Json<ApiError>)>{state.library.create_song(input).map(|s|(StatusCode::CREATED,Json(s))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))}
 async fn import_library_audio(State(state): State<AppState>, mut multipart: Multipart) -> Result<(StatusCode, Json<library::Song>), (StatusCode, Json<ApiError>)> {
     let mut title = None; let mut caption = String::new(); let mut lyrics = String::new(); let mut audio = None; let mut filename = None;
@@ -654,6 +696,18 @@ async fn engine_logs(State(state): State<AppState>) -> Result<Json<Value>, (Stat
         .await
         .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("mm-server logs are unavailable: {error}")))?;
     Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "lines": lines })))
+}
+
+/// Live machine resources. ACE Studio's resource readout is kept, but every
+/// value now comes from a real measurement on this machine.
+async fn system_resources() -> Json<Value> {
+    let snapshot = tokio::task::spawn_blocking(resources::snapshot)
+        .await
+        .unwrap_or_else(|_| resources::snapshot());
+    Json(serde_json::json!({
+        "poll_interval_ms": resources::SUGGESTED_INTERVAL.as_millis() as u64,
+        "resources": snapshot,
+    }))
 }
 
 async fn openrouter_settings() -> Json<Value> {

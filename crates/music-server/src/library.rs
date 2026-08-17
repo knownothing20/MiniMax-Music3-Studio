@@ -61,6 +61,38 @@ impl Library {
   if let Err(error)=self.save_song(&song){let _=fs::remove_file(&target);return Err(error.context("store imported song record"));}
   Ok(ImportedSong{song,audio_filename:filename})
  }
+ /// Stores a cover image next to the track audio and records its filename in
+ /// the song metadata. Covers are a Studio-side concept: the engine never sees
+ /// them, so they are stored as plain media rather than in the request record.
+ pub fn store_song_cover(&self,id:&str,image:&[u8],media_type:&str)->Result<Song>{
+  if image.is_empty(){anyhow::bail!("cannot store an empty cover image")}
+  let extension=match media_type.trim().to_ascii_lowercase().as_str(){
+   "image/png"=>"png","image/jpeg"|"image/jpg"=>"jpg","image/webp"=>"webp",
+   other=>anyhow::bail!("unsupported cover media type '{other}'; use PNG, JPEG or WebP"),
+  };
+  let Some(mut song)=self.get_song(id)? else{anyhow::bail!("song not found")};
+  fs::create_dir_all(&self.media_dir).with_context(||format!("create media directory {}",self.media_dir.display()))?;
+  let filename=format!("{id}-cover.{extension}");
+  let target=self.media_dir.join(&filename);
+  let temporary=self.media_dir.join(format!("{filename}.part"));
+  {let mut file=fs::OpenOptions::new().create(true).write(true).truncate(true).open(&temporary)?;use std::io::Write;file.write_all(image)?;file.sync_all()?;}
+  fs::rename(&temporary,&target).with_context(||format!("publish cover {}",target.display()))?;
+  let previous=song.metadata.get("cover_filename").and_then(|v|v.as_str()).map(str::to_owned);
+  if song.metadata.is_null(){song.metadata=serde_json::json!({})}
+  if let Some(fields)=song.metadata.as_object_mut(){
+   fields.insert("cover_filename".into(),serde_json::Value::String(filename.clone()));
+   fields.insert("cover_media_type".into(),serde_json::Value::String(format!("image/{}",if extension=="jpg"{"jpeg"}else{extension})));
+  }
+  song.updated_at=now();
+  if let Err(error)=self.save_song(&song){let _=fs::remove_file(&target);return Err(error.context("store song cover record"))}
+  if let Some(previous)=previous.filter(|previous|previous!=&filename){let _=fs::remove_file(self.media_dir.join(previous));}
+  Ok(song)
+ }
+ pub fn cover_path_for_song(&self,song:&Song)->Option<(PathBuf,String)>{
+  let filename=song.metadata.get("cover_filename")?.as_str()?;
+  let media_type=song.metadata.get("cover_media_type").and_then(|v|v.as_str()).unwrap_or("image/png").to_owned();
+  self.media_file(filename).map(|path|(path,media_type))
+ }
  pub fn media_file(&self,filename:&str)->Option<PathBuf>{if filename.is_empty()||filename.contains(['/', '\\'])||Path::new(filename).file_name().and_then(|x|x.to_str())!=Some(filename){return None}let path=self.media_dir.join(filename);path.is_file().then_some(path)}
  pub fn media_path_for_song(&self,song:&Song)->Option<PathBuf>{let candidate=PathBuf::from(song.audio_path.as_ref()?);let root=self.media_dir.canonicalize().ok()?;let resolved=candidate.canonicalize().ok()?;resolved.starts_with(root).then_some(resolved)}
  pub fn update_song(&self,id:&str,input:SongInput)->Result<Option<Song>>{let Some(mut song)=self.get_song(id)? else{return Ok(None)};song.title=input.title;if input.audio_path.is_some(){song.audio_path=input.audio_path};song.caption=input.caption;song.lyrics=input.lyrics;song.metadata=input.metadata;song.generation_settings=input.generation_settings;song.engine_id=input.engine_id;song.profile_id=input.profile_id;if input.replay_request.is_some(){song.replay_request=input.replay_request};if input.audio_codes.is_some(){song.audio_codes=input.audio_codes};song.source=input.source;song.updated_at=now();self.save_song(&song)?;Ok(Some(song))}
