@@ -5,6 +5,7 @@ import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
 import { ProviderSettings } from './ProviderSettings';
 import { EngineSettings } from './EngineSettings';
+import { AssistantSettings } from './AssistantSettings';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -80,6 +81,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                     <div className="space-y-4">
                         <div className="pl-7"><EngineSettings /></div>
                     </div>
+
+                    <AssistantSettings />
 
                     {/* Language Section */}
                     <div className="space-y-4">
