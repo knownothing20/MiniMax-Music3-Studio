@@ -1,19 +1,29 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, CircleAlert, Loader2, Music2, Settings2, Sparkles, Square, Terminal, Wand2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, RotateCcw, Save, Sparkles, Square, Wand2 } from 'lucide-react';
 import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
+import { joinCaption, randomExample, splitCaption } from '../services/examples';
 
 /**
- * The Music3 authoring panel.
+ * The Music3 request form.
  *
- * Every control here maps to a real field of the request the pinned
- * minimaxmusic.cpp accepts — nothing is decorative. The engine's own defaults
- * (60 s, 30 steps, LM CFG 1.5, top-k 50, DiT CFG 1.7, peak clip 10, MP3 128k)
- * are the quality baseline, and "Reset" returns to exactly those values.
+ * The layout follows what every implementation of this model agrees on — the
+ * reference client shipped with the engine, ComfyUI's native nodes and MiniMax's
+ * own model card:
  *
- * The caption/lyrics assistant is optional and cloud-only: it is enabled only
- * when a catalog-verified OpenRouter text model is configured, because there is
- * no local language model in this build.
+ *   * the request is grouped by pipeline stage: prompt, LM configuration, flow
+ *     matching, post-processing, components;
+ *   * a field left empty means "use the engine default", which is shown as the
+ *     placeholder, so the submitted request stays sparse;
+ *   * the caption is a structured document — Global Metadata, Vocal Details,
+ *     Arrangement — not a one-line prompt, and the lyrics carry bracketed
+ *     section tags;
+ *   * duration is a *maximum*: the model may end the song earlier.
+ *
+ * Writing that caption from a one-line idea is a text-LLM job, which this model
+ * cannot do — its own language model emits audio codes. Every project solves it
+ * with a separate text model, so the assistant here is an optional extra, never
+ * the primary way in.
  */
 
 interface CreatePanelProps {
@@ -23,300 +33,310 @@ interface CreatePanelProps {
   initialData?: { song: Song; timestamp: number } | null;
 }
 
-type EngineCatalog = {
-  models?: { lm?: string[]; depth?: string[]; cond?: string[]; dit?: string[]; vae?: string[] };
-};
-
-type ComponentOverrides = {
-  lm_model?: string;
-  depth_model?: string;
-  cond_model?: string;
-  dit_model?: string;
-  vae_model?: string;
-};
+type EngineDefaults = Partial<Record<string, number | string>>;
 
 type SetupStatus = {
   ready?: boolean;
   engine_ready?: boolean;
   selected_profile_id?: string | null;
   selected_component_ids?: string[] | null;
-  recommended_profile_id?: string;
   effective_max_batch?: number;
-  hardware?: { gpuName?: string; totalVramGb?: number; recommended?: string; reason?: string };
+  hardware?: { reason?: string };
 };
 
-/** Upstream `request_init` defaults — the quality baseline, not a guess. */
-const QUALITY = {
-  duration: 60,
-  steps: 30,
-  lmCfg: 1.5,
-  topK: 50,
-  ditCfg: 1.7,
-  lmBatch: 1,
-  synthBatch: 1,
-  peakClip: 10,
-  mp3Bitrate: 128,
-} as const;
+type EngineCatalog = {
+  defaults?: EngineDefaults;
+  models?: { lm?: string[]; depth?: string[]; cond?: string[]; dit?: string[]; vae?: string[] };
+};
+
+/** 9000 acoustic frames at 25 frames per second, as the model card states. */
+const MAX_DURATION_SECONDS = 360;
+/** The tokenized caption + lyrics budget the engine enforces at submit. */
+const MAX_PROMPT_TOKENS = 5000;
 
 const PROFILE_LABEL: Record<string, string> = {
-  native: 'Full Native (BF16/BF16/F32)',
+  native: 'Full Native',
   'quality-q8': 'Q8 Quality',
   balanced: 'Balanced',
-  'recommended-light': 'Light (low VRAM / speed)',
+  'recommended-light': 'Light',
 };
 
 const CONTROL =
-  'w-full rounded-lg border border-zinc-200 bg-zinc-50 p-2.5 text-sm text-zinc-900 outline-none focus:border-pink-500 dark:border-white/10 dark:bg-black/20 dark:text-white';
+  'w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition-colors focus:border-pink-500 disabled:opacity-50 dark:border-white/10 dark:bg-black/25 dark:text-white';
+const CARD = 'rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card';
+const LABEL = 'mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400';
+const TOOL =
+  'inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-2.5 py-1.5 text-[11px] font-semibold text-zinc-600 transition-colors hover:border-pink-400 hover:text-pink-600 dark:border-white/10 dark:text-zinc-300';
 
-const TEMPLATES = [
-  {
-    label: 'Pop',
-    caption: 'Modern emotional pop song, polished production, memorable chorus, warm female lead vocal',
-    lyrics: '[Verse]\nI was lost in the city lights\nLooking for a way back home\n\n[Chorus]\nHold on, we are not alone\nTonight our hearts will find the way',
-  },
-  {
-    label: 'Electronic',
-    caption: 'Cinematic melodic electronic track, driving four-on-the-floor beat, wide synths, nocturnal atmosphere, male vocal',
-    lyrics: '[Verse]\nNeon on the empty street\nThe night is moving to the beat\n\n[Chorus]\nWe run into the afterglow\nWhere only dreamers ever go',
-  },
-  {
-    label: 'Rock',
-    caption: 'Energetic alternative rock, live drums, distorted guitars, anthemic male vocal, dynamic chorus',
-    lyrics: '[Verse]\nDust on my shoes, fire in my veins\nI learned to dance through all the rain\n\n[Chorus]\nTurn it up, let the whole world know\nWe are alive and we will not let go',
-  },
-];
+const numberOrUndefined = (value: string): number | undefined => {
+  const trimmed = value.trim();
+  if (trimmed === '') return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+/** A rough token estimate, only used to warn before the engine rejects it. */
+const estimateTokens = (text: string) => Math.ceil(text.trim().length / 3.6);
+
+const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
+  <label className="block">
+    <span className={LABEL}>{label}</span>
+    {children}
+    {hint && <span className="mt-1 block text-[11px] leading-4 text-zinc-500">{hint}</span>}
+  </label>
+);
 
 export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerating, activeJobCount = 0, initialData }) => {
   const { t } = useI18n();
-  const [mode, setMode] = useState<'simple' | 'manual'>('simple');
-  const [caption, setCaption] = useState('');
+
+  const [name, setName] = useState('');
+  // The caption is three labelled panes, the way the model was trained and the
+  // way MiniMax's own demo edits it.
+  const [globalMetadata, setGlobalMetadata] = useState('');
+  const [vocalDetails, setVocalDetails] = useState('');
+  const [arrangement, setArrangement] = useState('');
   const [lyrics, setLyrics] = useState('');
-  const [title, setTitle] = useState('');
-  const [idea, setIdea] = useState('');
+  const [instrumental, setInstrumental] = useState(false);
+  const [randomizeSeed, setRandomizeSeed] = useState(true);
 
-  const [duration, setDuration] = useState<number>(QUALITY.duration);
-  const [steps, setSteps] = useState<number>(QUALITY.steps);
-  const [lmCfg, setLmCfg] = useState<number>(QUALITY.lmCfg);
-  const [topK, setTopK] = useState<number>(QUALITY.topK);
-  const [ditCfg, setDitCfg] = useState<number>(QUALITY.ditCfg);
-  const [lmBatch, setLmBatch] = useState<number>(QUALITY.lmBatch);
-  const [synthBatch, setSynthBatch] = useState<number>(QUALITY.synthBatch);
-  const [peakClip, setPeakClip] = useState<number>(QUALITY.peakClip);
-  const [mp3Bitrate, setMp3Bitrate] = useState<number>(QUALITY.mp3Bitrate);
-  const [format, setFormat] = useState<Music3Request['output_format']>('mp3');
-  const [seed, setSeed] = useState('');
+  // Parameters are strings so an empty field can mean "engine default".
+  const [duration, setDuration] = useState('');
+  const [lmBatch, setLmBatch] = useState('');
   const [lmSeed, setLmSeed] = useState('');
+  const [lmCfg, setLmCfg] = useState('');
+  const [lmTopK, setLmTopK] = useState('');
+  const [audioCodes, setAudioCodes] = useState('');
+  const [steps, setSteps] = useState('');
+  const [ditCfg, setDitCfg] = useState('');
+  const [synthBatch, setSynthBatch] = useState('');
+  const [seed, setSeed] = useState('');
+  const [peakClip, setPeakClip] = useState('');
+  const [mp3Bitrate, setMp3Bitrate] = useState('');
+  const [format, setFormat] = useState<Music3Request['output_format']>('mp3');
+  const [models, setModels] = useState<Record<string, string>>({});
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showLogs, setShowLogs] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
-  const [assistantModel, setAssistantModel] = useState<string | null>(null);
-  const [engineCatalog, setEngineCatalog] = useState<EngineCatalog | null>(null);
-  const [overrides, setOverrides] = useState<ComponentOverrides>({});
-  const [assisting, setAssisting] = useState(false);
+  const [catalog, setCatalog] = useState<EngineCatalog | null>(null);
+  const [assistantReady, setAssistantReady] = useState(false);
+  const [assisting, setAssisting] = useState<'all' | 'lyrics' | 'prompt' | null>(null);
+  const [openSection, setOpenSection] = useState<string | null>(null);
+  const [mode, setMode] = useState<'simple' | 'studio'>('studio');
+  const [assistInstruction, setAssistInstruction] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const promptFile = useRef<HTMLInputElement | null>(null);
 
   const ready = setup?.ready === true && setup?.engine_ready === true;
+  const defaults = catalog?.defaults ?? {};
+  const placeholder = (key: string) => (defaults[key] === undefined ? '' : String(defaults[key]));
+  const maxSongs = Math.max(1, setup?.effective_max_batch ?? 1);
+  const caption = joinCaption(globalMetadata, vocalDetails, arrangement);
+  const promptTokens = estimateTokens(caption) + estimateTokens(lyrics);
+
   const profileLabel = useMemo(() => {
-    if (setup?.selected_component_ids?.length) return 'Custom component set';
+    if (setup?.selected_component_ids?.length) return t('customSet');
     const id = setup?.selected_profile_id;
-    if (!id) return 'no profile selected';
-    return PROFILE_LABEL[id] ?? id;
-  }, [setup]);
+    return id ? PROFILE_LABEL[id] ?? id : '—';
+  }, [setup, t]);
 
   const refreshSetup = useCallback(async () => {
     const response = await fetch('/setup/status');
-    if (!response.ok) throw new Error(`Local engine status is unavailable (${response.status})`);
+    if (!response.ok) throw new Error(String(response.status));
     setSetup(await response.json());
   }, []);
 
-  useEffect(() => {
-    void refreshSetup().catch((reason: Error) => setError(reason.message));
-  }, [refreshSetup]);
+  useEffect(() => { void refreshSetup().catch(() => setSetup(null)); }, [refreshSetup]);
 
-  // The assistant is only offered when a catalog-verified text model is the
-  // configured provider for prompt enhancement.
   useEffect(() => {
-    void fetch('/v1/configuration')
-      .then(response => response.json())
-      .then((configuration: { selections?: Array<{ capability: string; mode: string; cloud_model: string | null }> }) => {
-        const selection = configuration.selections?.find(item => item.capability === 'prompt_enhancement');
-        setAssistantModel(selection?.mode === 'open_router' ? selection.cloud_model : null);
-      })
-      .catch(() => setAssistantModel(null));
+    void fetch('/v1/local-models/music')
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
+      .then((body: { catalog?: EngineCatalog }) => setCatalog(body.catalog ?? null))
+      .catch(() => setCatalog(null));
+  }, [setup?.engine_ready]);
+
+  useEffect(() => {
+    void fetch('/v1/assistant/status')
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
+      .then((body: { available?: boolean }) => setAssistantReady(body.available === true))
+      .catch(() => setAssistantReady(false));
   }, []);
 
   useEffect(() => {
     if (!initialData?.song) return;
     const song = initialData.song;
-    setTitle(song.title || '');
-    setCaption(song.style || '');
+    setName(song.title || '');
+    const panes = splitCaption(song.style || '');
+    setGlobalMetadata(panes.globalMetadata);
+    setVocalDetails(panes.vocalDetails);
+    setArrangement(panes.arrangement);
     setLyrics(song.lyrics || '');
-    setMode('manual');
-    const settings = song.generationParams as Partial<Record<string, number | string>> | undefined;
-    if (settings) {
-      if (typeof settings.duration === 'number') setDuration(settings.duration);
-      if (typeof settings.steps === 'number') setSteps(settings.steps);
-      if (typeof settings.lm_cfg === 'number') setLmCfg(settings.lm_cfg);
-      if (typeof settings.lm_top_k === 'number') setTopK(settings.lm_top_k);
-      if (typeof settings.dit_cfg === 'number') setDitCfg(settings.dit_cfg);
-      if (typeof settings.peak_clip === 'number') setPeakClip(settings.peak_clip);
-      if (typeof settings.mp3_bitrate === 'number') setMp3Bitrate(settings.mp3_bitrate);
-      if (typeof settings.output_format === 'string') setFormat(settings.output_format as Music3Request['output_format']);
-    }
+    const settings = (song.generationParams ?? {}) as EngineDefaults;
+    const asString = (key: string) => (settings[key] === undefined ? '' : String(settings[key]));
+    setDuration(asString('duration'));
+    setSteps(asString('steps'));
+    setLmCfg(asString('lm_cfg'));
+    setLmTopK(asString('lm_top_k'));
+    setDitCfg(asString('dit_cfg'));
+    setPeakClip(asString('peak_clip'));
+    setMp3Bitrate(asString('mp3_bitrate'));
+    if (typeof settings.output_format === 'string') setFormat(settings.output_format as Music3Request['output_format']);
   }, [initialData]);
 
-  // The engine can load any installed GGUF per component, not only the ones
-  // belonging to the selected profile. Offer exactly what it reports.
-  useEffect(() => {
-    void fetch('/v1/local-models/music')
-      .then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-      .then((body: { catalog?: EngineCatalog }) => setEngineCatalog(body.catalog ?? null))
-      .catch(() => setEngineCatalog(null));
-  }, [setup?.engine_ready]);
-
-  // Engine logs are the only fine-grained progress upstream exposes.
-  useEffect(() => {
-    if (!showLogs) return;
-    const poll = () => void fetch('/v1/engine/logs')
-      .then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-      .then((body: { lines?: string[] }) => setLogs((body.lines ?? []).slice(-120)))
-      .catch(() => setLogs([t('engineLogsUnavailable')]));
-    poll();
-    const timer = window.setInterval(poll, 2000);
-    return () => window.clearInterval(timer);
-  }, [showLogs]);
-
-  const applyTemplate = (template: typeof TEMPLATES[number]) => {
-    setCaption(template.caption);
-    setLyrics(template.lyrics);
-    setMode('manual');
+  const reset = () => {
+    setName(''); setGlobalMetadata(''); setVocalDetails(''); setArrangement(''); setLyrics(''); setInstrumental(false);
+    setDuration(''); setLmBatch(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
+    setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed('');
+    setPeakClip(''); setMp3Bitrate(''); setFormat('mp3'); setModels({});
+    setError(null);
   };
 
-  const restoreQuality = () => {
-    setDuration(QUALITY.duration);
-    setSteps(QUALITY.steps);
-    setLmCfg(QUALITY.lmCfg);
-    setTopK(QUALITY.topK);
-    setDitCfg(QUALITY.ditCfg);
-    setLmBatch(QUALITY.lmBatch);
-    setSynthBatch(QUALITY.synthBatch);
-    setPeakClip(QUALITY.peakClip);
-    setMp3Bitrate(QUALITY.mp3Bitrate);
-    setFormat('mp3');
-    setSeed('');
-    setLmSeed('');
-    setOverrides({});
+  /** One of the official demo prompts bundled with the engine. */
+  const loadExample = () => {
+    const example = randomExample();
+    setGlobalMetadata(example.globalMetadata);
+    setVocalDetails(example.vocalDetails);
+    setArrangement(example.arrangement);
+    setLyrics(example.lyrics);
+    setDuration(String(example.duration));
+    setName(example.name);
+    setError(null);
   };
 
-  const runAssistant = async () => {
-    if (!assistantModel || assisting) return;
-    const brief = (idea || caption).trim();
-    if (!brief) {
-      setError('Describe the track first, then ask the assistant.');
-      return;
+  const buildRequest = () => {
+    const request: Music3Request & { title?: string; audio_codes?: string; models?: Record<string, string> } = {
+      caption: caption.trim(),
+      lyrics: lyrics.replace(/\r\n?/g, '\n').trim(),
+      duration_seconds: Math.min(numberOrUndefined(duration) ?? 60, MAX_DURATION_SECONDS),
+      steps: numberOrUndefined(steps) ?? 30,
+      seed: randomizeSeed ? undefined : numberOrUndefined(seed),
+      lm_seed: numberOrUndefined(lmSeed),
+      lm_cfg: numberOrUndefined(lmCfg) ?? 1.5,
+      lm_top_k: numberOrUndefined(lmTopK) ?? 50,
+      lm_batch_size: Math.min(numberOrUndefined(lmBatch) ?? 1, maxSongs),
+      synth_batch_size: numberOrUndefined(synthBatch) ?? 1,
+      dit_cfg: numberOrUndefined(ditCfg) ?? 1.7,
+      peak_clip: numberOrUndefined(peakClip) ?? 10,
+      output_format: format,
+      mp3_bitrate: numberOrUndefined(mp3Bitrate) ?? 128,
+    };
+    if (name.trim()) request.title = name.trim();
+    if (audioCodes.trim()) request.audio_codes = audioCodes.trim();
+    if (Object.keys(models).length === 5) request.models = models;
+    return request;
+  };
+
+  const savePrompt = () => {
+    const request = buildRequest();
+    const blob = new Blob([JSON.stringify(request, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${(name.trim() || 'request').replace(/[\\/:*?"<>|]/g, '')}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const openPrompt = async (file: File) => {
+    try {
+      const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
+      const asString = (value: unknown) => (typeof value === 'number' || typeof value === 'string' ? String(value) : '');
+      if (typeof parsed.title === 'string') setName(parsed.title);
+      if (typeof parsed.caption === 'string') {
+        const panes = splitCaption(parsed.caption);
+        setGlobalMetadata(panes.globalMetadata);
+        setVocalDetails(panes.vocalDetails);
+        setArrangement(panes.arrangement);
+      }
+      if (typeof parsed.lyrics === 'string') setLyrics(parsed.lyrics);
+      setDuration(asString(parsed.duration ?? parsed.duration_seconds));
+      setSteps(asString(parsed.steps));
+      setLmCfg(asString(parsed.lm_cfg));
+      setLmTopK(asString(parsed.lm_top_k));
+      setLmSeed(asString(parsed.lm_seed));
+      setLmBatch(asString(parsed.lm_batch_size));
+      setDitCfg(asString(parsed.dit_cfg));
+      setSynthBatch(asString(parsed.synth_batch_size));
+      setSeed(asString(parsed.seed));
+      setPeakClip(asString(parsed.peak_clip));
+      setMp3Bitrate(asString(parsed.mp3_bitrate));
+      if (typeof parsed.audio_codes === 'string') setAudioCodes(parsed.audio_codes);
+      if (typeof parsed.output_format === 'string') setFormat(parsed.output_format as Music3Request['output_format']);
+      setError(null);
+    } catch {
+      setError(t('promptFileInvalid'));
     }
-    setAssisting(true);
+  };
+
+  /// Optional. Nothing here is required to use the model: the manual form is
+  /// the primary path, and the buttons stay disabled until a provider is set.
+  const askAssistant = async (target: 'all' | 'lyrics' | 'prompt') => {
+    if (!assistantReady || assisting) return;
+    setAssisting(target);
     setError(null);
     try {
-      const response = await fetch('/v1/openrouter/completions', {
+      const response = await fetch('/v1/assistant/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model_id: assistantModel,
-          prompt:
-            'You write inputs for a text-to-music model. Answer with JSON only, no code fence, using the keys ' +
-            '"title", "caption" and "lyrics". "caption" is one English sentence describing genre, instrumentation, ' +
-            'mood and vocal. "lyrics" uses [Verse] / [Chorus] section tags on their own lines. Brief: ' + brief,
+          target,
+          description: name.trim(),
+          instruction: assistInstruction.trim(),
+          lyrics: lyrics.trim(),
+          global_metadata: globalMetadata.trim(),
+          vocal_details: vocalDetails.trim(),
+          arrangement: arrangement.trim(),
+          duration_seconds: numberOrUndefined(duration) ?? 60,
+          instrumental,
         }),
       });
       const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(body?.error || `Assistant request failed (${response.status})`);
-      const content: unknown = body?.body?.choices?.[0]?.message?.content;
-      if (typeof content !== 'string') throw new Error('The assistant returned no text.');
-      const json = content.slice(content.indexOf('{'), content.lastIndexOf('}') + 1);
-      const draft = JSON.parse(json) as { title?: string; caption?: string; lyrics?: string };
-      if (draft.title) setTitle(draft.title);
-      if (draft.caption) setCaption(draft.caption);
-      if (draft.lyrics) setLyrics(draft.lyrics);
-      setMode('manual');
+      if (!response.ok) throw new Error(body?.error || String(response.status));
+      if (typeof body?.lyrics === 'string') setLyrics(body.lyrics);
+      if (typeof body?.global_metadata === 'string') setGlobalMetadata(body.global_metadata);
+      if (typeof body?.vocal_details === 'string') setVocalDetails(body.vocal_details);
+      if (typeof body?.arrangement === 'string') setArrangement(body.arrangement);
+      setMode('studio');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'The assistant request failed.');
+      setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setAssisting(false);
+      setAssisting(null);
     }
   };
 
   const submit = () => {
-    const cleanCaption = caption.trim();
-    const cleanLyrics = lyrics.replace(/\r\n?/g, '\n').trim();
-    if (!ready) {
-      setError('Install and select a complete Music3 profile in the model manager first.');
-      return;
-    }
-    if (!cleanCaption) {
-      setError('Add a caption describing the track.');
-      return;
-    }
-    if (!cleanLyrics) {
-      setError('Music3 needs explicit lyrics. Write them, or apply a template.');
-      return;
-    }
-    const parseSeed = (value: string, label: string) => {
-      if (value.trim() === '') return undefined;
-      const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${label} must be a non-negative integer.`);
-      return parsed;
-    };
-    try {
-      setError(null);
-      onGenerate({
-        caption: cleanCaption,
-        lyrics: cleanLyrics,
-        duration_seconds: duration,
-        steps,
-        seed: parseSeed(seed, 'Seed'),
-        lm_seed: parseSeed(lmSeed, 'LM seed'),
-        lm_cfg: lmCfg,
-        lm_top_k: topK,
-        lm_batch_size: Math.min(lmBatch, maxSongs),
-        synth_batch_size: synthBatch,
-        dit_cfg: ditCfg,
-        peak_clip: peakClip,
-        output_format: format,
-        mp3_bitrate: mp3Bitrate,
-        title: title.trim() || undefined,
-        // Only send a component set when every role is chosen: the engine
-        // requires all five together and rejects a partial selection.
-        models: componentsComplete ? (overrides as Required<ComponentOverrides>) : undefined,
-      });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Invalid generation settings.');
-    }
+    if (!ready) { setError(t('downloadProfileFirst')); return; }
+    if (!caption.trim()) { setError(t('captionRequired')); return; }
+    if (!lyrics.trim()) { setError(t('lyricsRequired')); return; }
+    if (promptTokens > MAX_PROMPT_TOKENS) { setError(t('promptTooLong')); return; }
+    setError(null);
+    onGenerate(buildRequest());
   };
 
-  // `--max-batch` is a launch flag of the engine and it rejects any request
-  // above it, so the control never offers more than the engine will accept.
-  const maxSongs = Math.max(1, setup?.effective_max_batch ?? 1);
-  const componentRoles: Array<{ key: keyof ComponentOverrides; label: string; options: string[] }> = [
-    { key: 'lm_model', label: 'Language model', options: engineCatalog?.models?.lm ?? [] },
-    { key: 'depth_model', label: 'Depth decoder', options: engineCatalog?.models?.depth ?? [] },
-    { key: 'cond_model', label: 'Condition encoder', options: engineCatalog?.models?.cond ?? [] },
-    { key: 'dit_model', label: 'DiT', options: engineCatalog?.models?.dit ?? [] },
-    { key: 'vae_model', label: 'Vocoder', options: engineCatalog?.models?.vae ?? [] },
+  const totalTracks = (numberOrUndefined(lmBatch) ?? 1) * (numberOrUndefined(synthBatch) ?? 1);
+  const roles: Array<{ key: string; label: string; options: string[] }> = [
+    { key: 'lm_model', label: 'LM', options: catalog?.models?.lm ?? [] },
+    { key: 'depth_model', label: 'Depth', options: catalog?.models?.depth ?? [] },
+    { key: 'cond_model', label: 'Cond', options: catalog?.models?.cond ?? [] },
+    { key: 'dit_model', label: 'DiT', options: catalog?.models?.dit ?? [] },
+    { key: 'vae_model', label: 'VAE', options: catalog?.models?.vae ?? [] },
   ];
-  const chosenRoles = componentRoles.filter(role => overrides[role.key]);
-  const componentsComplete = chosenRoles.length === componentRoles.length;
-  const componentChoiceAvailable = componentRoles.some(role => role.options.length > 1);
-  const totalTracks = Math.min(lmBatch, maxSongs) * synthBatch;
+
+  const section = (id: string, title: string, body: React.ReactNode) => (
+    <div className={CARD}>
+      <button
+        type="button"
+        onClick={() => setOpenSection(current => (current === id ? null : id))}
+        className="flex w-full items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+      >
+        {title}
+        <ChevronDown size={15} className={openSection === id ? 'rotate-180 transition-transform' : 'transition-transform'} />
+      </button>
+      {openSection === id && <div className="mt-3 space-y-3">{body}</div>}
+    </div>
+  );
 
   return (
     <section className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-suno-panel dark:text-white">
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar">
-        <div className="space-y-4 p-4 pb-6 pt-4">
+        <div className="space-y-3 p-4 pb-6">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h1 className="truncate text-base font-bold">{t('createMusic')}</h1>
@@ -328,239 +348,238 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </span>
           </div>
 
-          <div className="grid grid-cols-2 rounded-xl border border-zinc-200 bg-white p-1 dark:border-white/10 dark:bg-black/20">
-            {(['simple', 'manual'] as const).map(value => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setMode(value)}
-                className={`rounded-lg py-2 text-xs font-semibold transition-colors ${mode === value ? 'bg-zinc-900 text-white shadow-sm dark:bg-white dark:text-zinc-900' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'}`}
-              >
-                {value === 'simple' ? (t('simpleMode') || 'Simple') : (t('customMode') || 'Manual')}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => promptFile.current?.click()} className={TOOL}><FolderOpen size={13} /> {t('openPrompt')}</button>
+            <button type="button" onClick={savePrompt} className={TOOL}><Save size={13} /> {t('savePrompt')}</button>
+            <button type="button" onClick={loadExample} className={TOOL}><Dices size={13} /> {t('examplePrompt')}</button>
+            <button type="button" onClick={reset} className={TOOL}><RotateCcw size={13} /> {t('resetPrompt')}</button>
+            <input
+              ref={promptFile}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={event => { const file = event.target.files?.[0]; if (file) void openPrompt(file); event.target.value = ''; }}
+            />
           </div>
+
+          {assistantReady && (
+            <div className={CARD}>
+              <div className="mb-2 grid grid-cols-2 rounded-lg border border-zinc-200 p-1 dark:border-white/10">
+                {(['studio', 'simple'] as const).map(value => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setMode(value)}
+                    className={`rounded-md py-1.5 text-[11px] font-semibold transition-colors ${mode === value ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500'}`}
+                  >
+                    {value === 'studio' ? t('studioMode') : t('simpleMode')}
+                  </button>
+                ))}
+              </div>
+              {mode === 'simple' ? (
+                <>
+                  <Field label={t('songIdea')} hint={t('songIdeaHint')}>
+                    <textarea value={assistInstruction} onChange={event => setAssistInstruction(event.target.value)} rows={3} placeholder={t('songIdeaPlaceholder')} className={`${CONTROL} resize-y`} />
+                  </Field>
+                  <button
+                    type="button"
+                    onClick={() => void askAssistant('all')}
+                    disabled={assisting !== null || !assistInstruction.trim()}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 py-2.5 text-xs font-bold text-white disabled:opacity-50"
+                  >
+                    {assisting === 'all' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                    {t('writeEverything')}
+                  </button>
+                </>
+              ) : (
+                <p className="text-[11px] leading-4 text-zinc-500">{t('studioModeHint')}</p>
+              )}
+            </div>
+          )}
 
           {!ready && (
             <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
-              <div>
-                <b>{t('localGenerationUnavailable')}</b>
-                <br />
-                {t('downloadProfileFirst')}
-              </div>
+              <div><b>{t('localGenerationUnavailable')}</b><br />{t('downloadProfileFirst')}</div>
             </div>
           )}
 
-          {mode === 'simple' ? (
-            <div className="space-y-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card">
-              <Field label={t('trackIdea')}>
-                <textarea
-                  value={idea}
-                  onChange={event => setIdea(event.target.value)}
-                  placeholder={t('ideaPlaceholder')}
-                  className={`${CONTROL} h-24 resize-none`}
-                />
+          <div className={CARD}>
+            <Field label={t('title')}>
+              <input value={name} onChange={event => setName(event.target.value)} placeholder={t('untitled')} className={CONTROL} />
+            </Field>
+          </div>
+
+          <div className={CARD}>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <span className={LABEL}>{t('captionStructured')}</span>
+              <label className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                <input type="checkbox" checked={instrumental} onChange={event => setInstrumental(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
+                {t('instrumental')}
+              </label>
+            </div>
+            <p className="mb-3 text-[11px] leading-4 text-zinc-500">{t('captionStructuredHint')}</p>
+
+            <div className="space-y-3">
+              <Field label={t('globalMetadata')}>
+                <textarea value={globalMetadata} onChange={event => setGlobalMetadata(event.target.value)} rows={5} placeholder={t('globalMetadataPlaceholder')} className={`${CONTROL} resize-y leading-5`} />
               </Field>
+              <Field label={t('vocalDetails')}>
+                <textarea value={vocalDetails} onChange={event => setVocalDetails(event.target.value)} rows={4} placeholder={t('vocalDetailsPlaceholder')} className={`${CONTROL} resize-y leading-5`} />
+              </Field>
+              <Field label={t('arrangementSection')}>
+                <textarea value={arrangement} onChange={event => setArrangement(event.target.value)} rows={5} placeholder={t('arrangementPlaceholder')} className={`${CONTROL} resize-y leading-5`} />
+              </Field>
+            </div>
+
+            {assistantReady && (
               <button
                 type="button"
-                onClick={() => void runAssistant()}
-                disabled={!assistantModel || assisting}
-                title={assistantModel ? undefined : 'Select an OpenRouter text model for the assistant in Settings'}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-200 py-2.5 text-xs font-semibold text-zinc-700 transition-colors hover:border-pink-400 hover:text-pink-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-zinc-200"
+                onClick={() => void askAssistant('prompt')}
+                disabled={assisting !== null}
+                className={`${TOOL} mt-3 w-full justify-center py-2 disabled:opacity-50`}
               >
-                {assisting ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} className="text-pink-500" />}
-                {t('draftWithAssistant')}
+                {assisting === 'prompt' ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} className="text-pink-500" />}
+                {t('writeCaption')}
               </button>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wide text-zinc-500">{t('quickStart')}</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {TEMPLATES.map(template => (
-                  <button
-                    key={template.label}
-                    type="button"
-                    onClick={() => applyTemplate(template)}
-                    className="rounded-lg border border-zinc-200 px-2 py-2 text-[11px] font-medium hover:border-pink-400 hover:bg-pink-50 dark:border-white/10 dark:hover:bg-pink-500/10"
-                  >
-                    {template.label}
-                  </button>
-                ))}
-              </div>
-              <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-                {t('templateHint')}
-              </p>
-            </div>
-          ) : null}
+            )}
+          </div>
 
-          <div className="space-y-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card">
-            <Field label={t('captionStyle')}>
-              <textarea
-                value={caption}
-                onChange={event => setCaption(event.target.value)}
-                placeholder={t('captionPlaceholder')}
-                className={`${CONTROL} h-24 resize-none`}
-              />
-            </Field>
-            <Field label={t('lyrics')}>
+          <div className={CARD}>
+            <Field label={t('lyrics')} hint={t('lyricsHint')}>
               <textarea
                 value={lyrics}
                 onChange={event => setLyrics(event.target.value)}
-                placeholder={'[Verse]\n...\n\n[Chorus]\n...'}
-                className={`${CONTROL} h-44 resize-none font-mono text-xs`}
+                rows={10}
+                placeholder={'[Intro]\n\n[Verse]\n…\n\n[Chorus]\n…'}
+                className={`${CONTROL} resize-y font-mono text-xs leading-5`}
               />
             </Field>
-            <Field label={`${t('title')} · ${t('libraryOnly')}`}>
-              <input value={title} onChange={event => setTitle(event.target.value)} placeholder={t('untitled')} className={CONTROL} />
-            </Field>
-          </div>
-
-          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-zinc-500">
-                <Music2 size={14} />
-                {t('quality')}
-              </div>
-              <button type="button" onClick={restoreQuality} className="text-[11px] font-semibold text-pink-600 hover:text-pink-500">
-                {t('resetToDefaults')}
+            {assistantReady && (
+              <button
+                type="button"
+                onClick={() => void askAssistant('lyrics')}
+                disabled={assisting !== null}
+                className={`${TOOL} mt-2 w-full justify-center py-2 disabled:opacity-50`}
+              >
+                {assisting === 'lyrics' ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} className="text-pink-500" />}
+                {t('writeLyrics')}
               </button>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <NumberField label={t('durationSeconds')} value={duration} min={10} max={300} step={5} onChange={setDuration} />
-              <NumberField label={t('ditSteps')} value={steps} min={2} max={80} step={1} onChange={setSteps} />
-            </div>
-            <p className="mt-3 text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-              {t('engineDefaultsHint')}
+            )}
+            <p className={`mt-2 text-[11px] ${promptTokens > MAX_PROMPT_TOKENS ? 'text-rose-600 dark:text-rose-300' : 'text-zinc-500'}`}>
+              {t('promptBudget')}: ~{promptTokens} / {MAX_PROMPT_TOKENS}
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(value => !value)}
-            className="flex w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold dark:border-white/5 dark:bg-suno-card"
-          >
-            <span className="flex items-center gap-2">
-              <Settings2 size={16} />
-              {t('advanced')}
-            </span>
-            <ChevronDown size={16} className={showAdvanced ? 'rotate-180 transition-transform' : 'transition-transform'} />
-          </button>
+          <div className={CARD}>
+            <span className={LABEL}>{t('lmConfiguration')}</span>
+            <div className="grid grid-cols-3 gap-2">
+              <Field label={t('maxDuration')}>
+                <input value={duration} onChange={event => setDuration(event.target.value)} placeholder={placeholder('duration')} inputMode="decimal" className={CONTROL} />
+              </Field>
+              <Field label={t('lmBatch')}>
+                <input value={lmBatch} onChange={event => setLmBatch(event.target.value)} placeholder={placeholder('lm_batch_size')} inputMode="numeric" disabled={maxSongs === 1} className={CONTROL} />
+              </Field>
+              <Field label={t('lmSeedShort')}>
+                <input value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={placeholder('lm_seed')} inputMode="numeric" className={CONTROL} />
+              </Field>
+            </div>
+            <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
+            {maxSongs === 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('maxBatchHint')}</p>}
+            {totalTracks > 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('renderCountPrefix')} <b>{totalTracks}</b></p>}
+          </div>
 
-          {showAdvanced && (
-            <div className="space-y-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card">
-              <div className="grid grid-cols-2 gap-3">
-                <NumberField label="LM CFG" value={lmCfg} min={0.5} max={4} step={0.1} onChange={setLmCfg} />
-                <NumberField label="LM top-k" value={topK} min={1} max={200} step={1} onChange={setTopK} />
-                <NumberField label="DiT CFG" value={ditCfg} min={0.5} max={5} step={0.1} onChange={setDitCfg} />
-                <NumberField label={t('peakClipLabel')} value={peakClip} min={0} max={1000} step={1} onChange={setPeakClip} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <NumberField label={t('songsLmBatch')} value={Math.min(lmBatch, maxSongs)} min={1} max={maxSongs} step={1} onChange={setLmBatch} disabled={maxSongs === 1} />
-                <NumberField label={t('variationsPerSong')} value={synthBatch} min={1} max={9} step={1} onChange={setSynthBatch} />
-              </div>
-              <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-                {t('renderCountPrefix')} <b>{totalTracks}</b>: {t('renderCountSuffix')}
-              </p>
-              {maxSongs === 1 && (
-                <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-                  {t('maxBatchHint')}
-                </p>
-              )}
-              <div className="grid grid-cols-2 gap-3">
-                <Field label={t('ditSeed')}>
-                  <input inputMode="numeric" value={seed} onChange={event => setSeed(event.target.value)} placeholder={t('randomPlaceholder')} className={CONTROL} />
+          {section('advanced-lm', t('advancedLm'), (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label={t('cfgScale')}>
+                  <input value={lmCfg} onChange={event => setLmCfg(event.target.value)} placeholder={placeholder('lm_cfg')} inputMode="decimal" className={CONTROL} />
                 </Field>
-                <Field label={t('lmSeedLabel')}>
-                  <input inputMode="numeric" value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={t('randomPlaceholder')} className={CONTROL} />
+                <Field label={t('topK')}>
+                  <input value={lmTopK} onChange={event => setLmTopK(event.target.value)} placeholder={placeholder('lm_top_k')} inputMode="numeric" className={CONTROL} />
                 </Field>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <Field label={t('audioCodes')} hint={t('audioCodesHint')}>
+                <textarea value={audioCodes} onChange={event => setAudioCodes(event.target.value)} rows={3} className={`${CONTROL} resize-y font-mono text-[11px]`} />
+              </Field>
+            </>
+          ))}
+
+          {section('flow', t('flowMatching'), (
+            <div className="grid grid-cols-2 gap-2">
+              <Field label={t('ditSteps')}>
+                <input value={steps} onChange={event => setSteps(event.target.value)} placeholder={placeholder('steps')} inputMode="numeric" className={CONTROL} />
+              </Field>
+              <Field label={t('cfgScale')}>
+                <input value={ditCfg} onChange={event => setDitCfg(event.target.value)} placeholder={placeholder('dit_cfg')} inputMode="decimal" className={CONTROL} />
+              </Field>
+              <Field label={t('variationsBatch')}>
+                <input value={synthBatch} onChange={event => setSynthBatch(event.target.value)} placeholder={placeholder('synth_batch_size')} inputMode="numeric" className={CONTROL} />
+              </Field>
+              <Field label={t('seedShort')}>
+                <input value={seed} onChange={event => setSeed(event.target.value)} placeholder={placeholder('seed')} inputMode="numeric" disabled={randomizeSeed} className={CONTROL} />
+                <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                  <input type="checkbox" checked={randomizeSeed} onChange={event => setRandomizeSeed(event.target.checked)} className="h-3.5 w-3.5 accent-pink-500" />
+                  {t('randomizeSeed')}
+                </label>
+              </Field>
+            </div>
+          ))}
+
+          {section('post', t('postProcessing'), (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <Field label={t('peakClipLabel')}>
+                  <input value={peakClip} onChange={event => setPeakClip(event.target.value)} placeholder={placeholder('peak_clip')} inputMode="numeric" className={CONTROL} />
+                </Field>
+                <Field label={t('mp3Bitrate')}>
+                  <input value={mp3Bitrate} onChange={event => setMp3Bitrate(event.target.value)} placeholder={placeholder('mp3_bitrate')} inputMode="numeric" disabled={format !== 'mp3'} className={CONTROL} />
+                </Field>
                 <Field label={t('outputFormat')}>
                   <select value={format} onChange={event => setFormat(event.target.value as Music3Request['output_format'])} className={CONTROL}>
                     <option value="mp3">MP3</option>
-                    <option value="wav16">WAV 16-bit</option>
-                    <option value="wav24">WAV 24-bit</option>
-                    <option value="wav32">WAV 32-bit float</option>
+                    <option value="wav16">WAV16</option>
+                    <option value="wav24">WAV24</option>
+                    <option value="wav32">WAV32</option>
                   </select>
                 </Field>
-                <NumberField label={t('mp3Bitrate')} value={mp3Bitrate} min={64} max={320} step={16} onChange={setMp3Bitrate} disabled={format !== 'mp3'} />
               </div>
-              <p className="text-[11px] leading-4 text-zinc-500">
-                {t('peakClipHint')}
-              </p>
+              <p className="text-[11px] leading-4 text-zinc-500">{t('peakClipHint')}</p>
+            </>
+          ))}
 
-              {componentChoiceAvailable && (
-                <div className="rounded-xl border border-zinc-200 p-3 dark:border-white/10">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('componentOverride')}</span>
-                    {chosenRoles.length > 0 && (
-                      <button type="button" onClick={() => setOverrides({})} className="text-[11px] font-semibold text-pink-600 hover:text-pink-500">
-                        {t('useProfileComponents')}
-                      </button>
-                    )}
-                  </div>
-                  <p className="mt-1 text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">{t('componentOverrideHint')}</p>
-                  <div className="mt-2 space-y-2">
-                    {componentRoles.map(role => (
-                      <label key={role.key} className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-                        <span className="mb-1 block">{role.label}</span>
-                        <select
-                          value={overrides[role.key] ?? ''}
-                          onChange={event => setOverrides(current => {
-                            const next = { ...current };
-                            if (event.target.value) next[role.key] = event.target.value;
-                            else delete next[role.key];
-                            return next;
-                          })}
-                          className={CONTROL}
-                        >
-                          <option value="">{t('profileDefault')}</option>
-                          {role.options.map(option => <option key={option} value={option}>{option.replace('MiniMax-Music3-', '')}</option>)}
-                        </select>
-                      </label>
-                    ))}
-                  </div>
-                  {chosenRoles.length > 0 && !componentsComplete && (
-                    <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">{t('componentOverridePartial')}</p>
-                  )}
-                </div>
+          {section('models', t('componentOverride'), (
+            <>
+              <p className="text-[11px] leading-4 text-zinc-500">{t('componentOverrideHint')}</p>
+              {roles.map(role => (
+                <Field key={role.key} label={role.label}>
+                  <select
+                    value={models[role.key] ?? ''}
+                    onChange={event => setModels(current => {
+                      const next = { ...current };
+                      if (event.target.value) next[role.key] = event.target.value;
+                      else delete next[role.key];
+                      return next;
+                    })}
+                    className={CONTROL}
+                  >
+                    <option value="">{t('profileDefault')}</option>
+                    {role.options.map(option => <option key={option} value={option}>{option.replace('MiniMax-Music3-', '')}</option>)}
+                  </select>
+                </Field>
+              ))}
+              {Object.keys(models).length > 0 && Object.keys(models).length < 5 && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-300">{t('componentOverridePartial')}</p>
               )}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setShowLogs(value => !value)}
-            className="flex w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold dark:border-white/5 dark:bg-suno-card"
-          >
-            <span className="flex items-center gap-2">
-              <Terminal size={16} />
-              {t('engineLog')}
-            </span>
-            <ChevronDown size={16} className={showLogs ? 'rotate-180 transition-transform' : 'transition-transform'} />
-          </button>
-          {showLogs && (
-            <pre className="max-h-56 overflow-auto rounded-xl border border-zinc-200 bg-zinc-950 p-3 text-[10px] leading-4 text-zinc-300 dark:border-white/10">
-              {logs.length ? logs.join('\n') : t('noEngineOutput')}
-            </pre>
-          )}
+            </>
+          ))}
 
           <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-            <span>
-              {t('profile')}: <b className="text-zinc-700 dark:text-zinc-200">{profileLabel}</b>
-            </span>
-            <button type="button" onClick={() => void refreshSetup().catch((reason: Error) => setError(reason.message))} className="hover:text-pink-500">
-              {t('refresh')}
-            </button>
+            <span>{t('profile')}: <b className="text-zinc-700 dark:text-zinc-200">{profileLabel}</b></span>
+            <button type="button" onClick={() => void refreshSetup().catch(() => undefined)} className="hover:text-pink-500">{t('refresh')}</button>
           </div>
-          {setup?.hardware?.reason && (
-            <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>
-          )}
-          {error && (
-            <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs leading-5 text-red-700 dark:text-red-200">
-              {error}
-            </div>
-          )}
+          {setup?.hardware?.reason && <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>}
+          {error && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs leading-5 text-red-700 dark:text-red-200">{error}</div>}
         </div>
       </div>
 
@@ -579,48 +598,3 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     </section>
   );
 };
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
-      <span className="mb-1.5 block">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  disabled,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (value: number) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <Field label={label}>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        disabled={disabled}
-        onChange={event => {
-          const next = Number(event.target.value);
-          if (Number.isFinite(next)) onChange(clamp(next, min, max));
-        }}
-        className={`${CONTROL} disabled:opacity-50`}
-      />
-    </Field>
-  );
-}

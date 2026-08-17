@@ -188,3 +188,38 @@
       .overscroll-contain {
         overscroll-behavior: contain;
       }
+
+
+/* Native dropdowns.
+   The closed control is styled to match the studio, and `color-scheme` makes
+   the operating system draw the open list dark as well — without it Windows
+   renders a bright grey popup in the middle of a dark application. */
+.dark {
+  color-scheme: dark;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+  padding-right: 2.1rem;
+}
+
+select:focus {
+  outline: none;
+}
+
+/* Chromium honours these for the popup list itself. */
+select option {
+  background-color: #18181b;
+  color: #f4f4f5;
+  padding: 0.4rem 0.6rem;
+}
+
+:root:not(.dark) select option {
+  background-color: #ffffff;
+  color: #18181b;
+}

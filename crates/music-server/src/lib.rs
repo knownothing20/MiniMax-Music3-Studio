@@ -1,4 +1,5 @@
 mod providers;
+mod assistant;
 mod credentials;
 mod model_manager;
 mod presets;
@@ -42,6 +43,7 @@ struct AppState {
     /// Owned local engine process, when this service started one.
     engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
     engine_options: Arc<RwLock<EngineOptions>>,
+    assistant: Arc<RwLock<AssistantConfig>>,
 }
 
 #[derive(Clone)]
@@ -195,6 +197,8 @@ struct ReplayMusicJobRequest {
 struct PersistedStudioSettings {
     #[serde(default)]
     engine_options: EngineOptions,
+    #[serde(default)]
+    assistant: AssistantConfig,
     configuration: StudioConfiguration,
     selected_profile_id: Option<String>,
     #[serde(default)]
@@ -244,6 +248,47 @@ impl EngineOptions {
             disable_flash_attention: self.disable_flash_attention,
             split_cfg_forwards: self.split_cfg_forwards,
             clamp_fp16: self.clamp_fp16,
+        }
+    }
+}
+
+/// Where the optional writing assistant runs.
+///
+/// `None` is the default and a first-class state: the manual form is the
+/// primary way to use this model, and on a modest card nobody wants a language
+/// model competing for VRAM. Nothing is downloaded or started unless the user
+/// picks a provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct AssistantConfig {
+    provider: AssistantProvider,
+    /// Base URL of an OpenAI-compatible server (llama.cpp, LM Studio, Ollama).
+    local_base_url: Option<String>,
+    local_model: Option<String>,
+    openrouter_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AssistantProvider {
+    #[default]
+    None,
+    Local,
+    OpenRouter,
+}
+
+impl AssistantConfig {
+    fn available(&self) -> bool {
+        match self.provider {
+            AssistantProvider::None => false,
+            AssistantProvider::Local => {
+                self.local_base_url.as_deref().is_some_and(|url| !url.trim().is_empty())
+                    && self.local_model.as_deref().is_some_and(|model| !model.trim().is_empty())
+            }
+            AssistantProvider::OpenRouter => {
+                self.openrouter_model.as_deref().is_some_and(|model| !model.trim().is_empty())
+                    && credentials::openrouter_source().is_some()
+            }
         }
     }
 }
@@ -313,6 +358,7 @@ pub async fn serve() -> anyhow::Result<()> {
         library: library::Library::open_default()?,
         engine: Arc::new(tokio::sync::Mutex::new(None)),
         engine_options: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.engine_options).unwrap_or_default())),
+        assistant: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.assistant.clone()).unwrap_or_default())),
     };
 
     let app = Router::new()
@@ -328,6 +374,8 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/system/resources", get(system_resources))
         .route("/v1/proxy/image", get(proxy_image))
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
+        .route("/v1/assistant/status", get(assistant_status).put(update_assistant_settings))
+        .route("/v1/assistant/write", post(assistant_write))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
@@ -858,6 +906,7 @@ fn load_studio_settings(path: &PathBuf) -> Option<PersistedStudioSettings> {
 async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
     let settings = PersistedStudioSettings {
         engine_options: *state.engine_options.read().await,
+        assistant: state.assistant.read().await.clone(),
         configuration: state.configuration.read().await.clone(),
         selected_profile_id: state.selected_profile_id.read().await.clone(),
         selected_component_ids: state.selected_component_ids.read().await.clone(),
@@ -981,6 +1030,100 @@ async fn proxy_image(
         .header(header::CONTENT_LENGTH, bytes.len())
         .body(Body::from(bytes.to_vec()))
         .expect("valid image response"))
+}
+
+async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
+    let config = state.assistant.read().await.clone();
+    Json(serde_json::json!({
+        "available": config.available(),
+        "provider": config.provider,
+        "local_base_url": config.local_base_url,
+        "local_model": config.local_model,
+        "openrouter_model": config.openrouter_model,
+    }))
+}
+
+async fn update_assistant_settings(
+    State(state): State<AppState>,
+    Json(request): Json<AssistantConfig>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if request.provider == AssistantProvider::Local {
+        let base = request.local_base_url.as_deref().unwrap_or_default();
+        let url = reqwest::Url::parse(base)
+            .map_err(|error| api_error(StatusCode::BAD_REQUEST, format!("invalid assistant URL: {error}")))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(api_error(StatusCode::BAD_REQUEST, "the assistant URL must be http or https".into()));
+        }
+    }
+    *state.assistant.write().await = request.clone();
+    let _ = persist_studio_settings(&state).await;
+    Ok(Json(serde_json::json!({ "available": request.available(), "provider": request.provider })))
+}
+
+/// Writes lyrics and/or the structured caption. Optional by design: with no
+/// provider configured this answers 409 and the manual form is unaffected.
+async fn assistant_write(
+    State(state): State<AppState>,
+    Json(request): Json<assistant::AssistRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let config = state.assistant.read().await.clone();
+    if !config.available() {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "No writing assistant is configured. The manual form does not need one.".into(),
+        ));
+    }
+    let (system, required) = assistant::instructions(&request);
+    let user = assistant::user_message(&request);
+
+    let response: Value = match config.provider {
+        AssistantProvider::Local => {
+            let base = config.local_base_url.clone().unwrap_or_default();
+            let model = config.local_model.clone().unwrap_or_default();
+            let sent = reqwest::Client::new()
+                .post(format!("{}/chat/completions", base.trim_end_matches('/')))
+                .json(&assistant::chat_body(&model, &system, &user))
+                .timeout(std::time::Duration::from_secs(180))
+                .send()
+                .await
+                .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("the local assistant is unreachable: {error}")))?;
+            let status = sent.status();
+            let body = sent.text().await.unwrap_or_default();
+            if !status.is_success() {
+                return Err(api_error(StatusCode::BAD_GATEWAY, format!("the local assistant returned {status}: {body}")));
+            }
+            serde_json::from_str(&body)
+                .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("invalid assistant response: {error}")))?
+        }
+        AssistantProvider::OpenRouter => {
+            let model = config.openrouter_model.clone().unwrap_or_default();
+            let catalog = state
+                .openrouter_catalog
+                .read()
+                .await
+                .catalog
+                .clone()
+                .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "Refresh the OpenRouter catalog before using the assistant.".into()))?;
+            catalog
+                .selected(Capability::PromptEnhancement, &model)
+                .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+            let authenticated = providers::openrouter::authenticated_request_for(providers::openrouter::OpenRouterRequest {
+                method: providers::openrouter::HttpMethod::Post,
+                path: providers::openrouter::CHAT_COMPLETIONS_PATH,
+                body: assistant::chat_body(&model, &system, &user),
+            })
+            .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+            execute_openrouter_json(authenticated.request)
+                .await
+                .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter assistant failed: {error}")))?
+                .body
+        }
+        AssistantProvider::None => unreachable!("availability was checked above"),
+    };
+
+    let content = assistant::content_of(&response).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let draft = assistant::parse_draft(&content, required).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    Ok(Json(serde_json::to_value(draft).unwrap_or(Value::Null)))
 }
 
 async fn openrouter_settings() -> Json<Value> {
@@ -1828,6 +1971,7 @@ mod tests {
     fn persisted_settings_round_trip_a_complete_custom_component_selection() {
         let settings = PersistedStudioSettings {
             engine_options: EngineOptions { keep_loaded: true, max_batch: Some(2), ..EngineOptions::default() },
+            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None },
             configuration: initial_configuration(),
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
@@ -1840,6 +1984,10 @@ mod tests {
         assert!(restored.engine_options.keep_loaded);
         assert_eq!(restored.engine_options.effective_max_batch(), 2);
         assert_eq!(EngineOptions::default().effective_max_batch(), 1);
+        // The assistant is optional: it must survive a restart when configured,
+        // and stay unavailable when it is not.
+        assert!(restored.assistant.available());
+        assert!(!AssistantConfig::default().available());
     }
 
     #[test]
