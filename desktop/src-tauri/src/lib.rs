@@ -13,34 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use music_engine::mm_server::MmServerLocation;
-
 const SERVER_PORT: u16 = 8765;
 const RELEASES_URL: &str = "https://github.com/timoncool/MiniMax-Music3-Studio/releases/latest";
 const STUDIO_DATA_DIRECTORY: &str = "MiniMax Music3 Studio";
-
-/// The bundled runtime can be overridden for development or a portable
-/// installation.  The supervisor itself validates that every configured path
-/// exists; an unavailable engine is a normal first-run state, not a Tauri
-/// startup failure.
-fn primary_engine_location() -> MmServerLocation {
-    let configured_executable = std::env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from);
-    let bundle_root = std::env::var_os("MINIMAX_MM_SERVER_ROOT")
-        .map(PathBuf::from)
-        .or_else(|| configured_executable.as_ref().and_then(|path| path.parent().map(Path::to_path_buf)))
-        .unwrap_or_else(|| executable_directory().join("resources").join("minimaxmusic-cpp"));
-    let configured_models_root = std::env::var_os("MINIMAX_MUSIC_MODELS_ROOT")
-        .map(PathBuf::from)
-        .or_else(|| Some(studio_data_directory().join("models").join("minimaxmusic-cpp")));
-
-    MmServerLocation {
-        bundle_root,
-        configured_executable,
-        configured_models_root,
-        host: std::env::var("MINIMAX_MM_SERVER_HOST").ok(),
-        port: std::env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse().ok()),
-    }
-}
 
 /// Mutable studio data must not be derived from the process working directory
 /// or from the installed executable directory: a Start Menu shortcut is free
@@ -98,9 +73,10 @@ fn configure_studio_runtime_paths() {
         }
     }
 
-    let location = primary_engine_location();
-    let host = location.host.unwrap_or_else(|| "127.0.0.1".into());
-    let port = location.port.unwrap_or(8086);
+    // The service resolves and supervises the engine; the shell only needs the
+    // loopback address they agree on.
+    let host = std::env::var("MINIMAX_MM_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let port = std::env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse::<u16>().ok()).unwrap_or(8086);
     if std::env::var_os("MINIMAX_MUSIC_CPP_BASE_URL").is_none() {
         unsafe {
             std::env::set_var("MINIMAX_MUSIC_CPP_BASE_URL", format!("http://{host}:{port}"));

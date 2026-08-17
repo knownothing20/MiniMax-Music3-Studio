@@ -1,4 +1,8 @@
 import './src-styles.css';
+import { installApiBase } from './services/apiBase';
+
+// Must run before any component issues a request.
+installApiBase();
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';

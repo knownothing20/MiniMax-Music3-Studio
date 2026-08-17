@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Minimize2, Move, PictureInPicture2 } from 'lucide-react';
+import { useI18n } from '../context/I18nContext';
 
 /**
  * Live resource readout for local generation.
@@ -78,6 +79,7 @@ function storedPosition(): { x: number; y: number } {
 }
 
 export const ResourceMonitor: React.FC<{ isOpen?: boolean }> = ({ isOpen = true }) => {
+  const { t } = useI18n();
   const [snapshot, setSnapshot] = useState<ResourceSnapshot | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [floating, setFloating] = useState(false);
@@ -150,13 +152,13 @@ export const ResourceMonitor: React.FC<{ isOpen?: boolean }> = ({ isOpen = true 
         <>
           {typeof gpu.utilization_percent === 'number' && <Bar label="GPU" percent={gpu.utilization_percent} value={`${gpu.utilization_percent}%`} />}
           <Bar label="VRAM" percent={vramPercent} value={`${gb(gpu.vram_used_mb)} / ${gb(gpu.vram_total_mb)}`} />
-          {powerPercent !== null && <Bar label="Power" percent={powerPercent} value={`${Math.round(gpu.power_draw_w!)} / ${Math.round(gpu.power_limit_w!)} W`} />}
+          {powerPercent !== null && <Bar label={t('power')} percent={powerPercent} value={`${Math.round(gpu.power_draw_w!)} / ${Math.round(gpu.power_limit_w!)} W`} />}
         </>
       )}
       <Bar label="RAM" percent={ramPercent} value={`${gb(snapshot.ram_used_mb)} / ${gb(snapshot.ram_total_mb)}`} />
       <Bar label="CPU" percent={snapshot.cpu_percent} value={`${Math.round(snapshot.cpu_percent)}%`} />
       <div className="flex items-center justify-between text-[10px] text-zinc-500 dark:text-zinc-400">
-        <span>{snapshot.engine_process ? 'Engine' : 'Engine offline'}</span>
+        <span>{snapshot.engine_process ? t('engineProcess') : t('engineOffline')}</span>
         <span className="tabular-nums">{snapshot.engine_process ? gb(snapshot.engine_process.memory_mb) : '—'}</span>
       </div>
     </div>
@@ -178,7 +180,7 @@ export const ResourceMonitor: React.FC<{ isOpen?: boolean }> = ({ isOpen = true 
               {gpu ? gpu.name.replace(/NVIDIA GeForce /i, '') : 'Resources'}
             </span>
             {typeof gpu?.temperature_c === 'number' && <span className="text-[10px] tabular-nums text-zinc-500">{gpu.temperature_c}°</span>}
-            <button type="button" onClick={() => setFloating(false)} title="Dock the resource monitor" className="text-zinc-400 hover:text-pink-500">
+            <button type="button" onClick={() => setFloating(false)} title={t('dockMonitor')} className="text-zinc-400 hover:text-pink-500">
               <Minimize2 size={13} />
             </button>
           </div>
@@ -209,7 +211,7 @@ export const ResourceMonitor: React.FC<{ isOpen?: boolean }> = ({ isOpen = true 
         <span className="min-w-0 flex-1 truncate text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           {gpu ? gpu.name.replace(/NVIDIA GeForce /i, '') : 'Resources'}
         </span>
-        <button type="button" onClick={() => setFloating(true)} title="Pop out the resource monitor" className="text-zinc-400 hover:text-pink-500">
+        <button type="button" onClick={() => setFloating(true)} title={t('popOutMonitor')} className="text-zinc-400 hover:text-pink-500">
           <PictureInPicture2 size={12} />
         </button>
       </div>

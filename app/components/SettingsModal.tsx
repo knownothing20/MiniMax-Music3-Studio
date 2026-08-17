@@ -64,7 +64,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                 onBlur={(event) => setDisplayName(event.target.value)}
                                 className="w-full rounded-lg border-2 border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 focus:border-indigo-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-white"
                             />
-                            <p className="text-xs text-zinc-400">This name is stored on this machine and is only used to label the studio.</p>
+                            <p className="text-xs text-zinc-400">{t('displayNameHint')}</p>
                         </div>
                     </div>
 
@@ -213,7 +213,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                         </a>
                                     </div>
                                     <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-2">
-                                        Report issues or request features on GitHub
+                                        {t('reportIssues')}
                                     </p>
                                 </div>
                             </div>

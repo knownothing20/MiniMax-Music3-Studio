@@ -636,7 +636,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                         </div>
                         <div className="p-4 max-h-[300px] overflow-y-auto custom-scrollbar">
                             <div className="text-sm text-zinc-700 dark:text-zinc-300 font-mono whitespace-pre-wrap leading-relaxed opacity-90">
-                                {song.lyrics || <div className="text-zinc-400 dark:text-zinc-600 italic text-center py-8">Instrumental<br /><span className="text-xs not-italic">No lyrics generated</span></div>}
+                                {song.lyrics || <div className="text-zinc-400 dark:text-zinc-600 italic text-center py-8">{t('instrumental')}<br /><span className="text-xs not-italic">{t('noLyrics')}</span></div>}
                             </div>
                         </div>
                     </div>

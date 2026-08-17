@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, Cloud, Cpu, Eye, EyeOff, Loader2, RefreshCw } from 'lucide-react';
+import { useI18n } from '../context/I18nContext';
 
 /**
  * Provider matrix.
@@ -17,11 +18,11 @@ import { AlertTriangle, Check, Cloud, Cpu, Eye, EyeOff, Loader2, RefreshCw } fro
 
 type CapabilityId = 'music_generation' | 'speech_to_text' | 'prompt_enhancement' | 'cover_art';
 
-const CAPABILITY_LABEL: Record<CapabilityId, string> = {
-  music_generation: 'Music generation',
-  speech_to_text: 'Speech to text',
-  prompt_enhancement: 'Caption & lyrics assistant',
-  cover_art: 'Cover art',
+const CAPABILITY_KEY: Record<CapabilityId, string> = {
+  music_generation: 'capabilityMusic',
+  speech_to_text: 'capabilitySpeech',
+  prompt_enhancement: 'capabilityAssistant',
+  cover_art: 'coverArt',
 };
 
 interface EngineDescriptor {
@@ -56,6 +57,7 @@ const CONTROL =
   'w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-pink-500 disabled:opacity-50 dark:border-white/10 dark:bg-black/20 dark:text-white';
 
 export const ProviderSettings: React.FC = () => {
+  const { t } = useI18n();
   const [engines, setEngines] = useState<EngineDescriptor[]>([]);
   const [selections, setSelections] = useState<ProviderSelection[]>([]);
   const [models, setModels] = useState<CatalogModel[]>([]);
@@ -92,7 +94,7 @@ export const ProviderSettings: React.FC = () => {
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || `OpenRouter catalog request failed (${response.status})`);
       setModels(body?.models ?? []);
-      if (refresh) setNotice(`Catalog refreshed: ${(body?.models ?? []).length} eligible models.`);
+      if (refresh) setNotice(`${t('refreshCatalog')}: ${(body?.models ?? []).length}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not read the OpenRouter catalog.');
     } finally {
@@ -151,7 +153,7 @@ export const ProviderSettings: React.FC = () => {
       if (!response.ok) throw new Error(body?.error || `Storing the key failed (${response.status})`);
       setSettings(body);
       setApiKey('');
-      setNotice(value ? 'API key stored on this machine.' : 'API key removed.');
+      setNotice(value ? t('keyStored') : t('keyRemoved'));
       await loadCatalog(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not store the API key.');
@@ -172,12 +174,11 @@ export const ProviderSettings: React.FC = () => {
               <Cloud size={16} className="text-pink-500" /> OpenRouter
             </h4>
             <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-              Cloud capabilities come from the live OpenRouter catalog, so only models that really declare the
-              needed modality are offered. The key is kept by the local studio server.
+              {t('openRouterIntro')}
             </p>
           </div>
           <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${cloudReady ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-zinc-500/10 text-zinc-500'}`}>
-            {cloudReady ? (settings?.source === 'environment' ? 'Key from environment' : 'Key configured') : 'No key'}
+            {cloudReady ? (settings?.source === 'environment' ? t('keyFromEnvironment') : t('keyConfigured')) : t('noKey')}
           </span>
         </div>
 
@@ -207,7 +208,7 @@ export const ProviderSettings: React.FC = () => {
               onClick={() => void saveKey(apiKey)}
               className="rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
             >
-              {busy === 'key' ? <Loader2 size={14} className="animate-spin" /> : 'Save key'}
+              {busy === 'key' ? <Loader2 size={14} className="animate-spin" /> : t('saveKey')}
             </button>
             {cloudReady && (
               <button
@@ -216,7 +217,7 @@ export const ProviderSettings: React.FC = () => {
                 onClick={() => void saveKey(null)}
                 className="rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-600 hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-300"
               >
-                Remove
+                {t('removeKey')}
               </button>
             )}
           </div>
@@ -234,15 +235,15 @@ export const ProviderSettings: React.FC = () => {
             disabled={busy === 'catalog'}
             className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
           >
-            <RefreshCw size={13} className={busy === 'catalog' ? 'animate-spin' : ''} /> Refresh catalog
+            <RefreshCw size={13} className={busy === 'catalog' ? 'animate-spin' : ''} /> {t('refreshCatalog')}
           </button>
-          <span className="text-xs text-zinc-500">{catalogCount > 0 ? `${catalogCount} eligible models` : 'Catalog not loaded'}</span>
+          <span className="text-xs text-zinc-500">{catalogCount > 0 ? `${catalogCount}` : t('catalogNotLoaded')}</span>
         </div>
       </section>
 
       <section className="space-y-3">
         <h4 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white">
-          <Cpu size={16} className="text-pink-500" /> Capabilities
+          <Cpu size={16} className="text-pink-500" /> {t('capabilitiesSection')}
         </h4>
         {selections.map(selection => {
           const local = localEnginesFor(selection.capability);
@@ -251,7 +252,7 @@ export const ProviderSettings: React.FC = () => {
           return (
             <div key={selection.capability} className="rounded-xl border border-zinc-200 p-3 dark:border-white/10">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{CAPABILITY_LABEL[selection.capability]}</span>
+                <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{t(CAPABILITY_KEY[selection.capability])}</span>
                 <div className="flex rounded-lg border border-zinc-200 p-0.5 dark:border-white/10">
                   {(['local', 'open_router'] as const).map(mode => {
                     const disabled = mode === 'local' ? !hasLocal : !cloudReady;
@@ -260,7 +261,7 @@ export const ProviderSettings: React.FC = () => {
                         key={mode}
                         type="button"
                         disabled={disabled || busy === 'configuration'}
-                        title={disabled ? (mode === 'local' ? 'No local engine implements this capability in this build' : 'Configure an OpenRouter key first') : undefined}
+                        title={disabled ? (mode === 'local' ? t('noLocalEngineForCapability') : t('configureKeyFirst')) : undefined}
                         onClick={() => update(selection.capability, {
                           mode,
                           local_engine: mode === 'local' ? (selection.local_engine ?? local[0]?.id ?? null) : null,
@@ -270,7 +271,7 @@ export const ProviderSettings: React.FC = () => {
                           selection.mode === mode ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500'
                         }`}
                       >
-                        {mode === 'local' ? 'Local' : 'OpenRouter'}
+                        {mode === 'local' ? t('modeLocal') : 'OpenRouter'}
                       </button>
                     );
                   })}
@@ -288,13 +289,13 @@ export const ProviderSettings: React.FC = () => {
                     >
                       {local.map(engine => (
                         <option key={engine.id} value={engine.id}>
-                          {engine.display_name}{engine.installed ? '' : ' — not installed'}
+                          {engine.display_name}{engine.installed ? '' : ` — ${t('notInstalledSuffix')}`}
                         </option>
                       ))}
                     </select>
                   ) : (
                     <p className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-300">
-                      <AlertTriangle size={13} /> This build ships no local engine for this capability.
+                      <AlertTriangle size={13} /> {t('noLocalEngineForCapability')}
                     </p>
                   )
                 ) : cloud.length > 0 ? (
@@ -304,14 +305,14 @@ export const ProviderSettings: React.FC = () => {
                     onChange={event => update(selection.capability, { cloud_model: event.target.value || null })}
                     className={CONTROL}
                   >
-                    <option value="">Choose a catalog model…</option>
+                    <option value="">{t('chooseCatalogModel')}</option>
                     {cloud.map(model => (
                       <option key={model.id} value={model.id}>{model.name}</option>
                     ))}
                   </select>
                 ) : (
                   <p className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-300">
-                    <AlertTriangle size={13} /> The refreshed catalog declares no model for this capability.
+                    <AlertTriangle size={13} /> {t('noCatalogModelForCapability')}
                   </p>
                 )}
               </div>

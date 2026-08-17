@@ -31,6 +31,7 @@ const StatusLine: React.FC<{ active: boolean; pending?: boolean; label: string }
 );
 
 const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
+  const { t } = useI18n();
   const [setup, setSetup] = useState<NativeSetupStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const [openRouter, setOpenRouter] = useState<{ configured?: boolean } | null>(null);
@@ -69,9 +70,9 @@ const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const openRouterConfigured = openRouter?.configured === true;
   const engineReady = setup?.engine_ready === true;
   const modelReady = setup?.ready === true;
-  const profile = setup?.selected_profile_id || (setup?.selected_component_ids?.length ? 'Custom set' : 'No profile');
-  const engineLabel = unreachable ? 'Local runtime unavailable' : engineReady ? 'Music3 engine reachable' : 'Music3 engine starting';
-  const modelLabel = modelReady ? `Profile ready: ${profile}` : 'Model profile not installed';
+  const profile = setup?.selected_profile_id || (setup?.selected_component_ids?.length ? t('customSet') : t('noProfile'));
+  const engineLabel = unreachable ? t('engineUnavailable') : engineReady ? t('engineReachable') : t('engineStarting');
+  const modelLabel = modelReady ? `${t('profileReady')}: ${profile}` : t('profileNotInstalled');
 
   if (!isOpen) {
     return (
@@ -85,7 +86,7 @@ const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     <div className="space-y-1.5 rounded-xl border border-zinc-200/70 bg-zinc-50/80 px-3 py-2 text-[10px] dark:border-white/5 dark:bg-zinc-900/50">
       <StatusLine active={engineReady && modelReady} pending={!unreachable && !(engineReady && modelReady)} label={engineLabel} />
       <StatusLine active={modelReady} pending={!unreachable && !modelReady} label={modelLabel} />
-      <StatusLine active={openRouterConfigured} label={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'} />
+      <StatusLine active={openRouterConfigured} label={openRouterConfigured ? t('openRouterConfigured') : t('openRouterNotConfigured')} />
     </div>
   );
 };

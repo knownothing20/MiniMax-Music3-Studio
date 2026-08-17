@@ -128,7 +128,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
              {activeTab === 'all' && (
                  <div className="space-y-1">
                     {allSongs.length === 0 ? (
-                        <div className="text-sm text-zinc-500 dark:text-zinc-400">No songs yet.</div>
+                        <div className="text-sm text-zinc-500 dark:text-zinc-400">{t('noSongsYet')}</div>
                     ) : (
                         allSongs.map((song, idx) => (
                             <div key={song.id} className="group flex min-w-0 items-center gap-2 rounded p-2 transition-colors hover:bg-zinc-100 dark:hover:bg-white/10 sm:gap-4" onClick={() => onPlaySong(song, allSongs)}>

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Check, Cpu, Loader2, RotateCw } from 'lucide-react';
+import { useI18n } from '../context/I18nContext';
 
 /**
  * Launch options for the local engine.
@@ -42,6 +43,7 @@ const Toggle: React.FC<{ label: string; hint: string; checked: boolean; onChange
 );
 
 export const EngineSettings: React.FC = () => {
+  const { t } = useI18n();
   const [options, setOptions] = useState<EngineOptions>(DEFAULTS);
   const [saved, setSaved] = useState<EngineOptions>(DEFAULTS);
   const [busy, setBusy] = useState(false);
@@ -78,8 +80,8 @@ export const EngineSettings: React.FC = () => {
       if (!response.ok) throw new Error(body?.error || `Saving the engine options failed (${response.status})`);
       setSaved(body.options);
       setNotice(body.engine_restarted
-        ? 'Saved. The engine was restarted so the new flags take effect.'
-        : 'Saved. They apply the next time the engine starts.');
+        ? t('engineOptionsSavedRestarted')
+        : t('engineOptionsSavedLater'));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Saving the engine options failed.');
     } finally {
@@ -95,7 +97,7 @@ export const EngineSettings: React.FC = () => {
       const response = await fetch('/engine/restart', { method: 'POST' });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || `Restarting the engine failed (${response.status})`);
-      setNotice('The engine was restarted.');
+      setNotice(t('engineRestarted'));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Restarting the engine failed.');
     } finally {
@@ -106,19 +108,19 @@ export const EngineSettings: React.FC = () => {
   return (
     <div className="space-y-3">
       <h4 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white">
-        <Cpu size={16} className="text-pink-500" /> Local engine
+        <Cpu size={16} className="text-pink-500" /> {t('localEngine')}
       </h4>
 
       <Toggle
-        label="Keep models in VRAM between jobs"
-        hint="--keep-loaded. Back-to-back generation stops reloading each module, at the cost of a permanently higher VRAM footprint."
+        label={t('keepLoadedLabel')}
+        hint={t('keepLoadedHint')}
         checked={options.keep_loaded}
         onChange={value => setOptions(current => ({ ...current, keep_loaded: value }))}
       />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
-          <span className="mb-1.5 block">Songs per request (--max-batch)</span>
+          <span className="mb-1.5 block">{t('maxBatchLabel')}</span>
           <input
             type="number"
             min={1}
@@ -130,15 +132,15 @@ export const EngineSettings: React.FC = () => {
             }}
             className={CONTROL}
           />
-          <span className="mt-1 block font-normal text-zinc-500">The engine rejects a request whose song count exceeds this.</span>
+          <span className="mt-1 block font-normal text-zinc-500">{t('maxBatchFieldHint')}</span>
         </label>
         <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
-          <span className="mb-1.5 block">LM KV cache (--max-seq)</span>
+          <span className="mb-1.5 block">{t('maxSeqLabel')}</span>
           <input
             type="number"
             min={512}
             step={512}
-            placeholder="model context"
+            placeholder={t('maxSeqHint')}
             value={options.max_seq ?? ''}
             onChange={event => {
               const value = Number(event.target.value);
@@ -146,28 +148,28 @@ export const EngineSettings: React.FC = () => {
             }}
             className={CONTROL}
           />
-          <span className="mt-1 block font-normal text-zinc-500">Empty uses the model's own context length.</span>
+          <span className="mt-1 block font-normal text-zinc-500">{t('maxSeqHint')}</span>
         </label>
       </div>
 
       <details className="rounded-xl border border-zinc-200 p-3 dark:border-white/10">
-        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-zinc-500">Diagnostics</summary>
+        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-zinc-500">{t('diagnostics')}</summary>
         <div className="mt-3 space-y-3">
           <Toggle
-            label="Disable flash attention"
-            hint="--no-fa. Slower; use it when a driver or card misbehaves with flash attention."
+            label={t('noFlashAttentionLabel')}
+            hint={t('noFlashAttentionHint')}
             checked={options.disable_flash_attention}
             onChange={value => setOptions(current => ({ ...current, disable_flash_attention: value }))}
           />
           <Toggle
-            label="Split CFG into two forwards"
-            hint="--no-batch-cfg. Lower peak VRAM during guidance, slower per step."
+            label={t('splitCfgLabel')}
+            hint={t('splitCfgHint')}
             checked={options.split_cfg_forwards}
             onChange={value => setOptions(current => ({ ...current, split_cfg_forwards: value }))}
           />
           <Toggle
-            label="Clamp hidden states to FP16 range"
-            hint="--clamp-fp16. A numerical workaround for overflow artefacts."
+            label={t('clampFp16Label')}
+            hint={t('clampFp16Hint')}
             checked={options.clamp_fp16}
             onChange={value => setOptions(current => ({ ...current, clamp_fp16: value }))}
           />
@@ -181,7 +183,7 @@ export const EngineSettings: React.FC = () => {
           disabled={!dirty || busy}
           className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
         >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : null} Save and restart engine
+          {busy ? <Loader2 size={14} className="animate-spin" /> : null} {t('saveAndRestartEngine')}
         </button>
         <button
           type="button"
@@ -189,7 +191,7 @@ export const EngineSettings: React.FC = () => {
           disabled={busy}
           className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
         >
-          <RotateCw size={13} /> Restart engine
+          <RotateCw size={13} /> {t('restartEngine')}
         </button>
       </div>
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Download, Loader2, Square, X } from 'lucide-react';
+import { useI18n } from '../context/I18nContext';
 import {
   componentKindLabel,
   componentPrecision,
@@ -57,6 +58,7 @@ const errorMessage = async (response: Response) => {
 };
 
 export const SetupGate: React.FC<{ onReady: () => void }> = ({ onReady }) => {
+  const { t } = useI18n();
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [selectedProfile, setSelectedProfile] = useState('');
@@ -182,27 +184,26 @@ export const SetupGate: React.FC<{ onReady: () => void }> = ({ onReady }) => {
       <div className="w-full max-w-2xl">
         <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-pink-500">
           <span className="h-2 w-2 rounded-full bg-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.75)]" />
-          First run
+          {t('firstRun')}
         </div>
-        <h1 className="mt-4 text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-white">Set up local music generation</h1>
-        <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">Download one complete, verified five-component minimaxmusic.cpp profile. The advanced builder requires exactly one compatible LM, depth decoder, condition encoder, DiT, and vocoder; the native backend rejects partial sets.</p>
+        <h1 className="mt-4 text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-white">{t('setupTitle')}</h1>
+        <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">{t('setupIntro')}</p>
 
         {error && <div className="mt-5 flex gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"><X size={16} className="mt-0.5 shrink-0" />{error}</div>}
 
         <div className="mt-5 rounded-xl border border-pink-300/50 bg-pink-50 px-4 py-3 text-sm text-zinc-700 dark:border-pink-500/25 dark:bg-pink-500/10 dark:text-zinc-200">
-          <span className="font-semibold text-pink-600 dark:text-pink-400">Recommended for this machine:</span>{' '}
-          {status?.hardware?.reason || 'the profile matching the detected GPU is preselected'}. Downloads are resumable and every
-          component is checksum-verified before generation is enabled.
+          <span className="font-semibold text-pink-600 dark:text-pink-400">{t('recommendedForMachine')}</span>{' '}
+          {status?.hardware?.reason || t('recommendedFallback')}. {t('setupResumable')}
         </div>
 
         {status?.ready && !status.engine_ready && <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-          Model files are installed, but the local {status.engine_id} runtime is not ready. Studio will start it automatically after the selected profile has been verified.
+          {t('engineNotStartedYet')}
         </div>}
 
         {presets && presets.presets.length > 0 && <div className="mt-5 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/10 dark:bg-suno-card">
-          <div className="flex items-center justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Hardware preset</div><p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Applies the native server preset for this machine.</p></div>{presets.hardware?.recommended && <span className="rounded-full bg-pink-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-pink-600 dark:text-pink-300">Recommended</span>}</div>
-          <div className="mt-3 flex gap-2"><select value={presetId} onChange={(event) => setPresetId(event.target.value)} disabled={presetBusy || !!active} className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 focus:border-pink-500 focus:outline-none dark:border-white/10 dark:bg-black/20 dark:text-white">{presets.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.title}{preset.subtitle ? ` — ${preset.subtitle}` : ''}</option>)}</select><button type="button" onClick={() => void applyPreset()} disabled={!presetId || presetBusy || !!active} className="rounded-lg border border-zinc-300 px-3 text-xs font-bold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200">{presetBusy ? 'Applying…' : 'Apply'}</button></div>
-          <p className={`mt-3 text-[11px] ${openRouterMusicReady ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}>{openRouterMusicReady ? 'A Full OpenRouter preset can enable Music: the server resolved a music-capable OpenRouter provider.' : 'OpenRouter Music requires a catalog refresh: no resolved music-capable provider is currently reported by the server.'}</p>
+          <div className="flex items-center justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{t('hardwarePreset')}</div><p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{t('hardwarePresetHint')}</p></div>{presets.hardware?.recommended && <span className="rounded-full bg-pink-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-pink-600 dark:text-pink-300">{t('recommendedBadge')}</span>}</div>
+          <div className="mt-3 flex gap-2"><select value={presetId} onChange={(event) => setPresetId(event.target.value)} disabled={presetBusy || !!active} className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 focus:border-pink-500 focus:outline-none dark:border-white/10 dark:bg-black/20 dark:text-white">{presets.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.title}{preset.subtitle ? ` — ${preset.subtitle}` : ''}</option>)}</select><button type="button" onClick={() => void applyPreset()} disabled={!presetId || presetBusy || !!active} className="rounded-lg border border-zinc-300 px-3 text-xs font-bold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200">{presetBusy ? t('applyingPreset') : t('applyPreset')}</button></div>
+          <p className={`mt-3 text-[11px] ${openRouterMusicReady ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}>{openRouterMusicReady ? t('openRouterMusicReady') : t('openRouterMusicMissing')}</p>
         </div>}
 
         <div className="mt-5 space-y-3">
@@ -221,39 +222,39 @@ export const SetupGate: React.FC<{ onReady: () => void }> = ({ onReady }) => {
           })}
           {advanced && <button type="button" onClick={() => !active && setSelectedProfile('custom')} disabled={!!active}
             className={`w-full rounded-xl border p-4 text-left transition-colors ${selectedProfile === 'custom' ? 'border-pink-500 bg-pink-50 dark:bg-pink-500/10' : 'border-zinc-200 bg-white hover:border-pink-300 dark:border-white/10 dark:bg-suno-card'} disabled:cursor-not-allowed`}>
-            <div className="flex items-center gap-3"><span className={`grid h-5 w-5 place-items-center rounded-full border ${selectedProfile === 'custom' ? 'border-pink-500 bg-pink-500 text-white' : 'border-zinc-300 dark:border-zinc-600'}`}>{selectedProfile === 'custom' && <Check size={13} strokeWidth={3} />}</span><span className="min-w-0 flex-1 font-semibold text-zinc-900 dark:text-white">Custom compatible set</span><span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">{bytes(selectedCustomBytes)}</span></div>
-            <div className="ml-8 mt-1 text-xs text-zinc-500 dark:text-zinc-400">Exactly one of each of the five native component categories</div>
+            <div className="flex items-center gap-3"><span className={`grid h-5 w-5 place-items-center rounded-full border ${selectedProfile === 'custom' ? 'border-pink-500 bg-pink-500 text-white' : 'border-zinc-300 dark:border-zinc-600'}`}>{selectedProfile === 'custom' && <Check size={13} strokeWidth={3} />}</span><span className="min-w-0 flex-1 font-semibold text-zinc-900 dark:text-white">{t('customSet')}</span><span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">{bytes(selectedCustomBytes)}</span></div>
+            <div className="ml-8 mt-1 text-xs text-zinc-500 dark:text-zinc-400">{t('customSetHint')}</div>
           </button>}
         </div>
 
         <button type="button" onClick={() => setAdvanced((value) => !value)} disabled={!!active} className="mt-4 text-xs font-medium text-zinc-500 hover:text-pink-500 disabled:opacity-50">
-          {advanced ? 'Hide alternative complete profiles' : 'Show all runnable profiles and custom builder'}
+          {advanced ? t('hideAllProfiles') : t('showAllProfiles')}
         </button>
 
         {advanced && selectedProfile === 'custom' && <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/10 dark:bg-suno-card">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-white">Custom compatible set</div>
-          <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">Only pinned minimaxmusic.cpp GGUF components are listed. Choose one item in every category; the backend performs final compatibility validation before it starts any download.</p>
+          <div className="text-sm font-semibold text-zinc-900 dark:text-white">{t('customSet')}</div>
+          <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('customSetPicker')}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             {componentGroups.map((group) => <label key={group.kind} className="block text-xs font-medium text-zinc-700 dark:text-zinc-200">
               <span>{componentKindLabel(group.kind)}</span>
               <select value={customComponents[group.kind] || ''} onChange={(event) => setCustomComponents((current) => ({ ...current, [group.kind]: event.target.value }))} disabled={!!active} className="mt-1.5 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 focus:border-pink-500 focus:outline-none disabled:opacity-50 dark:border-white/10 dark:bg-black/20 dark:text-white">
-                <option value="">Choose a component</option>
+                <option value="">{t('chooseComponent')}</option>
                 {group.components.map((component) => <option key={component.id} value={component.id}>{componentPrecision(component)} — {bytes(component.bytes)}</option>)}
               </select>
-              <span className="mt-1 block truncate font-normal text-zinc-500 dark:text-zinc-400">{group.components.find((component) => component.id === customComponents[group.kind])?.filename || 'No component selected'}</span>
+              <span className="mt-1 block truncate font-normal text-zinc-500 dark:text-zinc-400">{group.components.find((component) => component.id === customComponents[group.kind])?.filename || t('noComponentSelected')}</span>
             </label>)}
           </div>
-          <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">{selectedCustomIds ? `Complete native set: 5 / 5 components · ${bytes(selectedCustomBytes)}` : 'Incomplete: choose all five categories before downloading.'}</div>
+          <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">{selectedCustomIds ? `${t('completeSet')} · ${bytes(selectedCustomBytes)}` : t('incompleteSet')}</div>
         </div>}
 
         {active?.status === 'downloading' && <div className="mt-5 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/10 dark:bg-suno-card">
-          <div className="flex items-center justify-between text-sm"><span className="flex items-center gap-2 font-medium text-zinc-700 dark:text-zinc-200"><Loader2 size={16} className="animate-spin text-pink-500" />Downloading {active.profile_id || 'custom compatible set'}</span><span className="text-zinc-500">{progress.toFixed(1)}%</span></div>
+          <div className="flex items-center justify-between text-sm"><span className="flex items-center gap-2 font-medium text-zinc-700 dark:text-zinc-200"><Loader2 size={16} className="animate-spin text-pink-500" />{t('downloading')} {active.profile_id || t('customSet')}</span><span className="text-zinc-500">{progress.toFixed(1)}%</span></div>
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-black/30"><div className="h-full bg-gradient-to-r from-pink-500 to-purple-500 transition-[width]" style={{ width: `${progress}%` }} /></div>
           <div className="mt-2 text-xs text-zinc-500">{bytes(active.downloaded_bytes)} / {bytes(active.total_bytes)}</div>
         </div>}
 
         <div className="mt-6 flex gap-3">
-          {active?.status === 'downloading' ? <button type="button" onClick={() => void cancel()} className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-semibold text-zinc-700 hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-200"><Square size={15} />Cancel download</button> : <button type="button" onClick={() => void download()} disabled={(!selected && !selectedCustomIds) || !!active} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"><Download size={16} />Download {selectedProfile === 'custom' ? 'custom compatible set' : 'selected profile'}</button>}
+          {active?.status === 'downloading' ? <button type="button" onClick={() => void cancel()} className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 px-4 py-2.5 text-sm font-semibold text-zinc-700 hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-200"><Square size={15} />{t('cancelDownload')}</button> : <button type="button" onClick={() => void download()} disabled={(!selected && !selectedCustomIds) || !!active} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"><Download size={16} />{selectedProfile === 'custom' ? t('downloadCustomSet') : t('downloadSelectedProfile')}</button>}
         </div>
       </div>
     </div>

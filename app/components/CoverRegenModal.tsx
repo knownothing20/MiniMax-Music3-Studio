@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Image as ImageIcon, Loader2, Sparkles, Upload, X } from 'lucide-react';
 import { Song } from '../types';
 import { AlbumCover } from './AlbumCover';
+import { apiUrl } from '../services/apiBase';
+import { useI18n } from '../context/I18nContext';
 
 /**
  * Cover art for a library track.
@@ -36,6 +38,7 @@ const defaultPrompt = (song: Song) =>
   `Album cover artwork for a track titled "${song.title}". Style: ${song.style || 'contemporary'}. No text, no lettering, square composition.`;
 
 export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose, onCoverSaved }) => {
+  const { t } = useI18n();
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [modelId, setModelId] = useState('');
   const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null);
@@ -113,7 +116,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || `Storing the cover failed (${response.status})`);
-      onCoverSaved(song.id, `/v1/library/songs/${encodeURIComponent(song.id)}/cover`);
+      onCoverSaved(song.id, apiUrl(`/v1/library/songs/${encodeURIComponent(song.id)}/cover`));
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Storing the cover failed.');
@@ -127,7 +130,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
       <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-zinc-900" onClick={event => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-white/10">
           <h3 className="flex items-center gap-2 text-base font-bold text-zinc-900 dark:text-white">
-            <ImageIcon size={18} className="text-pink-500" /> Cover art
+            <ImageIcon size={18} className="text-pink-500" /> {t('coverArt')}
           </h3>
           <button type="button" onClick={onClose} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200">
             <X size={18} />
@@ -147,7 +150,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
                 onClick={() => fileInput.current?.click()}
                 className="mt-3 inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-200"
               >
-                <Upload size={13} /> Use an image file
+                <Upload size={13} /> {t('useImageFile')}
               </button>
               <input
                 ref={fileInput}
@@ -164,21 +167,21 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
           </div>
 
           <div className="rounded-xl border border-zinc-200 p-3 dark:border-white/10">
-            <label className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">Generate with OpenRouter</label>
+            <label className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('generateWithOpenRouter')}</label>
             {keyConfigured === false && (
               <p className="mt-2 flex items-start gap-2 text-xs text-amber-600 dark:text-amber-300">
                 <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                Add an OpenRouter API key in Settings to generate cover art. Image generation is a paid request.
+                {t('coverKeyRequired')}
               </p>
             )}
             {keyConfigured === true && models.length === 0 && (
               <p className="mt-2 flex items-start gap-2 text-xs text-amber-600 dark:text-amber-300">
                 <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                The refreshed catalog reports no image-capable model.
+                {t('catalogNoImageModel')}
               </p>
             )}
             <select value={modelId} onChange={event => setModelId(event.target.value)} disabled={models.length === 0} className={`${CONTROL} mt-2`}>
-              {models.length === 0 && <option value="">No image model available</option>}
+              {models.length === 0 && <option value="">{t('noImageModel')}</option>}
               {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
             </select>
             <textarea
@@ -193,7 +196,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
               disabled={!canGenerate || busy !== null || !prompt.trim()}
               className="mt-2 inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy === 'generate' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Generate
+              {busy === 'generate' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} {t('generate')}
             </button>
           </div>
 
@@ -206,7 +209,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
 
         <div className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-4 dark:border-white/10">
           <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-sm font-medium text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">
-            Cancel
+            {t('cancel')}
           </button>
           <button
             type="button"
@@ -214,7 +217,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
             disabled={!preview || busy !== null}
             className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
-            {busy === 'save' ? <Loader2 size={14} className="animate-spin" /> : null} Save cover
+            {busy === 'save' ? <Loader2 size={14} className="animate-spin" /> : null} {t('saveCover')}
           </button>
         </div>
       </div>

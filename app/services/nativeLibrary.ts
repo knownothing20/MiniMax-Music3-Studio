@@ -1,3 +1,4 @@
+import { apiUrl } from './apiBase';
 import { Song } from '../types';
 
 interface NativeLibrarySong {
@@ -62,14 +63,14 @@ export function mapNativeLibrarySong(song: NativeLibrarySong): Song {
     title: song.title,
     lyrics: song.lyrics,
     style: song.caption,
-    coverUrl: typeof metadata.cover_filename === 'string' ? `/v1/library/songs/${encodeURIComponent(song.id)}/cover` : '',
+    coverUrl: typeof metadata.cover_filename === 'string' ? apiUrl(`/v1/library/songs/${encodeURIComponent(song.id)}/cover`) : '',
     duration: (() => {
       const seconds = numberMetadata(metadata, 'duration_seconds') ?? numberMetadata(metadata, 'duration');
       return seconds && seconds > 0 ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '0:00';
     })(),
     createdAt: nativeDate(song.created_at),
     tags,
-    audioUrl: song.audio_path ? `/v1/library/media/${encodeURIComponent(song.id)}` : undefined,
+    audioUrl: song.audio_path ? apiUrl(`/v1/library/media/${encodeURIComponent(song.id)}`) : undefined,
     isPublic: false,
     ditModel: song.engine_id,
     lmModel: song.profile_id || undefined,

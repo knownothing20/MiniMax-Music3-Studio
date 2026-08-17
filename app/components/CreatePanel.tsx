@@ -184,7 +184,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     const poll = () => void fetch('/v1/engine/logs')
       .then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
       .then((body: { lines?: string[] }) => setLogs((body.lines ?? []).slice(-120)))
-      .catch(() => setLogs(['Engine logs are unavailable.']));
+      .catch(() => setLogs([t('engineLogsUnavailable')]));
     poll();
     const timer = window.setInterval(poll, 2000);
     return () => window.clearInterval(timer);
@@ -320,7 +320,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h1 className="truncate text-base font-bold">{t('createMusic')}</h1>
-              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">MiniMax Music 3 · local C++/CUDA inference</p>
+              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">{t('localInference')}</p>
             </div>
             <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${ready ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
               <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
@@ -345,9 +345,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
               <div>
-                <b>Local generation is not available yet.</b>
+                <b>{t('localGenerationUnavailable')}</b>
                 <br />
-                Choose and download a complete five-component Music3 profile in the model manager. Nothing downloads by itself.
+                {t('downloadProfileFirst')}
               </div>
             </div>
           )}
@@ -358,7 +358,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <textarea
                   value={idea}
                   onChange={event => setIdea(event.target.value)}
-                  placeholder="e.g. atmospheric synth-pop about a night drive, memorable chorus"
+                  placeholder={t('ideaPlaceholder')}
                   className={`${CONTROL} h-24 resize-none`}
                 />
               </Field>
@@ -398,7 +398,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               <textarea
                 value={caption}
                 onChange={event => setCaption(event.target.value)}
-                placeholder="Genre, instruments, mood, vocal, arrangement"
+                placeholder={t('captionPlaceholder')}
                 className={`${CONTROL} h-24 resize-none`}
               />
             </Field>
@@ -411,7 +411,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               />
             </Field>
             <Field label={`${t('title')} · ${t('libraryOnly')}`}>
-              <input value={title} onChange={event => setTitle(event.target.value)} placeholder="Untitled" className={CONTROL} />
+              <input value={title} onChange={event => setTitle(event.target.value)} placeholder={t('untitled')} className={CONTROL} />
             </Field>
           </div>
 
@@ -430,7 +430,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               <NumberField label={t('ditSteps')} value={steps} min={2} max={80} step={1} onChange={setSteps} />
             </div>
             <p className="mt-3 text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-              Engine defaults: 60 s · 30 steps · LM CFG 1.5 · top-k 50 · DiT CFG 1.7.
+              {t('engineDefaultsHint')}
             </p>
           </div>
 
@@ -459,8 +459,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <NumberField label={t('variationsPerSong')} value={synthBatch} min={1} max={9} step={1} onChange={setSynthBatch} />
               </div>
               <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-                This request renders <b>{totalTracks}</b> {totalTracks === 1 ? 'track' : 'tracks'}: each song samples its own LM
-                stream, each variation re-runs flow matching on the same condition track.
+                {t('renderCountPrefix')} <b>{totalTracks}</b>: {t('renderCountSuffix')}
               </p>
               {maxSongs === 1 && (
                 <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
@@ -469,10 +468,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               )}
               <div className="grid grid-cols-2 gap-3">
                 <Field label={t('ditSeed')}>
-                  <input inputMode="numeric" value={seed} onChange={event => setSeed(event.target.value)} placeholder="Random" className={CONTROL} />
+                  <input inputMode="numeric" value={seed} onChange={event => setSeed(event.target.value)} placeholder={t('randomPlaceholder')} className={CONTROL} />
                 </Field>
                 <Field label={t('lmSeedLabel')}>
-                  <input inputMode="numeric" value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder="Random" className={CONTROL} />
+                  <input inputMode="numeric" value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder={t('randomPlaceholder')} className={CONTROL} />
                 </Field>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -487,7 +486,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <NumberField label={t('mp3Bitrate')} value={mp3Bitrate} min={64} max={320} step={16} onChange={setMp3Bitrate} disabled={format !== 'mp3'} />
               </div>
               <p className="text-[11px] leading-4 text-zinc-500">
-                Peak clip normalises to the (1 - clip/1e6) percentile; 0 disables clipping and WAV 32-bit float skips it entirely.
+                {t('peakClipHint')}
               </p>
 
               {componentChoiceAvailable && (
@@ -542,7 +541,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           </button>
           {showLogs && (
             <pre className="max-h-56 overflow-auto rounded-xl border border-zinc-200 bg-zinc-950 p-3 text-[10px] leading-4 text-zinc-300 dark:border-white/10">
-              {logs.length ? logs.join('\n') : 'No engine output yet.'}
+              {logs.length ? logs.join('\n') : t('noEngineOutput')}
             </pre>
           )}
 

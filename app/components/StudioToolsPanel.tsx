@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Boxes, RefreshCw, ShieldCheck } from 'lucide-react';
+import { useI18n } from '../context/I18nContext';
 import { OpenRouterMediaPanel } from './OpenRouterMediaPanel';
 
 interface SetupStatus {
@@ -23,6 +24,7 @@ interface Capabilities {
 }
 
 export function StudioToolsPanel(): React.ReactElement {
+  const { t } = useI18n();
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [loading, setLoading] = useState(true);
@@ -50,34 +52,34 @@ export function StudioToolsPanel(): React.ReactElement {
       <div className="mx-auto max-w-6xl space-y-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-pink-500">Studio tools</p>
-            <h1 className="mt-1 text-2xl font-bold text-zinc-950 dark:text-white">Runtimes, packages and compatibility</h1>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-pink-500">{t('studioTools')}</p>
+            <h1 className="mt-1 text-2xl font-bold text-zinc-950 dark:text-white">{t('toolsHeading')}</h1>
             <p className="mt-2 max-w-3xl text-sm text-zinc-600 dark:text-zinc-400">
-              Native engine diagnostics, installed model packages and OpenRouter capabilities for this Music3 desktop runtime.
+              {t('toolsIntro')}
             </p>
           </div>
           <button onClick={() => void refresh()} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-white/10 dark:text-zinc-200 dark:hover:bg-white/5">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> {t('refresh')}
           </button>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
           <section className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white"><ShieldCheck size={17} className="text-pink-500" /> Native music runtime</div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white"><ShieldCheck size={17} className="text-pink-500" /> {t('nativeRuntime')}</div>
             <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
               {!setup
-                ? 'Runtime status is unavailable.'
+                ? t('runtimeUnavailable')
                 : setup.ready
-                  ? `${setup.engine_ready ? 'Running' : 'Installed, engine not started'} · ${setup.selected_component_ids?.length ? 'custom component set' : setup.selected_profile_id ?? 'no profile selected'}`
-                  : 'No complete component set is installed yet. Open Create to choose and download one.'}
+                  ? `${setup.engine_ready ? t('runtimeRunning') : t('runtimeInstalledNotStarted')} · ${setup.selected_component_ids?.length ? t('customSet') : setup.selected_profile_id ?? '-'}`
+                  : t('runtimeNotInstalled')}
             </p>
           </section>
           <section className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white"><Boxes size={17} className="text-pink-500" /> Available provider capabilities</div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white"><Boxes size={17} className="text-pink-500" /> {t('providerCapabilities')}</div>
             <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
               {engines.length
-                ? engines.map((engine) => `${engine.display_name || engine.id}${engine.installed === false ? ' (not installed)' : ''}: ${(engine.capabilities || []).join(', ') || 'no capabilities reported'}`).join(' · ')
-                : 'No provider capability catalog is currently reported by the native server.'}
+                ? engines.map((engine) => `${engine.display_name || engine.id}${engine.installed === false ? ` (${t('notInstalledSuffix')})` : ''}: ${(engine.capabilities || []).join(', ')}`).join(' · ')
+                : t('noCapabilityCatalog')}
             </p>
           </section>
         </div>
