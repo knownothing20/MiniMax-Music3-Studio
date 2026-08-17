@@ -116,7 +116,7 @@ export const ko = {
     settings: '설정',
 
     // Username Modal
-    welcomeTitle: 'ACE-Step UI에 오신 것을 환영합니다',
+    welcomeTitle: 'MiniMax Music3 Studio에 오신 것을 환영합니다',
     welcomeSubtitle: 'AI 음악 제작을 시작하려면 이름을 입력하세요',
     yourName: '이름',
     enterYourName: '이름 입력',
@@ -259,7 +259,7 @@ export const ko = {
     failedToDeleteSong: '곡 삭제에 실패했습니다',
 
     // Sidebar
-    aceStepUI: 'ACE-Step UI',
+    aceStepUI: 'MiniMax Music3 Studio',
     collapseSidebar: '사이드바 접기',
     expandSidebar: '사이드바 펼치기',
     monitoring: '모니터링',
@@ -327,7 +327,7 @@ export const ko = {
     about: '정보',
     version: '버전',
     localAIMusicGenerator: '로컬 AI 음악 생성기',
-    poweredBy: 'ACE-Step 1.5 기반. 오픈 소스이며 무료로 사용 가능합니다.',
+    poweredBy: '로컬 MiniMax Music3 생성과 선택적 클라우드 도구를 제공합니다.',
     createdBy: '개발자 Ambsd',
     localizedBy: '현지화 및 2차 개발 bdsqlsz',
     follow: '팔로우',
@@ -759,7 +759,7 @@ export const ko = {
     shareViaEmail: '이메일로 공유',
     copyLink: '링크 복사',
     emailSubject: '이 AI 곡을 들어보세요',
-    emailBody: '안녕하세요!\n\n제가 만든 이 AI 생성 곡을 들어보세요. 마음에 드실 거예요:\n\n"{title}" - {creator}\n{style}\n\n여기서 들으세요: {url}\n\nACE-Step UI로 제작 - 무료 오픈 소스 로컬 AI 음악 생성!',
+    emailBody: '안녕하세요!\n\n제가 만든 이 AI 생성 곡을 들어보세요. 마음에 드실 거예요:\n\n"{title}" - {creator}\n{style}\n\n여기서 들으세요: {url}\n\nMiniMax Music3 Studio로 제작.',
 
     // Reference Modal
     referenceModalTitle: '참조 음악',

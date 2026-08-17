@@ -47,9 +47,15 @@ export function AuthProvider({ children }: { children: ReactNode }): React.React
           localStorage.removeItem(USER_KEY);
           setIsLoading(false);
         } else {
-          // Backend not reachable - retry every 2s
-          console.warn('Backend not ready, retrying...', error);
-          setTimeout(() => initAuth(), 2000);
+          // Native desktop session when the legacy social service is absent.
+          console.warn('Legacy social service is unavailable; using local desktop session.', error);
+          const localUser: User = { id: 'local-desktop-user', username: 'Local Studio' };
+          const localToken = 'local-desktop-session';
+          setUser(localUser);
+          setToken(localToken);
+          localStorage.setItem(TOKEN_KEY, localToken);
+          localStorage.setItem(USER_KEY, JSON.stringify(localUser));
+          setIsLoading(false);
           return; // don't setIsLoading(false) — keep loading state
         }
       }

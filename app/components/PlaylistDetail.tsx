@@ -3,6 +3,7 @@ import { Song, Playlist, playlistsApi, songsApi, getAudioUrl } from '../services
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { ArrowLeft, Play, MoreHorizontal, Clock, Calendar, Shuffle, Trash2, Mic2, Music } from 'lucide-react';
+import { deleteNativePlaylist, getNativePlaylist, loadNativeLibrarySongs, updateNativePlaylist } from '../services/nativeLibrary';
 
 interface PlaylistDetailProps {
     playlistId: string;
@@ -18,6 +19,7 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
     const [playlist, setPlaylist] = useState<Playlist & { creator_avatar?: string } | null>(null);
     const [songs, setSongs] = useState<Song[]>([]);
     const [loading, setLoading] = useState(true);
+    const [isNativePlaylist, setIsNativePlaylist] = useState(false);
 
     useEffect(() => {
         loadPlaylist();
@@ -26,6 +28,21 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
     const loadPlaylist = async () => {
         setLoading(true);
         try {
+            const nativePlaylist = await getNativePlaylist(playlistId);
+            if (nativePlaylist) {
+                const nativeSongs = await loadNativeLibrarySongs();
+                const songIds = nativePlaylist.songIds || [];
+                const nativeById = new Map(nativeSongs.map(song => [song.id, song]));
+                const orderedSongs = songIds.flatMap(id => {
+                    const song = nativeById.get(id);
+                    return song ? [song] : [];
+                });
+                setPlaylist({ ...nativePlaylist, user_id: '__native__' } as Playlist & { creator_avatar?: string });
+                setSongs(orderedSongs as unknown as Song[]);
+                setIsNativePlaylist(true);
+                return;
+            }
+
             const res = await playlistsApi.getPlaylist(playlistId, token);
             // res.playlist comes from DB row, which now includes creator_avatar
             setPlaylist(res.playlist as any);
@@ -49,6 +66,7 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
             }));
 
             setSongs(mappedSongs);
+            setIsNativePlaylist(false);
         } catch (error) {
             console.error('Failed to load playlist:', error);
         } finally {
@@ -58,9 +76,15 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
 
     // ... (retaining methods handleRemove, handleDelete) ...
     const handleRemoveSong = async (songId: string) => {
-        if (!token || !playlist) return;
+        if (!playlist || (!token && !isNativePlaylist)) return;
         try {
-            await playlistsApi.removeSong(playlist.id, songId, token);
+            if (isNativePlaylist) {
+                const songIds = (playlist.songIds || []).filter(id => id !== songId);
+                const updated = await updateNativePlaylist(playlist.id, playlist, songIds);
+                setPlaylist({ ...updated, user_id: '__native__' } as Playlist & { creator_avatar?: string });
+            } else {
+                await playlistsApi.removeSong(playlist.id, songId, token!);
+            }
             setSongs(prev => prev.filter(s => s.id !== songId));
         } catch (error) {
             console.error('Failed to remove song:', error);
@@ -68,10 +92,11 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
     };
 
     const handleDeletePlaylist = async () => {
-        if (!token || !playlist) return;
+        if (!playlist || (!token && !isNativePlaylist)) return;
         if (!confirm(t('deletePlaylistConfirm'))) return;
         try {
-            await playlistsApi.delete(playlist.id, token);
+            if (isNativePlaylist) await deleteNativePlaylist(playlist.id);
+            else await playlistsApi.delete(playlist.id, token!);
             onBack();
         } catch (error) {
             console.error('Failed to delete playlist:', error);
@@ -96,7 +121,7 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
         </div>
     );
 
-    const isOwner = currentUser?.id === playlist.user_id;
+    const isOwner = isNativePlaylist || currentUser?.id === playlist.user_id;
 
     // Gradient based on ID/Name
     const gradients = [

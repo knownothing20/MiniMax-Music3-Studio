@@ -1,0 +1,24 @@
+[package]
+name = "minimax-music3-studio-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Native Tauri shell for MiniMax Music3 Studio"
+
+[lib]
+name = "minimax_music3_studio_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+music-engine = { path = "../../crates/music-engine" }
+
+# The desktop shell is deliberately isolated from the engine workspace. Its
+# release cadence and Tauri dependency graph must not modify native engines.
+[workspace]

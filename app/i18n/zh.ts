@@ -116,7 +116,7 @@ export const zh = {
     settings: '设置',
 
     // Username Modal
-    welcomeTitle: '欢迎使用 ACE-Step UI',
+    welcomeTitle: '欢迎使用 MiniMax Music3 Studio',
     welcomeSubtitle: '输入您的名字开始创作 AI 音乐',
     yourName: '您的名字',
     enterYourName: '请输入您的名字',
@@ -259,7 +259,7 @@ export const zh = {
     failedToDeleteSong: '删除歌曲失败',
 
     // Sidebar
-    aceStepUI: 'ACE-Step UI',
+    aceStepUI: 'MiniMax Music3 Studio',
     collapseSidebar: '收起侧边栏',
     expandSidebar: '展开侧边栏',
     monitoring: '监控',
@@ -327,7 +327,7 @@ export const zh = {
     about: '关于',
     version: '版本',
     localAIMusicGenerator: '本地 AI 音乐生成器',
-    poweredBy: '由 ACE-Step 1.5 驱动。开源免费使用。',
+    poweredBy: '面向本地 MiniMax Music3 生成，并提供可选云端工具。',
     createdBy: '开发者 Ambsd',
     localizedBy: '本地化翻译 & 训练 青龙圣者',
     follow: '关注',
@@ -759,7 +759,7 @@ export const zh = {
     shareViaEmail: '通过邮件分享',
     copyLink: '复制链接',
     emailSubject: '来听听这首AI歌曲',
-    emailBody: '嘿！\n\n我创作了这首AI生成的歌曲，觉得你会喜欢：\n\n《{title}》- {creator}\n{style}\n\n点击收听：{url}\n\n使用 ACE-Step UI 制作 - 免费开源的本地AI音乐生成工具！',
+    emailBody: '嘿！\n\n我创作了这首AI生成的歌曲，觉得你会喜欢：\n\n《{title}》- {creator}\n{style}\n\n点击收听：{url}\n\n使用 MiniMax Music3 Studio 制作。',
 
     // Reference Modal
     referenceModalTitle: '参考音频',

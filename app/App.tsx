@@ -59,14 +59,43 @@ import { generateApi, songsApi, playlistsApi, getAudioUrl } from './services/api
 import { useAuth } from './context/AuthContext';
 import { useResponsive } from './context/ResponsiveContext';
 import { I18nProvider, useI18n } from './context/I18nContext';
-import { List, GraduationCap } from 'lucide-react';
+import { List } from 'lucide-react';
 import { PlaylistDetail } from './components/PlaylistDetail';
 import { Toast, ToastType } from './components/Toast';
 import { SearchPage } from './components/SearchPage';
-import { TrainingPanel } from './components/TrainingPanel';
-import { ToolsPanel } from './components/ToolsPanel';
 import { NewsPage } from './components/NewsPage';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { SetupGate } from './components/SetupGate';
+import { StudioToolsPanel } from './components/StudioToolsPanel';
+import { TrainingWorkspace } from './components/TrainingWorkspace';
+import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
+
+const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
+
+function loadNativeLikedSongIds(): Set<string> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(NATIVE_LIKED_SONG_IDS_KEY) || '[]');
+    return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveNativeLikedSongIds(ids: Set<string>): void {
+  localStorage.setItem(NATIVE_LIKED_SONG_IDS_KEY, JSON.stringify([...ids]));
+}
+
+function NativeUnavailableView({ title, detail }: { title: string; detail: string }): React.ReactElement {
+  return (
+    <div className="flex h-full min-h-0 flex-1 items-center justify-center overflow-y-auto bg-white px-6 py-10 dark:bg-suno-DEFAULT">
+      <section className="w-full max-w-xl rounded-2xl border border-amber-500/30 bg-amber-500/5 p-6 text-center shadow-sm">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-600 dark:text-amber-400">Native Music3</p>
+        <h1 className="mt-2 text-xl font-bold text-zinc-950 dark:text-white">{title}</h1>
+        <p className="mt-3 text-sm leading-6 text-zinc-600 dark:text-zinc-300">{detail}</p>
+      </section>
+    </div>
+  );
+}
 
 
 function AppContent() {
@@ -81,8 +110,11 @@ function AppContent() {
   const leftPanel = useResizablePanel('create', 420, 320, 600);
   const rightPanel = useResizablePanel('details', 400, 320, 600, 'right');
   const [showUsernameModal, setShowUsernameModal] = useState(false);
+  const [nativeSetupReady, setNativeSetupReady] = useState(false);
+  const [nativeLibraryAvailable, setNativeLibraryAvailable] = useState(false);
   // Track multiple concurrent generation jobs
   const activeJobsRef = useRef<Map<string, { tempId: string; pollInterval: ReturnType<typeof setInterval> }>>(new Map());
+  const nativeReplayPollersRef = useRef<Map<string, ReturnType<typeof window.setInterval>>>(new Map());
   const [activeJobCount, setActiveJobCount] = useState(0);
 
   // FIFO drain barrier — handlers awaiting it block until the active-jobs
@@ -207,7 +239,11 @@ function AppContent() {
   // UI State
   const [isGenerating, setIsGenerating] = useState(false);
   const [showRightSidebar, setShowRightSidebar] = useState(false);
-  const [showLeftSidebar, setShowLeftSidebar] = useState(true);
+  const [showLeftSidebar, setShowLeftSidebar] = useState(() => window.innerWidth >= 768);
+
+  useEffect(() => {
+    if (isMobile) setShowLeftSidebar(false);
+  }, [isMobile]);
   const [pendingAudioSelection, setPendingAudioSelection] = useState<{ target: 'reference' | 'source'; url: string; title?: string } | null>(null);
 
   // Mobile UI Toggle
@@ -283,6 +319,77 @@ function AppContent() {
     setToast(prev => ({ ...prev, isVisible: false }));
   };
 
+  const refreshNativeLibrary = useCallback(async (): Promise<boolean> => {
+    try {
+      const [nativeSongs, nativePlaylists] = await Promise.all([loadNativeLibrarySongs(), loadNativePlaylists()]);
+      setNativeLibraryAvailable(true);
+      setSongs(prev => {
+        const generatingSongs = prev.filter(song => song.isGenerating);
+        return [...generatingSongs, ...nativeSongs];
+      });
+      setPlaylists(nativePlaylists);
+      setLikedSongIds(loadNativeLikedSongIds());
+      // A fresh native library is still the authoritative store. Falling back
+      // to the retired ACE service when it is empty made ordinary first-run
+      // actions issue requests to a server that is not part of this desktop app.
+      return true;
+    } catch {
+      setNativeLibraryAvailable(false);
+      return false;
+    }
+  }, []);
+
+  const handleNativeReplay = useCallback(async (song: Song) => {
+    if (!song.nativeReplayAvailable) return;
+
+    try {
+      const response = await fetch('/v1/music/replay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ song_id: song.id }),
+      });
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error || `Replay request failed (${response.status})`);
+      }
+
+      const job: { id?: string } = await response.json();
+      if (!job.id) throw new Error('Replay response did not include a job id.');
+
+      showToast('Replay synthesis queued.');
+      const poll = window.setInterval(async () => {
+        try {
+          const statusResponse = await fetch(`/v1/music/jobs/${encodeURIComponent(job.id!)}`);
+          if (!statusResponse.ok) throw new Error(`Replay status request failed (${statusResponse.status})`);
+          const status: { status?: string; message?: string } = await statusResponse.json();
+          const state = status.status?.toLowerCase();
+          if (!state || !['completed', 'failed', 'cancelled'].includes(state)) return;
+
+          window.clearInterval(poll);
+          nativeReplayPollersRef.current.delete(job.id!);
+          if (state === 'completed') {
+            await refreshNativeLibrary();
+            showToast('Replay synthesis completed.');
+          } else {
+            showToast(status.message || `Replay synthesis ${state}.`, 'error');
+          }
+        } catch (error) {
+          window.clearInterval(poll);
+          nativeReplayPollersRef.current.delete(job.id!);
+          showToast(error instanceof Error ? error.message : 'Replay status polling failed.', 'error');
+        }
+      }, 1000);
+      nativeReplayPollersRef.current.set(job.id, poll);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Replay synthesis could not be started.', 'error');
+    }
+  }, [refreshNativeLibrary]);
+
+  useEffect(() => () => {
+    nativeReplayPollersRef.current.forEach((poll) => window.clearInterval(poll));
+    nativeReplayPollersRef.current.clear();
+  }, []);
+
   // Show username modal if not authenticated and not loading
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -292,6 +399,7 @@ function AppContent() {
 
   // Load Playlists
   useEffect(() => {
+    if (nativeLibraryAvailable) return;
     if (token) {
       playlistsApi.getMyPlaylists(token)
         .then(res => setPlaylists(res.playlists))
@@ -299,7 +407,7 @@ function AppContent() {
     } else {
       setPlaylists([]);
     }
-  }, [token]);
+  }, [token, nativeLibraryAvailable]);
 
   // Keep selectedSongRef in sync for use in callbacks without stale closures
   useEffect(() => { selectedSongRef.current = selectedSong; }, [selectedSong]);
@@ -433,9 +541,11 @@ function AppContent() {
 
   // Load Songs Effect
   useEffect(() => {
-    if (!isAuthenticated || !token) return;
-
     const loadSongs = async () => {
+      if (await refreshNativeLibrary()) return;
+
+      if (!isAuthenticated || !token) return;
+
       try {
         const mapSong = (s: any): Song => ({
           id: s.id,
@@ -503,9 +613,13 @@ function AppContent() {
     };
 
     loadSongs();
-  }, [isAuthenticated, token]);
+  }, [isAuthenticated, token, refreshNativeLibrary]);
 
   const loadReferenceTracks = useCallback(async () => {
+    if (nativeLibraryAvailable) {
+      setReferenceTracks([]);
+      return;
+    }
     if (!isAuthenticated || !token) return;
     try {
       const response = await fetch('/api/reference-tracks', {
@@ -517,7 +631,7 @@ function AppContent() {
     } catch (error) {
       console.error('Failed to load reference tracks:', error);
     }
-  }, [isAuthenticated, token]);
+  }, [isAuthenticated, nativeLibraryAvailable, token]);
 
   // Load reference tracks for Library
   useEffect(() => {
@@ -967,6 +1081,10 @@ function AppContent() {
 
   // Refresh songs list (called when any job completes successfully)
   const refreshSongsList = useCallback(async () => {
+    if (nativeLibraryAvailable) {
+      await refreshNativeLibrary();
+      return;
+    }
     if (!token) return;
     try {
       const response = await songsApi.getMySongs(token);
@@ -1022,7 +1140,7 @@ function AppContent() {
     } catch (error) {
       console.error('Failed to refresh songs:', error);
     }
-  }, [token]);
+  }, [nativeLibraryAvailable, refreshNativeLibrary, token]);
 
   const beginPollingJob = useCallback((jobId: string, tempId: string) => {
     if (!token) return;
@@ -1401,7 +1519,9 @@ function AppContent() {
       setSelectedSong(updatedSong);
       setIsPlaying(true);
       setSongs(prev => prev.map(s => s.id === song.id ? updatedSong : s));
-      songsApi.trackPlay(song.id, token).catch(err => console.error('Failed to track play:', err));
+      if (!nativeLibraryAvailable) {
+        songsApi.trackPlay(song.id, token).catch(err => console.error('Failed to track play:', err));
+      }
     } else {
       togglePlay();
     }
@@ -1432,6 +1552,7 @@ function AppContent() {
       const next = new Set(prev);
       if (isLiked) next.delete(songId);
       else next.add(songId);
+      if (nativeLibraryAvailable) saveNativeLikedSongIds(next);
       return next;
     });
 
@@ -1450,7 +1571,11 @@ function AppContent() {
       } : null);
     }
 
-    // Persist to database
+    // Native Music3 has no social/remote likes endpoint. Keep the library
+    // control responsive locally instead of sending the click to retired ACE.
+    if (nativeLibraryAvailable) return;
+
+    // Persist to the retained legacy backend only when it is actually active.
     try {
       await songsApi.toggleLike(songId, token);
     } catch (error) {
@@ -1470,7 +1595,7 @@ function AppContent() {
   };
 
   const handleDeleteSongs = (songsToDelete: Song[]) => {
-    if (!token || songsToDelete.length === 0) return;
+    if ((!token && !nativeLibraryAvailable) || songsToDelete.length === 0) return;
 
     const isSingle = songsToDelete.length === 1;
     const title = isSingle ? t('confirmDeleteTitle') : t('confirmDeleteManyTitle');
@@ -1490,7 +1615,8 @@ function AppContent() {
 
         for (const song of songsToDelete) {
           try {
-            await songsApi.deleteSong(song.id, token!);
+            if (nativeLibraryAvailable) await deleteNativeSong(song.id);
+            else await songsApi.deleteSong(song.id, token!);
             succeeded.push(song.id);
           } catch (error) {
             console.error('Failed to delete song:', error);
@@ -1561,15 +1687,17 @@ function AppContent() {
   };
 
   const createPlaylist = async (name: string, description: string) => {
-    if (!token) return;
+    if (!token && !nativeLibraryAvailable) return;
     try {
-      const res = await playlistsApi.create(name, description, true, token);
-      setPlaylists(prev => [res.playlist, ...prev]);
+      const playlist = nativeLibraryAvailable
+        ? await createNativePlaylist(name, description, songToAddToPlaylist ? [songToAddToPlaylist.id] : [])
+        : (await playlistsApi.create(name, description, true, token!)).playlist;
+      setPlaylists(prev => [playlist, ...prev]);
 
       if (songToAddToPlaylist) {
-        await playlistsApi.addSong(res.playlist.id, songToAddToPlaylist.id, token);
+        if (!nativeLibraryAvailable) await playlistsApi.addSong(playlist.id, songToAddToPlaylist.id, token!);
         setSongToAddToPlaylist(null);
-        playlistsApi.getMyPlaylists(token).then(r => setPlaylists(r.playlists)).catch(() => {});
+        if (!nativeLibraryAvailable) playlistsApi.getMyPlaylists(token!).then(r => setPlaylists(r.playlists)).catch(() => {});
       }
       showToast(t('playlistCreated'));
     } catch (error) {
@@ -1584,12 +1712,20 @@ function AppContent() {
   };
 
   const addSongToPlaylist = async (playlistId: string) => {
-    if (!songToAddToPlaylist || !token) return;
+    if (!songToAddToPlaylist || (!token && !nativeLibraryAvailable)) return;
     try {
-      await playlistsApi.addSong(playlistId, songToAddToPlaylist.id, token);
+      if (nativeLibraryAvailable) {
+        const playlist = playlists.find(item => item.id === playlistId);
+        if (!playlist) throw new Error('Native playlist was not found');
+        const songIds = Array.from(new Set([...(playlist.songIds || []), songToAddToPlaylist.id]));
+        const updated = await updateNativePlaylist(playlist.id, playlist, songIds);
+        setPlaylists(prev => prev.map(item => item.id === updated.id ? updated : item));
+      } else {
+        await playlistsApi.addSong(playlistId, songToAddToPlaylist.id, token!);
+      }
       setSongToAddToPlaylist(null);
       showToast(t('songAddedToPlaylist'));
-      playlistsApi.getMyPlaylists(token).then(r => setPlaylists(r.playlists)).catch(() => {});
+      if (!nativeLibraryAvailable) playlistsApi.getMyPlaylists(token!).then(r => setPlaylists(r.playlists)).catch(() => {});
     } catch (error) {
       console.error('Add song error:', error);
       showToast(t('failedToAddSong'), 'error');
@@ -1643,6 +1779,10 @@ function AppContent() {
   };
 
   const openVideoGenerator = (song: Song) => {
+    if (nativeLibraryAvailable) {
+      showToast('Video rendering is not installed in the native Music3 runtime yet.', 'error');
+      return;
+    }
     if (isPlaying) {
       setIsPlaying(false);
       if (audioRef.current) audioRef.current.pause();
@@ -1652,6 +1792,10 @@ function AppContent() {
   };
 
   const openCoverRegen = (song: Song) => {
+    if (nativeLibraryAvailable) {
+      showToast('Cover rendering is not installed in the native Music3 runtime yet.', 'error');
+      return;
+    }
     // Don't pause playback here — cover regen is non-destructive and the
     // modal is small enough that the user may want to keep listening.
     setSongForCoverRegen(song);
@@ -1674,9 +1818,26 @@ function AppContent() {
 
   // Render Layout Logic
   const renderContent = () => {
+    if (nativeLibraryAvailable) {
+      if (currentView === 'training') {
+        return <NativeUnavailableView title="Adapter training is not available" detail="MiniMax Music3 inference is ready, but its native adapter-training format and runtime are not installed. The ACE training controls are kept out of this build so they cannot send work to a missing server." />;
+      }
+      if (currentView === 'profile' || currentView === 'song' || currentView === 'search') {
+        return <NativeUnavailableView title="This social-library route is offline" detail="This desktop build stores music in the local Music3 library. Public profiles, feed search and remote song pages require a separate service and are not presented as local features." />;
+      }
+    }
+
     switch (currentView) {
+      case 'tools':
+        return <StudioToolsPanel />;
+
+      case 'training':
+        return <TrainingWorkspace />;
+
       case 'library': {
-        const allSongs = user ? songs.filter(s => s.userId === user.id) : [];
+        const allSongs = nativeLibraryAvailable
+          ? songs
+          : (user ? songs.filter(s => s.userId === user.id || s.nativeReplayAvailable) : songs.filter(s => s.nativeReplayAvailable));
         return (
           <LibraryView
             allSongs={allSongs}
@@ -1694,6 +1855,7 @@ function AppContent() {
             onReusePrompt={handleReuse}
             onDeleteSong={handleDeleteSong}
             onDeleteReferenceTrack={handleDeleteReferenceTrack}
+            isNativeLibrary={nativeLibraryAvailable}
           />
         );
       }
@@ -1756,24 +1918,21 @@ function AppContent() {
           />
         );
 
-      case 'training':
-        return <TrainingPanel />;
-
-      case 'tools':
-        return <ToolsPanel />;
-
       case 'news':
         return <NewsPage />;
 
       case 'create':
       default:
+        if (!nativeSetupReady) {
+          return <SetupGate onReady={() => setNativeSetupReady(true)} />;
+        }
         return (
-          <div className="flex h-full overflow-hidden relative w-full">
+          <div className="relative flex h-full min-h-0 min-w-0 w-full overflow-hidden">
             {/* Create Panel */}
             <div
               className={`
                 ${mobileShowList ? 'hidden md:block' : 'w-full'}
-                md:block flex-shrink-0 h-full bg-zinc-50 dark:bg-suno-panel relative z-10 transition-colors duration-300
+                md:block min-h-0 min-w-0 flex-shrink-0 h-full bg-zinc-50 dark:bg-suno-panel relative z-10 transition-colors duration-300
               `}
               style={{ width: window.innerWidth >= 768 ? leftPanel.width : undefined }}
             >
@@ -1800,7 +1959,7 @@ function AppContent() {
             {/* Song List */}
             <div className={`
               ${!mobileShowList ? 'hidden md:flex' : 'flex'}
-              flex-1 flex-col h-full overflow-hidden bg-white dark:bg-suno-DEFAULT transition-colors duration-300
+              min-h-0 min-w-0 flex-1 flex-col h-full overflow-hidden bg-white dark:bg-suno-DEFAULT transition-colors duration-300
             `}>
               <SongList
                 songs={songs}
@@ -1821,6 +1980,7 @@ function AppContent() {
                 onShowDetails={handleShowDetails}
                 onNavigateToProfile={handleNavigateToProfile}
                 onReusePrompt={handleReuse}
+                onReplayMusic={handleNativeReplay}
                 onDelete={handleDeleteSong}
                 onDeleteMany={handleDeleteSongs}
                 onUseAsReference={handleUseAsReference}
@@ -1841,7 +2001,7 @@ function AppContent() {
               <>
               {rightPanel.handle}
               <div
-                className="hidden xl:block flex-shrink-0 h-full bg-zinc-50 dark:bg-suno-panel relative z-10 transition-colors duration-300"
+                className="hidden xl:block min-h-0 min-w-0 flex-shrink-0 h-full bg-zinc-50 dark:bg-suno-panel relative z-10 transition-colors duration-300"
                 style={{ width: rightPanel.width }}
               >
                 <RightSidebar
@@ -1850,6 +2010,7 @@ function AppContent() {
                   onOpenVideo={() => selectedSong && openVideoGenerator(selectedSong)}
                   onOpenCoverRegen={() => selectedSong && openCoverRegen(selectedSong)}
                   onReuse={handleReuse}
+                  onReplayMusic={handleNativeReplay}
                   onSongUpdate={handleSongUpdate}
                   onNavigateToProfile={handleNavigateToProfile}
                   onNavigateToSong={handleNavigateToSong}
@@ -1880,14 +2041,14 @@ function AppContent() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-suno-DEFAULT text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-colors duration-300">
+    <div className="flex h-[100dvh] min-h-0 min-w-0 flex-col overflow-hidden bg-white dark:bg-suno-DEFAULT text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-colors duration-300">
       {authLoading && (
         <div className="bg-zinc-800 text-zinc-300 text-xs text-center py-1.5 flex items-center justify-center gap-2 flex-shrink-0">
           <div className="w-3 h-3 border-2 border-pink-500 border-t-transparent rounded-full animate-spin" />
           {t('connectingToServer') || 'Connecting to server...'}
         </div>
       )}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <Sidebar
           currentView={currentView}
           onNavigate={(v) => {
@@ -1901,6 +2062,10 @@ function AppContent() {
               window.history.pushState({}, '', '/search');
             } else if (v === 'news') {
               window.history.pushState({}, '', '/news');
+            } else if (v === 'tools') {
+              window.history.pushState({}, '', '/tools');
+            } else if (v === 'training') {
+              window.history.pushState({}, '', '/training');
             }
             if (isMobile) setShowLeftSidebar(false);
           }}
@@ -1914,7 +2079,7 @@ function AppContent() {
           onToggle={() => setShowLeftSidebar(!showLeftSidebar)}
         />
 
-        <main className="flex-1 flex overflow-hidden relative">
+        <main className="relative ml-[72px] flex min-h-0 min-w-0 flex-1 overflow-hidden md:ml-0">
           {renderContent()}
         </main>
       </div>
@@ -2011,6 +2176,7 @@ function AppContent() {
               onOpenVideo={() => selectedSong && openVideoGenerator(selectedSong)}
               onOpenCoverRegen={() => selectedSong && openCoverRegen(selectedSong)}
               onReuse={handleReuse}
+              onReplayMusic={handleNativeReplay}
               onSongUpdate={handleSongUpdate}
               onNavigateToProfile={handleNavigateToProfile}
               onNavigateToSong={handleNavigateToSong}

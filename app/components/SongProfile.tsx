@@ -22,8 +22,8 @@ interface SongProfileProps {
 const updateMetaTags = (song: Song) => {
     const baseUrl = window.location.origin;
     const songUrl = `${baseUrl}/song/${song.id}`;
-    const title = `${song.title} by ${song.creator || 'Unknown Artist'} | ACE-Step UI`;
-    const description = `Listen to "${song.title}" - ${song.style}. ${song.viewCount || 0} plays, ${song.likeCount || 0} likes. Create your own AI music with ACE-Step UI.`;
+    const title = `${song.title} by ${song.creator || 'Unknown Artist'} | MiniMax Music3 Studio`;
+    const description = `Listen to "${song.title}" - ${song.style}. ${song.viewCount || 0} plays, ${song.likeCount || 0} likes. Create your own AI music with MiniMax Music3 Studio.`;
 
     document.title = title;
 
@@ -63,8 +63,8 @@ const updateMetaTags = (song: Song) => {
 };
 
 const resetMetaTags = () => {
-    document.title = 'ACE-Step UI - Local AI Music Generator';
-    const defaultDescription = 'Create original music with AI locally. Generate songs in any style with custom lyrics and professional quality using ACE-Step.';
+    document.title = 'MiniMax Music3 Studio - Local & Cloud AI Music Creation';
+    const defaultDescription = 'Create original music locally with MiniMax Music3, with optional cloud tools for writing, transcription, and cover art.';
     const defaultImage = '/og-image.png';
 
     const updateMeta = (selector: string, content: string) => {
@@ -73,11 +73,11 @@ const resetMetaTags = () => {
     };
 
     updateMeta('meta[name="description"]', defaultDescription);
-    updateMeta('meta[property="og:title"]', 'ACE-Step UI - Local AI Music Generator');
+    updateMeta('meta[property="og:title"]', 'MiniMax Music3 Studio - Local & Cloud AI Music Creation');
     updateMeta('meta[property="og:description"]', defaultDescription);
     updateMeta('meta[property="og:image"]', defaultImage);
     updateMeta('meta[property="og:type"]', 'website');
-    updateMeta('meta[name="twitter:title"]', 'ACE-Step UI - Local AI Music Generator');
+    updateMeta('meta[name="twitter:title"]', 'MiniMax Music3 Studio - Local & Cloud AI Music Creation');
     updateMeta('meta[name="twitter:description"]', defaultDescription);
     updateMeta('meta[name="twitter:image"]', defaultImage);
 };

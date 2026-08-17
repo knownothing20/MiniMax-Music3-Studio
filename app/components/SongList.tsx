@@ -7,6 +7,7 @@ import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
 import { songsApi } from '../services/api';
+import { updateNativeSong } from '../services/nativeLibrary';
 
 interface SongListProps {
     songs: Song[];
@@ -24,6 +25,7 @@ interface SongListProps {
     onShowDetails?: (song: Song) => void;
     onNavigateToProfile?: (username: string) => void;
     onReusePrompt?: (song: Song) => void;
+    onReplayMusic?: (song: Song) => void;
     onDelete?: (song: Song) => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onDeleteMany?: (songs: Song[]) => void;
@@ -105,6 +107,7 @@ export const SongList: React.FC<SongListProps> = ({
     onShowDetails,
     onNavigateToProfile,
     onReusePrompt,
+    onReplayMusic,
     onDelete,
     onSongUpdate,
     onDeleteMany,
@@ -228,8 +231,8 @@ export const SongList: React.FC<SongListProps> = ({
     const selectedSongs = selectableSongs.filter(song => selectedIds.has(song.id));
 
     return (
-        <div className="flex-1 bg-white dark:bg-black h-full overflow-y-auto custom-scrollbar p-6 pb-32 transition-colors duration-300">
-            <div className="max-w-5xl mx-auto w-full"> {/* Container constraint */}
+        <div className="h-full min-w-0 flex-1 overflow-y-auto bg-white p-4 pb-32 transition-colors duration-300 dark:bg-black sm:p-6">
+            <div className="mx-auto w-full min-w-0 max-w-5xl"> {/* Container constraint */}
 
                 {/* Header */}
                 <div className="flex flex-col gap-6 mb-8">
@@ -400,7 +403,7 @@ export const SongList: React.FC<SongListProps> = ({
                                     isChecked={selectedIds.has(item.song.id)}
                                     isLiked={likedSongIds.has(item.song.id)}
                                     isPlaying={isPlaying}
-                                    isOwner={user?.id === item.song.userId}
+                                    isOwner={item.song.nativeReplayAvailable || user?.id === item.song.userId}
                                     onPlay={() => onPlay(item.song)}
                                     onSelect={() => onSelect(item.song)}
                                     onToggleSelect={() => {
@@ -419,6 +422,7 @@ export const SongList: React.FC<SongListProps> = ({
                                     onShowDetails={() => onShowDetails && onShowDetails(item.song)}
                                     onNavigateToProfile={onNavigateToProfile}
                                     onReusePrompt={() => onReusePrompt?.(item.song)}
+                                    onReplayMusic={item.song.nativeReplayAvailable ? () => onReplayMusic?.(item.song) : undefined}
                                     onDelete={() => onDelete?.(item.song)}
                                     onSongUpdate={onSongUpdate}
                                     onUseAsReference={() => onUseAsReference?.(item.song)}
@@ -489,6 +493,7 @@ interface SongItemProps {
     onShowDetails?: () => void;
     onNavigateToProfile?: (username: string) => void;
     onReusePrompt?: () => void;
+    onReplayMusic?: () => void;
     onDelete?: () => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onUseAsReference?: () => void;
@@ -516,6 +521,7 @@ const SongItem: React.FC<SongItemProps> = ({
     onShowDetails,
     onNavigateToProfile,
     onReusePrompt,
+    onReplayMusic,
     onDelete,
     onSongUpdate,
     onUseAsReference,
@@ -540,14 +546,16 @@ const SongItem: React.FC<SongItemProps> = ({
     }, [isEditingTitle]);
 
     const handleSaveTitle = async () => {
-        if (!token || !isOwner || !editedTitle.trim() || editedTitle === song.title) {
+        if (!isOwner || !editedTitle.trim() || editedTitle === song.title) {
             setIsEditingTitle(false);
             setEditedTitle(song.title);
             return;
         }
 
         try {
-            const response = await songsApi.updateSong(song.id, { title: editedTitle.trim() }, token);
+            const response = song.nativeReplayAvailable
+                ? { song: await updateNativeSong(song, { title: editedTitle.trim() }) }
+                : await songsApi.updateSong(song.id, { title: editedTitle.trim() }, token!);
             setIsEditingTitle(false);
             // Update the parent component's song list
             if (onSongUpdate && response.song) {
@@ -595,7 +603,7 @@ const SongItem: React.FC<SongItemProps> = ({
                     }
                 }, 0);
             }}
-            className={`group flex items-center gap-4 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-[#18181b] transition-all cursor-pointer border ${isSelected ? 'bg-zinc-100 dark:bg-[#18181b] border-zinc-200 dark:border-white/10' : 'border-transparent bg-transparent'} ${song.audioUrl && !song.isGenerating ? 'cursor-grab active:cursor-grabbing' : ''}`}
+            className={`group flex min-w-0 items-center gap-2 rounded-lg border p-2 transition-all hover:bg-zinc-100 dark:hover:bg-[#18181b] sm:gap-4 ${isSelected ? 'bg-zinc-100 dark:bg-[#18181b] border-zinc-200 dark:border-white/10' : 'border-transparent bg-transparent'} ${song.audioUrl && !song.isGenerating ? 'cursor-grab active:cursor-grabbing' : ''}`}
         >
             {isSelectionMode && (
                 <button
@@ -845,6 +853,7 @@ const SongItem: React.FC<SongItemProps> = ({
                                 isOwner={isOwner}
                                 onCreateVideo={() => onOpenVideo?.(song)}
                                 onReusePrompt={onReusePrompt ? () => onReusePrompt?.(song) : undefined}
+                                onReplayMusic={onReplayMusic}
                                 onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                 onDelete={() => onDelete?.(song)}
                                 onShare={() => setShareModalOpen(true)}

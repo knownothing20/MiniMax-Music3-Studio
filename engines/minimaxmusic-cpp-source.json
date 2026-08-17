@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/ServeurpersoCom/minimaxmusic.cpp.git",
+  "commit": "9fdedf021049155b9ac194f88c1d014f4a572114",
+  "license": "MIT",
+  "build": {
+    "windows": "buildall.cmd",
+    "output": "build\\Release\\mm-server.exe"
+  }
+}

@@ -259,7 +259,7 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     if (song) {
         setTextLayers([
             { id: '1', text: song.title, x: 50, y: 85, size: 48, color: '#ffffff', font: 'Inter' },
-            { id: '2', text: song.creator || 'ACE-Step Studio', x: 50, y: 92, size: 24, color: '#a1a1aa', font: 'Inter' }
+            { id: '2', text: song.creator || 'MiniMax Music3 Studio', x: 50, y: 92, size: 24, color: '#a1a1aa', font: 'Inter' }
         ]);
         // Parse LRC
         if (song.lrcContent) {

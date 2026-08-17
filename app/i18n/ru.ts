@@ -117,7 +117,7 @@ export const ru = {
     settings: 'Настройки',
 
     // Username Modal
-    welcomeTitle: 'Добро пожаловать в ACE-Step Studio',
+    welcomeTitle: 'Добро пожаловать в MiniMax Music3 Studio',
     welcomeSubtitle: 'Введите ваше имя, чтобы начать создавать AI-музыку',
     yourName: 'Ваше имя',
     enterYourName: 'Введите ваше имя',
@@ -263,7 +263,7 @@ export const ru = {
     failedToDeleteSong: 'Не удалось удалить песню',
 
     // Sidebar
-    aceStepUI: 'ACE-Step Studio',
+    aceStepUI: 'MiniMax Music3 Studio',
     collapseSidebar: 'Свернуть боковую панель',
     expandSidebar: 'Развернуть боковую панель',
     monitoring: 'Мониторинг',
@@ -331,7 +331,7 @@ export const ru = {
     about: 'О программе',
     version: 'Версия',
     localAIMusicGenerator: 'Локальный AI-генератор музыки',
-    poweredBy: 'На основе ACE-Step 1.5 XL. Открытый код, бесплатно.',
+    poweredBy: 'Локальная генерация MiniMax Music3 с опциональными облачными инструментами.',
     createdBy: 'Разработчик Ambsd',
     localizedBy: 'Локализация и обучение bdsqlsz',
     follow: 'Подписаться',
@@ -763,7 +763,7 @@ export const ru = {
     shareViaEmail: 'Отправить по email',
     copyLink: 'Копировать ссылку',
     emailSubject: 'Послушай эту AI-песню',
-    emailBody: 'Привет!\n\nЯ создал эту AI-песню и подумал, что тебе понравится:\n\n\"{title}\" - {creator}\n{style}\n\nПослушай здесь: {url}\n\nСоздано в ACE-Step Studio - бесплатный локальный AI-генератор музыки с открытым кодом!',
+    emailBody: 'Привет!\n\nЯ создал эту AI-песню и подумал, что тебе понравится:\n\n\"{title}\" - {creator}\n{style}\n\nПослушай здесь: {url}\n\nСоздано в MiniMax Music3 Studio.',
 
     // Reference Modal
     referenceModalTitle: 'Референс',

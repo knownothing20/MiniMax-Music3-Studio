@@ -29,6 +29,8 @@ export interface Song {
   bpm?: number;
   keyScale?: string;
   timeSignature?: string;
+  /** Native Music3 provenance is complete enough for POST /v1/music/replay. */
+  nativeReplayAvailable?: boolean;
 }
 
 export interface Playlist {

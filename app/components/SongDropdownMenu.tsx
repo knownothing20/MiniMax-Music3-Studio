@@ -23,12 +23,14 @@ interface SongDropdownMenuProps {
     onEditAudio?: () => void;
     onExtractStems?: () => void;
     onReusePrompt?: () => void;
+    onReplayMusic?: () => void;
     onAddToPlaylist?: () => void;
     onDownload?: () => void;
     onShare?: () => void;
     onDelete?: () => void;
     onUseAsReference?: () => void;
     onCoverSong?: () => void;
+    allowStemExtraction?: boolean;
 }
 
 interface MenuItemProps {
@@ -70,12 +72,14 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     onEditAudio,
     onExtractStems,
     onReusePrompt,
+    onReplayMusic,
     onAddToPlaylist,
     onDownload,
     onShare,
     onDelete,
     onUseAsReference,
-    onCoverSong
+    onCoverSong,
+    allowStemExtraction = true,
 }) => {
     const { t } = useI18n();
     const menuRef = useRef<HTMLDivElement>(null);
@@ -186,16 +190,25 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
                     onClick={onEditAudio ? () => handleAction(onEditAudio) : handleEditAudio}
                 />
             )}
-            <MenuItem
-                icon={<Layers size={14} />}
-                label={t('extractStems')}
-                onClick={onExtractStems ? () => handleAction(onExtractStems) : handleExtractStems}
-            />
+            {allowStemExtraction && (
+                <MenuItem
+                    icon={<Layers size={14} />}
+                    label={t('extractStems')}
+                    onClick={onExtractStems ? () => handleAction(onExtractStems) : handleExtractStems}
+                />
+            )}
             {onReusePrompt && (
                 <MenuItem
                     icon={<Repeat size={14} />}
                     label={t('reusePrompt')}
                     onClick={() => handleAction(onReusePrompt)}
+                />
+            )}
+            {onReplayMusic && (
+                <MenuItem
+                    icon={<Repeat size={14} />}
+                    label="Replay synthesis"
+                    onClick={() => handleAction(onReplayMusic)}
                 />
             )}
             {onUseAsReference && (

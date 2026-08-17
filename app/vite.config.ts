@@ -9,6 +9,18 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       host: '0.0.0.0',
       proxy: {
+        '/v1': {
+          target: 'http://127.0.0.1:8765',
+          changeOrigin: true,
+        },
+        '/setup': {
+          target: 'http://127.0.0.1:8765',
+          changeOrigin: true,
+        },
+        '/engine': {
+          target: 'http://127.0.0.1:8765',
+          changeOrigin: true,
+        },
         '/api': {
           target: 'http://127.0.0.1:3001',
           changeOrigin: true,

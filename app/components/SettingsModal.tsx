@@ -219,7 +219,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                         </div>
                         <div className="pl-7 space-y-3 text-sm text-zinc-600 dark:text-zinc-400">
                             <p>{t('version')} 2.0.0</p>
-                            <p>ACE-Step UI - {t('localAIMusicGenerator')}</p>
+                            <p>MiniMax Music3 Studio - {t('localAIMusicGenerator')}</p>
                             <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-2">
                                 {t('poweredBy')}
                             </p>
@@ -239,13 +239,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                             {t('follow')} @AmbsdOP
                                         </a>
                                         <a
-                                            href="https://github.com/fspecii/ace-step-ui"
+                                            href="https://github.com/timoncool/MiniMax-Music3-Studio"
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800 dark:bg-zinc-700 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 dark:hover:bg-zinc-600 transition-colors"
                                         >
                                             <Github size={16} />
-                                            GitHub Repo
+                                            MiniMax Music3 Studio
                                         </a>
                                     </div>
                                     <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-2">

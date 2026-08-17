@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Base permissions for the desktop shell, including the verified local-engine start command.","local":true,"windows":["main"],"permissions":["core:default"]}}

@@ -1,0 +1,26 @@
+:root {
+  color: #f4f5ef;
+  background: #0b0c0e;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-width: 320px; }
+
+main {
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  gap: 1.25rem;
+  max-width: 52rem;
+  padding: 3rem;
+}
+
+.eyebrow { color: #c6f24e; font-size: .75rem; font-weight: 700; letter-spacing: .13em; margin: 0; }
+h1 { font-size: clamp(2.5rem, 7vw, 5.5rem); letter-spacing: -.06em; line-height: .95; margin: 0; }
+.description { color: #b4b7ad; font-size: 1.125rem; line-height: 1.6; margin: 0; max-width: 44rem; }
+section { font-family: ui-monospace, monospace; font-size: .85rem; }
+.ready { color: #c6f24e; }
+.pending { color: #b4b7ad; }
+.error { color: #ff8787; }

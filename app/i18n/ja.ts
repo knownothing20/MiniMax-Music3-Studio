@@ -116,7 +116,7 @@ export const ja = {
   settings: '設定',
 
   // Username Modal
-  welcomeTitle: 'ACE-Step UIへようこそ',
+  welcomeTitle: 'MiniMax Music3 Studioへようこそ',
   welcomeSubtitle: 'AI音楽作成を始めるために名前を入力してください',
   yourName: 'お名前',
   enterYourName: '名前を入力',
@@ -259,7 +259,7 @@ export const ja = {
   failedToDeleteSong: '曲の削除に失敗しました',
 
   // Sidebar
-  aceStepUI: 'ACE-Step UI',
+  aceStepUI: 'MiniMax Music3 Studio',
   collapseSidebar: 'サイドバーを折りたたむ',
   expandSidebar: 'サイドバーを展開',
   monitoring: 'モニタリング',
@@ -327,7 +327,7 @@ export const ja = {
   about: 'について',
   version: 'バージョン',
   localAIMusicGenerator: 'ローカルAI音楽ジェネレーター',
-  poweredBy: 'ACE-Step 1.5を搭載。オープンソースで無料で使用できます。',
+  poweredBy: 'ローカル MiniMax Music3 生成とオプションのクラウドツールを提供します。',
   createdBy: '開発者 Ambsd',
   localizedBy: 'ローカライゼーション＆二次開発 bdsqlsz',
   follow: 'フォロー',
@@ -759,7 +759,7 @@ export const ja = {
   shareViaEmail: 'メールで共有',
   copyLink: 'リンクをコピー',
   emailSubject: 'このAI曲をチェックしてください',
-  emailBody: 'こんにちは！\n\n私がこのAI生成の曲を作りました。気に入ってもらえると思います：\n\n「{title}」by {creator}\n{style}\n\nここで聴いてください：{url}\n\nACE-Step UIで作成 - 無料でオープンソースのローカルAI音楽生成！',
+  emailBody: 'こんにちは！\n\n私がこのAI生成の曲を作りました。気に入ってもらえると思います：\n\n「{title}」by {creator}\n{style}\n\nここで聴いてください：{url}\n\nMiniMax Music3 Studioで作成。',
 
   // Reference Modal
   referenceModalTitle: 'リファレンス',

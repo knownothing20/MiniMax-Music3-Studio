@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "id": "audiocpp-minimax-music3",
+  "display_name": "MiniMax Music3 via audio.cpp",
+  "status": "experimental",
+  "engine": {
+    "repository": "https://github.com/0xShug0/audio.cpp",
+    "branch": "preview/minimax-music-3",
+    "commit": "aafb22aed103eba098a48e92b977e1c2dbfc8e13",
+    "executable": "audiocpp_cli.exe",
+    "windows_executable": "audiocpp_cli.exe",
+    "validation_command": ["--list-loaders"],
+    "family": "minimax_music3",
+    "task": "gen",
+    "mode": "offline"
+  },
+  "capabilities": {
+    "music": true,
+    "lyrics": true,
+    "style_prompt": true,
+    "reference_audio": false,
+    "cover": false,
+    "repaint": false,
+    "streaming_output": false,
+    "generation_progress": "indeterminate_phase_only",
+    "cancellation": "host_process_termination"
+  },
+  "model_package": {
+    "repository": "audio-cpp/MiniMax-Music3-GGUF",
+    "revision": "ead13fe2b1ca3e8ca314d4bdfe1ff04c533f2b13",
+    "model_root": ".",
+    "minimum_vram_gb_from_upstream_catalog": 12,
+    "required_shared_files": [
+      "config.json",
+      "config/language_model.json",
+      "config/rvq_depth_decoder.json",
+      "config/condition_encoder.json",
+      "config/transformer.json",
+      "config/vocoder.json",
+      "tokenizer/tokenizer.json",
+      "tokenizer/tokenizer_config.json",
+      "condition_encoder.gguf",
+      "vocoder.gguf"
+    ]
+  },
+  "component_compatibility": {
+    "rule": "A profile must contain every required component under one model root. Individual GGUF files are never runnable Studio models.",
+    "required_components": {
+      "language_model": {
+        "session_option": "minimax_music3.language_model_gguf",
+        "allowed_files": ["language_model_q4_0.gguf", "language_model_q4_k.gguf", "language_model_bf16.gguf"]
+      },
+      "rvq_depth_decoder": {
+        "session_option": "minimax_music3.rvq_depth_decoder_gguf",
+        "allowed_files": ["rvq_depth_decoder_bf16.gguf", "rvq_depth_decoder_q4_k.gguf"]
+      },
+      "condition_encoder": {
+        "fixed_file": "condition_encoder.gguf",
+        "override_supported": false
+      },
+      "flow_transformer": {
+        "session_option": "minimax_music3.flow_transformer_gguf",
+        "allowed_files": ["transformer_q4_0.gguf", "transformer_q4_k.gguf", "transformer_bf16.gguf"]
+      },
+      "vocoder": {
+        "fixed_file": "vocoder.gguf",
+        "override_supported": false
+      }
+    },
+    "rejected_as_standalone": [
+      "language model GGUF",
+      "RVQ depth decoder GGUF",
+      "condition encoder GGUF",
+      "flow transformer GGUF",
+      "vocoder GGUF"
+    ]
+  },
+  "request": {
+    "required": ["prompt", "lyrics", "output_path"],
+    "generation_options": {
+      "duration_sec": {"type": "float", "minimum": 0.1, "default": 20.0},
+      "num_inference_steps": {"type": "integer", "minimum": 1, "default": 30},
+      "guidance_scale": {"type": "float", "minimum": 0.0, "default": 1.7},
+      "ar_guidance_scale": {"type": "float", "minimum": 0.0, "default": 1.5},
+      "top_k": {"type": "integer", "minimum": 1, "default": 50},
+      "seed": {"type": "unsigned_integer", "minimum": 0, "default": 0}
+    },
+    "session_options": [
+      "minimax_music3.language_model_gguf",
+      "minimax_music3.rvq_depth_decoder_gguf",
+      "minimax_music3.flow_transformer_gguf",
+      "minimax_music3.mem_saver"
+    ]
+  },
+  "profiles": [
+    {
+      "id": "balanced_q4_0",
+      "label": "Balanced (Q4_0)",
+      "availability": "supported",
+      "default": true,
+      "component_overrides": {
+        "minimax_music3.language_model_gguf": "language_model_q4_0.gguf",
+        "minimax_music3.rvq_depth_decoder_gguf": "rvq_depth_decoder_bf16.gguf",
+        "minimax_music3.flow_transformer_gguf": "transformer_q4_0.gguf"
+      },
+      "gguf_component_bytes": 9012701792
+    },
+    {
+      "id": "lm_quality_q4_k",
+      "label": "Higher LM quality (Q4_K)",
+      "availability": "benchmark_required",
+      "default": false,
+      "component_overrides": {
+        "minimax_music3.language_model_gguf": "language_model_q4_k.gguf",
+        "minimax_music3.rvq_depth_decoder_gguf": "rvq_depth_decoder_q4_k.gguf",
+        "minimax_music3.flow_transformer_gguf": "transformer_q4_k.gguf"
+      },
+      "gguf_component_bytes": 9304002816
+    },
+    {
+      "id": "quality_bf16",
+      "label": "Quality (BF16)",
+      "availability": "benchmark_required",
+      "default": false,
+      "component_overrides": {
+        "minimax_music3.language_model_gguf": "language_model_bf16.gguf",
+        "minimax_music3.rvq_depth_decoder_gguf": "rvq_depth_decoder_bf16.gguf",
+        "minimax_music3.flow_transformer_gguf": "transformer_bf16.gguf"
+      },
+      "gguf_component_bytes": 28506140416
+    }
+  ],
+  "progress": {
+    "upstream_generation_progress": false,
+    "host_events": ["queued", "preparing", "running", "completed", "failed", "cancelled"],
+    "running_progress": null,
+    "diagnostic_log_flag": "--log"
+  },
+  "cancellation": {
+    "upstream_cooperative_cancellation": false,
+    "implementation": "terminate_child_process_and_discard_unpublished_temporary_output"
+  },
+  "sources": [
+    {
+      "url": "https://github.com/0xShug0/audio.cpp/tree/preview/minimax-music-3",
+      "commit": "aafb22aed103eba098a48e92b977e1c2dbfc8e13"
+    },
+    {
+      "url": "https://huggingface.co/audio-cpp/MiniMax-Music3-GGUF/tree/ead13fe2b1ca3e8ca314d4bdfe1ff04c533f2b13",
+      "revision": "ead13fe2b1ca3e8ca314d4bdfe1ff04c533f2b13"
+    }
+  ]
+}
