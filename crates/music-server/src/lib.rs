@@ -1,5 +1,6 @@
 mod providers;
 mod assistant;
+mod assistant_runtime;
 mod credentials;
 mod model_manager;
 mod presets;
@@ -44,6 +45,7 @@ struct AppState {
     engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
     engine_options: Arc<RwLock<EngineOptions>>,
     assistant: Arc<RwLock<AssistantConfig>>,
+    assistant_runtime: Arc<assistant_runtime::AssistantRuntime>,
 }
 
 #[derive(Clone)]
@@ -266,6 +268,9 @@ struct AssistantConfig {
     local_base_url: Option<String>,
     local_model: Option<String>,
     openrouter_model: Option<String>,
+    /// Id of a model downloaded through the assistant runtime, run as a
+    /// sidecar by Studio itself.
+    managed_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +280,8 @@ enum AssistantProvider {
     None,
     Local,
     OpenRouter,
+    /// A model Studio downloaded and runs itself with llama.cpp.
+    Managed,
 }
 
 impl AssistantConfig {
@@ -288,6 +295,11 @@ impl AssistantConfig {
             AssistantProvider::OpenRouter => {
                 self.openrouter_model.as_deref().is_some_and(|model| !model.trim().is_empty())
                     && credentials::openrouter_source().is_some()
+            }
+            // Availability is confirmed against the disk in `assistant_status`;
+            // a model id alone only says one was chosen.
+            AssistantProvider::Managed => {
+                self.managed_model.as_deref().is_some_and(|model| !model.trim().is_empty())
             }
         }
     }
@@ -359,6 +371,9 @@ pub async fn serve() -> anyhow::Result<()> {
         engine: Arc::new(tokio::sync::Mutex::new(None)),
         engine_options: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.engine_options).unwrap_or_default())),
         assistant: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.assistant.clone()).unwrap_or_default())),
+        assistant_runtime: Arc::new(assistant_runtime::AssistantRuntime::new(
+            &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
+        )),
     };
 
     let app = Router::new()
@@ -376,6 +391,10 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
         .route("/v1/assistant/status", get(assistant_status).put(update_assistant_settings))
         .route("/v1/assistant/write", post(assistant_write))
+        .route("/v1/assistant/runtime", get(assistant_runtime_status))
+        .route("/v1/assistant/runtime/install", post(assistant_runtime_install))
+        .route("/v1/assistant/runtime/start", post(assistant_runtime_start))
+        .route("/v1/assistant/runtime/stop", post(assistant_runtime_stop))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
@@ -1034,8 +1053,19 @@ async fn proxy_image(
 
 async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
     let config = state.assistant.read().await.clone();
+    let runtime = state.assistant_runtime.status().await;
+    // A managed model is only usable once its file and the runtime are on disk.
+    let available = match config.provider {
+        AssistantProvider::Managed => config
+            .managed_model
+            .as_deref()
+            .is_some_and(|model| runtime.ready && runtime.installed_models.iter().any(|id| id == model)),
+        _ => config.available(),
+    };
     Json(serde_json::json!({
-        "available": config.available(),
+        "available": available,
+        "managed_model": config.managed_model,
+        "runtime_ready": runtime.ready,
         "provider": config.provider,
         "local_base_url": config.local_base_url,
         "local_model": config.local_model,
@@ -1060,6 +1090,51 @@ async fn update_assistant_settings(
     Ok(Json(serde_json::json!({ "available": request.available(), "provider": request.provider })))
 }
 
+#[derive(Debug, Deserialize)]
+struct AssistantAssetRequest {
+    asset_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssistantModelRequest {
+    model_id: String,
+}
+
+async fn assistant_runtime_status(State(state): State<AppState>) -> Json<assistant_runtime::RuntimeStatus> {
+    Json(state.assistant_runtime.status().await)
+}
+
+/// Starts one download. Nothing is fetched until this is called, and an
+/// interrupted file resumes where it stopped.
+async fn assistant_runtime_install(
+    State(state): State<AppState>,
+    Json(request): Json<AssistantAssetRequest>,
+) -> Result<Json<assistant_runtime::RuntimeStatus>, (StatusCode, Json<ApiError>)> {
+    state
+        .assistant_runtime
+        .install(&request.asset_id)
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    Ok(Json(state.assistant_runtime.status().await))
+}
+
+async fn assistant_runtime_start(
+    State(state): State<AppState>,
+    Json(request): Json<AssistantModelRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let base_url = state
+        .assistant_runtime
+        .start(&request.model_id, 8192)
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "base_url": base_url, "model_id": request.model_id })))
+}
+
+async fn assistant_runtime_stop(State(state): State<AppState>) -> Json<Value> {
+    state.assistant_runtime.stop().await;
+    Json(serde_json::json!({ "running": false }))
+}
+
 /// Writes lyrics and/or the structured caption. Optional by design: with no
 /// provider configured this answers 409 and the manual form is unaffected.
 async fn assistant_write(
@@ -1077,9 +1152,24 @@ async fn assistant_write(
     let user = assistant::user_message(&request);
 
     let response: Value = match config.provider {
-        AssistantProvider::Local => {
-            let base = config.local_base_url.clone().unwrap_or_default();
-            let model = config.local_model.clone().unwrap_or_default();
+        AssistantProvider::None | AssistantProvider::Local | AssistantProvider::Managed => {
+            // A managed model is started on first use and then stays loaded, so
+            // the second request does not pay for the load again.
+            let (base, model) = match config.provider {
+                AssistantProvider::Managed => {
+                    let id = config.managed_model.clone().unwrap_or_default();
+                    let base = state
+                        .assistant_runtime
+                        .start(&id, 8192)
+                        .await
+                        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+                    (base, id)
+                }
+                _ => (
+                    config.local_base_url.clone().unwrap_or_default(),
+                    config.local_model.clone().unwrap_or_default(),
+                ),
+            };
             let sent = reqwest::Client::new()
                 .post(format!("{}/chat/completions", base.trim_end_matches('/')))
                 .json(&assistant::chat_body(&model, &system, &user))
@@ -1971,7 +2061,7 @@ mod tests {
     fn persisted_settings_round_trip_a_complete_custom_component_selection() {
         let settings = PersistedStudioSettings {
             engine_options: EngineOptions { keep_loaded: true, max_batch: Some(2), ..EngineOptions::default() },
-            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None },
+            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None, managed_model: None },
             configuration: initial_configuration(),
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),

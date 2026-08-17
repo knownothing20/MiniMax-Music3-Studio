@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Loader2, PenLine } from 'lucide-react';
+import { Check, Download, Loader2, PenLine, Square } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
@@ -12,7 +12,39 @@ import { refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../s
  * starts anything on its own.
  */
 
-type Provider = 'none' | 'local' | 'open_router';
+type Provider = 'none' | 'local' | 'open_router' | 'managed';
+
+interface RuntimeAsset {
+  id: string;
+  label: string;
+  kind: 'model' | 'runtime';
+  bytes: number;
+  vram_gb?: number | null;
+  note: string;
+  installed: boolean;
+  downloaded_bytes: number;
+}
+
+interface RuntimeStatus {
+  ready: boolean;
+  root: string;
+  server_path?: string | null;
+  installed_models: string[];
+  running_model?: string | null;
+  assets: RuntimeAsset[];
+  active_download?: { asset_id: string; downloaded_bytes: number; total_bytes: number; done: boolean; error?: string | null } | null;
+}
+
+/// The service ships one English note per asset; these are its translations.
+const ASSET_NOTE: Record<string, string> = {
+  'gemma-4-e4b-q4_0': 'assetNoteGemmaE4b',
+  'gemma-4-12b-q4_0': 'assetNoteGemma12b',
+  'llama-cuda': 'assetNoteLlamaCuda',
+  'llama-cuda-runtime': 'assetNoteCudart',
+  'llama-cpu': 'assetNoteLlamaCpu',
+};
+
+const gigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(bytes < 1e9 ? 2 : 1)} GB`;
 
 interface AssistantStatus {
   available?: boolean;
@@ -20,6 +52,7 @@ interface AssistantStatus {
   local_base_url?: string | null;
   local_model?: string | null;
   openrouter_model?: string | null;
+  managed_model?: string | null;
 }
 
 const INPUT =
@@ -32,6 +65,8 @@ export const AssistantSettings: React.FC = () => {
   const [baseUrl, setBaseUrl] = useState('');
   const [localModel, setLocalModel] = useState('');
   const [openRouterModel, setOpenRouterModel] = useState('');
+  const [managedModel, setManagedModel] = useState('');
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [available, setAvailable] = useState(false);
   const [catalog, setCatalog] = useState<NativeOpenRouterModel[]>([]);
   const [busy, setBusy] = useState<'save' | 'catalog' | null>(null);
@@ -45,10 +80,47 @@ export const AssistantSettings: React.FC = () => {
         setBaseUrl(status.local_base_url ?? '');
         setLocalModel(status.local_model ?? '');
         setOpenRouterModel(status.openrouter_model ?? '');
+        setManagedModel(status.managed_model ?? '');
         setAvailable(status.available === true);
       })
       .catch(() => undefined);
   }, []);
+
+  const loadRuntime = React.useCallback(async () => {
+    const response = await fetch('/v1/assistant/runtime');
+    if (response.ok) setRuntime(await response.json());
+  }, []);
+
+  useEffect(() => { void loadRuntime().catch(() => undefined); }, [loadRuntime]);
+
+  // While something is downloading, keep the figures moving.
+  useEffect(() => {
+    const active = runtime?.active_download;
+    if (!active || active.done) return;
+    const timer = window.setInterval(() => void loadRuntime().catch(() => undefined), 1500);
+    return () => window.clearInterval(timer);
+  }, [runtime?.active_download, loadRuntime]);
+
+  const install = async (assetId: string) => {
+    setMessage(null);
+    try {
+      const response = await fetch('/v1/assistant/runtime/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset_id: assetId }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error || String(response.status));
+      setRuntime(body);
+    } catch (reason) {
+      setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : String(reason) });
+    }
+  };
+
+  const stopSidecar = async () => {
+    await fetch('/v1/assistant/runtime/stop', { method: 'POST' }).catch(() => undefined);
+    void loadRuntime().catch(() => undefined);
+  };
 
   const loadCatalog = async () => {
     setBusy('catalog');
@@ -75,6 +147,7 @@ export const AssistantSettings: React.FC = () => {
           local_base_url: baseUrl.trim() || null,
           local_model: localModel.trim() || null,
           openrouter_model: openRouterModel.trim() || null,
+          managed_model: managedModel.trim() || null,
         }),
       });
       const body = await response.json().catch(() => null);
@@ -101,8 +174,8 @@ export const AssistantSettings: React.FC = () => {
       <div className="space-y-3 pl-7">
         <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantHint')}</p>
 
-        <div className="grid grid-cols-3 gap-2">
-          {(['none', 'local', 'open_router'] as const).map(value => (
+        <div className="grid grid-cols-2 gap-2">
+          {(['none', 'managed', 'open_router', 'local'] as const).map(value => (
             <button
               key={value}
               type="button"
@@ -113,10 +186,83 @@ export const AssistantSettings: React.FC = () => {
                   : 'border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-600'
               }`}
             >
-              {value === 'none' ? t('assistantDisabled') : value === 'local' ? t('assistantLocal') : 'OpenRouter'}
+              {value === 'none'
+                ? t('assistantDisabled')
+                : value === 'managed'
+                  ? t('assistantManaged')
+                  : value === 'local'
+                    ? t('assistantLocal')
+                    : 'OpenRouter'}
             </button>
           ))}
         </div>
+
+        {provider === 'managed' && (
+          <div className="space-y-2">
+            <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantManagedHint')}</p>
+            {runtime?.assets.map(asset => {
+              const active = runtime.active_download?.asset_id === asset.id && !runtime.active_download?.done;
+              const percent = active && runtime.active_download
+                ? Math.min(100, Math.round((runtime.active_download.downloaded_bytes / Math.max(1, runtime.active_download.total_bytes)) * 100))
+                : 0;
+              return (
+                <div key={asset.id} className="rounded-lg border-2 border-zinc-300 p-3 dark:border-zinc-700">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex min-w-0 items-center gap-2">
+                      {asset.kind === 'model' && (
+                        <input
+                          type="radio"
+                          name="managed-model"
+                          checked={managedModel === asset.id}
+                          onChange={() => setManagedModel(asset.id)}
+                          disabled={!asset.installed}
+                          className="h-4 w-4 accent-indigo-500"
+                        />
+                      )}
+                      <span className="truncate text-sm font-medium text-zinc-900 dark:text-white">{asset.label}</span>
+                    </label>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="text-xs tabular-nums text-zinc-500">{gigabytes(asset.bytes)}</span>
+                      {asset.installed ? (
+                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-300">
+                          {t('installed')}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void install(asset.id)}
+                          disabled={Boolean(runtime.active_download && !runtime.active_download.done)}
+                          className="inline-flex items-center gap-1 rounded-lg border-2 border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"
+                        >
+                          {active ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                          {active ? `${percent}%` : t('download')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-4 text-zinc-500">{ASSET_NOTE[asset.id] ? t(ASSET_NOTE[asset.id] as never) : asset.note}</p>
+                  {active && (
+                    <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+                      <div className="h-full bg-indigo-500 transition-[width]" style={{ width: `${percent}%` }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {runtime?.active_download?.error && (
+              <p className="text-xs text-red-600 dark:text-red-300">{runtime.active_download.error}</p>
+            )}
+            {runtime?.running_model && (
+              <button
+                type="button"
+                onClick={() => void stopSidecar()}
+                className="inline-flex items-center gap-2 rounded-lg border-2 border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-300"
+              >
+                <Square size={13} /> {t('assistantUnload')}
+              </button>
+            )}
+          </div>
+        )}
 
         {provider === 'local' && (
           <div className="space-y-2">

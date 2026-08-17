@@ -1232,4 +1232,13 @@ export const ko = {
     assistantOpenRouterHint: '위 「제공자」의 OpenRouter 키를 사용합니다. OpenRouter 요청은 해당 계정에 청구됩니다.',
     assistantPickModel: '텍스트 모델 선택',
     assistantSaved: '저장됨',
+    assistantManaged: '내려받은 모델',
+    assistantManagedHint: 'Studio 가 모델과 llama.cpp 런타임을 내려받아 직접 실행합니다. 「다운로드」를 누르기 전에는 아무것도 받지 않으며, 모델은 실제로 도우미를 쓸 때만 로드됩니다.',
+    assistantUnload: '모델 언로드',
+    installed: '설치됨',
+    assetNoteGemmaE4b: '둘 중 가벼운 쪽. 양자화 인식 학습 덕분에 q4_0 에서도 쓸 만합니다.',
+    assetNoteGemma12b: '설명 품질이 확실히 좋습니다. Music3 로 가득 차지 않은 GPU 가 필요합니다.',
+    assetNoteLlamaCuda: '아래 CUDA 런타임도 필요합니다.',
+    assetNoteCudart: 'llama.cpp 가 링크하는 CUDA 라이브러리.',
+    assetNoteLlamaCpu: 'NVIDIA 그래픽카드가 없는 컴퓨터용. 느리지만 동작합니다.',
 };

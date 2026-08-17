@@ -1232,4 +1232,13 @@ export const zh = {
     assistantOpenRouterHint: '使用上方“提供方”中的 OpenRouter 密钥。对 OpenRouter 的请求会从该账户计费。',
     assistantPickModel: '选择文本模型',
     assistantSaved: '已保存',
+    assistantManaged: '下载的模型',
+    assistantManagedHint: '工作室会下载模型与 llama.cpp 运行时并自行启动。在你点击“下载”之前不会获取任何内容，模型仅在实际使用助手时加载。',
+    assistantUnload: '卸载模型',
+    installed: '已安装',
+    assetNoteGemmaE4b: '两者中较轻的一个；量化感知训练让 q4_0 依然可用。',
+    assetNoteGemma12b: '描述写得明显更好；需要一张没有被 Music3 占满的显卡。',
+    assetNoteLlamaCuda: '需要下方的 CUDA 运行时。',
+    assetNoteCudart: 'llama.cpp 链接的 CUDA 库。',
+    assetNoteLlamaCpu: '适用于没有 NVIDIA 显卡的机器。慢，但能用。',
 };

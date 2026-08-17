@@ -1232,4 +1232,13 @@ export const ja = {
     assistantOpenRouterHint: '上の「プロバイダー」の OpenRouter キーを使用します。OpenRouter へのリクエストはそのアカウントに課金されます。',
     assistantPickModel: 'テキストモデルを選択',
     assistantSaved: '保存しました',
+    assistantManaged: 'ダウンロード済みモデル',
+    assistantManagedHint: 'Studio がモデルと llama.cpp ランタイムをダウンロードし、自身で起動します。「ダウンロード」を押すまで何も取得されず、モデルはアシスタント使用時にのみ読み込まれます。',
+    assistantUnload: 'モデルをアンロード',
+    installed: '導入済み',
+    assetNoteGemmaE4b: '2 つのうち軽い方。量子化を考慮した学習により q4_0 でも実用的です。',
+    assetNoteGemma12b: '説明の質が明らかに上。Music3 で埋まっていない GPU が必要です。',
+    assetNoteLlamaCuda: '下の CUDA ランタイムも必要です。',
+    assetNoteCudart: 'llama.cpp がリンクする CUDA ライブラリ。',
+    assetNoteLlamaCpu: 'NVIDIA GPU がない環境向け。遅いですが動きます。',
 };

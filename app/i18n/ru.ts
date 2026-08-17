@@ -1236,4 +1236,13 @@ export const ru = {
     assistantOpenRouterHint: 'Использует ключ OpenRouter из раздела «Провайдеры» выше. Запросы к OpenRouter оплачиваются с того аккаунта.',
     assistantPickModel: 'Выберите текстовую модель',
     assistantSaved: 'Сохранено',
+    assistantManaged: 'Скачиваемая модель',
+    assistantManagedHint: 'Студия скачивает модель и рантайм llama.cpp и запускает их сама. Ничего не качается, пока вы не нажмёте «Скачать», а модель грузится только когда ассистент реально используется.',
+    assistantUnload: 'Выгрузить модель',
+    installed: 'установлено',
+    assetNoteGemmaE4b: 'Более лёгкая из двух; обучение с учётом квантования сохраняет качество на q4_0.',
+    assetNoteGemma12b: 'Заметно лучше пишет описания; нужна видеокарта, не занятая целиком под Music3.',
+    assetNoteLlamaCuda: 'Нужен вместе с CUDA-рантаймом ниже.',
+    assetNoteCudart: 'Библиотеки CUDA, с которыми линкуется llama.cpp.',
+    assetNoteLlamaCpu: 'Для машин без видеокарты NVIDIA. Медленно, но работает.',
 };

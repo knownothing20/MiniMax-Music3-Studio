@@ -1237,4 +1237,13 @@ export const en = {
     assistantOpenRouterHint: 'Uses the OpenRouter key from Providers above. Requests to OpenRouter are billed to that account.',
     assistantPickModel: 'Pick a text model',
     assistantSaved: 'Saved',
+    assistantManaged: 'Downloaded model',
+    assistantManagedHint: 'Studio downloads the model and the llama.cpp runtime and runs them itself. Nothing is fetched until you press Download, and the model only loads when the assistant is actually used.',
+    assistantUnload: 'Unload model',
+    installed: 'installed',
+    assetNoteGemmaE4b: 'The lighter of the two; quantisation-aware training keeps it usable at q4_0.',
+    assetNoteGemma12b: 'Writes noticeably better captions; wants a card that is not already full of Music3.',
+    assetNoteLlamaCuda: 'Needs the CUDA runtime companion below.',
+    assetNoteCudart: 'The CUDA libraries llama.cpp links against.',
+    assetNoteLlamaCpu: 'For machines without an NVIDIA card. Slow, but it works.',
 };
