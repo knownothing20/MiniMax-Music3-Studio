@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Song, Playlist, playlistsApi, songsApi, getAudioUrl } from '../services/api';
+import { Song, Playlist } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { ArrowLeft, Play, MoreHorizontal, Clock, Calendar, Shuffle, Trash2, Mic2, Music } from 'lucide-react';
@@ -14,7 +14,7 @@ interface PlaylistDetailProps {
 }
 
 export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBack, onPlaySong, onSelect, onNavigateToProfile }) => {
-    const { user: currentUser, token } = useAuth();
+    const { user: currentUser } = useAuth();
     const { t } = useI18n();
     const [playlist, setPlaylist] = useState<Playlist & { creator_avatar?: string } | null>(null);
     const [songs, setSongs] = useState<Song[]>([]);
@@ -43,30 +43,7 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
                 return;
             }
 
-            const res = await playlistsApi.getPlaylist(playlistId, token);
-            // res.playlist comes from DB row, which now includes creator_avatar
-            setPlaylist(res.playlist as any);
-
-            const mappedSongs: Song[] = res.songs.map((s: any) => ({
-                id: s.id,
-                title: s.title,
-                lyrics: s.lyrics,
-                style: s.style,
-                coverUrl: s.cover_url || s.coverUrl || `https://picsum.photos/seed/${s.id}/400/400`,
-                audioUrl: getAudioUrl(s.audio_url || s.audioUrl, s.id),
-                duration: s.duration,
-                bpm: s.bpm,
-                tags: s.tags || [],
-                is_public: s.is_public || false,
-                likeCount: s.like_count || 0,
-                viewCount: s.view_count || 0,
-                creator: s.creator,
-                created_at: s.created_at,
-                addedAt: s.added_at
-            }));
-
-            setSongs(mappedSongs);
-            setIsNativePlaylist(false);
+            throw new Error('Playlist was not found in the local library');
         } catch (error) {
             console.error('Failed to load playlist:', error);
         } finally {
@@ -76,15 +53,11 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
 
     // ... (retaining methods handleRemove, handleDelete) ...
     const handleRemoveSong = async (songId: string) => {
-        if (!playlist || (!token && !isNativePlaylist)) return;
+        if (!playlist) return;
         try {
-            if (isNativePlaylist) {
-                const songIds = (playlist.songIds || []).filter(id => id !== songId);
-                const updated = await updateNativePlaylist(playlist.id, playlist, songIds);
-                setPlaylist({ ...updated, user_id: '__native__' } as Playlist & { creator_avatar?: string });
-            } else {
-                await playlistsApi.removeSong(playlist.id, songId, token!);
-            }
+            const songIds = (playlist.songIds || []).filter(id => id !== songId);
+            const updated = await updateNativePlaylist(playlist.id, playlist, songIds);
+            setPlaylist({ ...updated, user_id: '__native__' } as Playlist & { creator_avatar?: string });
             setSongs(prev => prev.filter(s => s.id !== songId));
         } catch (error) {
             console.error('Failed to remove song:', error);
@@ -92,11 +65,10 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
     };
 
     const handleDeletePlaylist = async () => {
-        if (!playlist || (!token && !isNativePlaylist)) return;
+        if (!playlist) return;
         if (!confirm(t('deletePlaylistConfirm'))) return;
         try {
-            if (isNativePlaylist) await deleteNativePlaylist(playlist.id);
-            else await playlistsApi.delete(playlist.id, token!);
+            await deleteNativePlaylist(playlist.id);
             onBack();
         } catch (error) {
             console.error('Failed to delete playlist:', error);

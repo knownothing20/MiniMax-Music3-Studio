@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Song } from '../types';
 import { Heart, Share2, Play, Pause, MoreHorizontal, X, Copy, Wand2, MoreVertical, Download, Repeat, Video, Music, Link as LinkIcon, Sparkles, Globe, Lock, Trash2, Edit3, Layers, ChevronDown, ClipboardCopy, ImagePlus } from 'lucide-react';
-import { songsApi } from '../services/api';
+import { updateNativeSong } from '../services/nativeLibrary';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
@@ -28,7 +28,7 @@ interface RightSidebarProps {
 }
 
 export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpenVideo, onOpenCoverRegen, onReuse, onReplayMusic, onSongUpdate, onNavigateToProfile, onNavigateToSong, isLiked, onToggleLike, onDelete, onAddToPlaylist, onPlay, isPlaying, currentSong }) => {
-    const { token, user } = useAuth();
+    const { user } = useAuth();
     const { t } = useI18n();
     const [showMenu, setShowMenu] = useState(false);
     const [isOwner, setIsOwner] = useState(false);
@@ -72,10 +72,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
 
     const saveTitleEdit = async () => {
         if (!song) return;
-        if (!token) {
-            setTitleError('Please sign in to rename.');
-            return;
-        }
         const trimmed = titleDraft.trim();
         if (!trimmed) {
             setTitleError('Title cannot be empty.');
@@ -88,8 +84,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
         setIsSavingTitle(true);
         setTitleError(null);
         try {
-            await songsApi.updateSong(song.id, { title: trimmed }, token);
-            onSongUpdate?.({ ...song, title: trimmed });
+            const updated = await updateNativeSong(song, { title: trimmed });
+            onSongUpdate?.(updated);
             setIsEditingTitle(false);
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Rename failed';

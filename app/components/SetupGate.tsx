@@ -41,7 +41,7 @@ type Profile = {
   total_bytes: number;
 };
 
-type Catalog = { engine_id: string; profiles: Profile[]; components: Music3Component[] };
+type Catalog = { engine_id: string; recommended_profile_id: string; profiles: Profile[]; components: Music3Component[] };
 type EnginePreset = { id: string; title: string; subtitle?: string };
 type PresetsResponse = { presets: EnginePreset[]; hardware?: { recommended?: string } };
 type CapabilitiesResponse = { engines: Array<{ id?: string; execution_mode?: string; capabilities?: string[] }> };

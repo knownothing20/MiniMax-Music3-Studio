@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { AudioLines, Disc, FlaskConical, Library, LogIn, LogOut, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
+import { AudioLines, Disc, Library, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
 import { View } from '../types';
 import { useI18n } from '../context/I18nContext';
-import { llmStorage } from '../services/llm/storage';
+import { ResourceMonitor } from './ResourceMonitor';
 
 interface SidebarProps {
   currentView: View;
@@ -10,8 +10,6 @@ interface SidebarProps {
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   user?: { username: string; isAdmin?: boolean; avatar_url?: string } | null;
-  onLogin?: () => void;
-  onLogout?: () => void;
   onOpenSettings?: () => void;
   isOpen?: boolean;
   onToggle?: () => void;
@@ -35,7 +33,7 @@ const StatusLine: React.FC<{ active: boolean; pending?: boolean; label: string }
 const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const [setup, setSetup] = useState<NativeSetupStatus | null>(null);
   const [unreachable, setUnreachable] = useState(false);
-  const [, setTick] = useState(0);
+  const [openRouter, setOpenRouter] = useState<{ configured?: boolean } | null>(null);
 
   useEffect(() => {
     const refresh = async () => {
@@ -57,12 +55,18 @@ const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   // Settings are intentionally local to the user. Polling causes this compact
   // status to reflect a configuration change made in Settings without reload.
   useEffect(() => {
-    const timer = window.setInterval(() => setTick((value) => value + 1), 5000);
+    const refresh = () => void fetch('/v1/openrouter/settings')
+      .then((response) => response.ok ? response.json() : null)
+      .then(setOpenRouter)
+      .catch(() => setOpenRouter(null));
+    refresh();
+    const timer = window.setInterval(refresh, 15000);
     return () => window.clearInterval(timer);
   }, []);
 
-  const openRouter = llmStorage.getOpenRouter();
-  const openRouterConfigured = Boolean(openRouter.apiKey && openRouter.model);
+  // The credential lives in the native server, never in browser storage, so
+  // the badge asks the server whether one is configured.
+  const openRouterConfigured = openRouter?.configured === true;
   const engineReady = setup?.engine_ready === true;
   const modelReady = setup?.ready === true;
   const profile = setup?.selected_profile_id || (setup?.selected_component_ids?.length ? 'Custom set' : 'No profile');
@@ -92,8 +96,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   theme,
   onToggleTheme,
   user,
-  onLogin,
-  onLogout,
   onOpenSettings,
   isOpen = true,
   onToggle,
@@ -129,30 +131,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <NavItem icon={<Search size={20} />} label={t('search')} active={currentView === 'search'} onClick={() => onNavigate('search')} isExpanded={isOpen} />
           <NavItem icon={<Newspaper size={20} />} label={t('news')} active={currentView === 'news'} onClick={() => onNavigate('news')} isExpanded={isOpen} />
           <NavItem icon={<SlidersHorizontal size={20} />} label="Studio tools" active={currentView === 'tools'} onClick={() => onNavigate('tools')} isExpanded={isOpen} />
-          <NavItem icon={<FlaskConical size={20} />} label="Adapters lab" active={currentView === 'training'} onClick={() => onNavigate('training')} isExpanded={isOpen} />
 
           <div className="mt-auto flex flex-col gap-2">
+            <ResourceMonitor isOpen={isOpen} />
             <SystemWidget isOpen={isOpen} />
             <button type="button" onClick={onToggleTheme} className={`flex w-full items-center gap-3 rounded-xl text-zinc-500 transition-all duration-200 hover:bg-zinc-100 hover:text-black dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white ${isOpen ? 'justify-start px-3 py-2.5' : 'aspect-square justify-center'}`} title={theme === 'dark' ? t('lightMode') : t('darkMode')}>
               <span className="shrink-0">{theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}</span>
               {isOpen && <span className="truncate text-sm font-medium">{theme === 'dark' ? t('lightMode') : t('darkMode')}</span>}
             </button>
 
-            {user ? <>
               <button type="button" onClick={onOpenSettings} className={`flex w-full items-center gap-3 rounded-xl text-zinc-500 transition-all duration-200 hover:bg-zinc-100 hover:text-black dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white ${isOpen ? 'justify-start px-3 py-2.5' : 'aspect-square justify-center'}`} title={`${user.username} - ${t('settings')}`}>
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/20 bg-gradient-to-br from-pink-500 to-purple-600 text-xs font-bold text-white">{user.avatar_url ? <img src={user.avatar_url} alt={user.username} className="h-full w-full object-cover" /> : user.username.charAt(0).toUpperCase()}</span>
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/20 bg-gradient-to-br from-pink-500 to-purple-600 text-xs font-bold text-white">{user.username.charAt(0).toUpperCase()}</span>
                 {isOpen && <span className="min-w-0 flex-1 truncate text-left text-sm font-medium">{user.username}</span>}
               </button>
-              <button type="button" onClick={onLogout} className={`flex w-full items-center gap-3 rounded-xl text-zinc-500 transition-all duration-200 hover:bg-red-500/10 hover:text-red-500 ${isOpen ? 'justify-start px-3 py-2.5' : 'aspect-square justify-center'}`} title={t('signOut')}>
-                <LogOut size={20} className="shrink-0" />
-                {isOpen && <span className="text-sm font-medium">{t('signOut')}</span>}
-              </button>
-            </> : (
-              <button type="button" onClick={onLogin} className={`flex w-full items-center gap-3 rounded-xl text-zinc-500 transition-all duration-200 hover:bg-zinc-100 hover:text-pink-500 dark:text-zinc-400 dark:hover:bg-white/5 ${isOpen ? 'justify-start px-3 py-2.5' : 'aspect-square justify-center'}`} title={t('signIn')}>
-                <LogIn size={20} className="shrink-0" />
-                {isOpen && <span className="text-sm font-medium">{t('signIn')}</span>}
-              </button>
-            )}
           </div>
         </nav>
       </aside>

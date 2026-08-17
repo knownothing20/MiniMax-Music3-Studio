@@ -1,22 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, User as UserIcon, Palette, Info, Edit3, ExternalLink, Globe, ChevronDown, Github } from 'lucide-react';
+import { X, User as UserIcon, Palette, Info, Globe, ChevronDown, Github } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
-import { EditProfileModal } from './EditProfileModal';
+import { ProviderSettings } from './ProviderSettings';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
     theme: 'light' | 'dark';
     onToggleTheme: () => void;
-    onNavigateToProfile?: (username: string) => void;
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, theme, onToggleTheme, onNavigateToProfile }) => {
-    const { user } = useAuth();
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, theme, onToggleTheme }) => {
+    const { user, setDisplayName } = useAuth();
     const { t, language, setLanguage } = useI18n();
-    const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+
     const [showLangInfo, setShowLangInfo] = useState(false);
     const langInfoRef = useRef<HTMLDivElement>(null);
 
@@ -31,18 +30,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
         return () => document.removeEventListener('mousedown', handleClick);
     }, [showLangInfo]);
 
-    if (!isOpen || !user) {
-        if (isEditProfileOpen && user) {
-            return (
-                <EditProfileModal
-                    isOpen={isEditProfileOpen}
-                    onClose={() => setIsEditProfileOpen(false)}
-                    onSaved={() => setIsEditProfileOpen(false)}
-                />
-            );
-        }
-        return null;
-    }
+    if (!isOpen) return null;
 
     return (
         <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={onClose}>
@@ -62,59 +50,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                 </div>
 
                 <div className="p-6 space-y-8">
-                    {/* User Profile Section */}
-                    <div className="bg-zinc-50 dark:bg-zinc-800/50 rounded-xl p-6">
-                        <div className="flex items-center gap-4">
-                            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-2xl font-bold text-white shadow-lg overflow-hidden">
-                                {user.avatar_url ? (
-                                    <img src={user.avatar_url} alt={user.username} className="w-full h-full object-cover" />
-                                ) : (
-                                    user.username[0].toUpperCase()
-                                )}
-                            </div>
-                            <div className="flex-1">
-                                <h3 className="text-xl font-bold text-zinc-900 dark:text-white">@{user.username}</h3>
-                                <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-1">
-                                    {t('memberSince')} {new Date(user.createdAt).toLocaleDateString(language === 'zh' ? 'zh-CN' : 'en-US', { month: 'long', year: 'numeric' })}
-                                </p>
-                            </div>
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => {
-                                        onClose();
-                                        setIsEditProfileOpen(true);
-                                    }}
-                                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
-                                >
-                                    <Edit3 size={16} />
-                                    {t('editProfile')}
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        onClose();
-                                        onNavigateToProfile?.(user.username);
-                                    }}
-                                    className="flex items-center gap-2 px-4 py-2 bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-white rounded-lg text-sm font-medium hover:bg-zinc-300 dark:hover:bg-zinc-600 transition-colors"
-                                >
-                                    <ExternalLink size={16} />
-                                    {t('viewProfile')}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Account Section */}
+                    {/* Local identity — a display name only; this studio has no accounts. */}
                     <div className="space-y-4">
                         <div className="flex items-center gap-2 text-zinc-900 dark:text-white">
                             <UserIcon size={20} />
                             <h3 className="font-semibold">{t('account')}</h3>
                         </div>
-                        <div className="pl-7 space-y-3">
-                            <div>
-                                <label className="text-sm text-zinc-500 dark:text-zinc-400">{t('username')}</label>
-                                <p className="text-zinc-900 dark:text-white font-medium">@{user.username}</p>
-                            </div>
+                        <div className="space-y-2 pl-7">
+                            <label className="text-sm text-zinc-500 dark:text-zinc-400">{t('username')}</label>
+                            <input
+                                defaultValue={user.username}
+                                onBlur={(event) => setDisplayName(event.target.value)}
+                                className="w-full rounded-lg border-2 border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 focus:border-indigo-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-white"
+                            />
+                            <p className="text-xs text-zinc-400">This name is stored on this machine and is only used to label the studio.</p>
                         </div>
+                    </div>
+
+                    {/* Providers */}
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-zinc-900 dark:text-white">
+                            <Palette size={20} />
+                            <h3 className="font-semibold">Providers</h3>
+                        </div>
+                        <div className="pl-7"><ProviderSettings /></div>
                     </div>
 
                     {/* Language Section */}
@@ -267,12 +226,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                     </button>
                 </div>
             </div>
-
-            <EditProfileModal
-                isOpen={isEditProfileOpen}
-                onClose={() => setIsEditProfileOpen(false)}
-                onSaved={() => setIsEditProfileOpen(false)}
-            />
         </div>
     );
 };

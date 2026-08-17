@@ -62,7 +62,7 @@ export function mapNativeLibrarySong(song: NativeLibrarySong): Song {
     title: song.title,
     lyrics: song.lyrics,
     style: song.caption,
-    coverUrl: '',
+    coverUrl: typeof metadata.cover_filename === 'string' ? `/v1/library/songs/${encodeURIComponent(song.id)}/cover` : '',
     duration: (() => {
       const seconds = numberMetadata(metadata, 'duration_seconds') ?? numberMetadata(metadata, 'duration');
       return seconds && seconds > 0 ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '0:00';

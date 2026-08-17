@@ -6,7 +6,6 @@ import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
-import { songsApi } from '../services/api';
 import { updateNativeSong } from '../services/nativeLibrary';
 
 interface SongListProps {
@@ -529,7 +528,6 @@ const SongItem: React.FC<SongItemProps> = ({
     onCancelJob,
     onResetJob,
 }) => {
-    const { token } = useAuth();
     const { t } = useI18n();
     const [showDropdown, setShowDropdown] = useState(false);
     const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -553,14 +551,9 @@ const SongItem: React.FC<SongItemProps> = ({
         }
 
         try {
-            const response = song.nativeReplayAvailable
-                ? { song: await updateNativeSong(song, { title: editedTitle.trim() }) }
-                : await songsApi.updateSong(song.id, { title: editedTitle.trim() }, token!);
+            const updated = await updateNativeSong(song, { title: editedTitle.trim() });
             setIsEditingTitle(false);
-            // Update the parent component's song list
-            if (onSongUpdate && response.song) {
-                onSongUpdate(response.song);
-            }
+            onSongUpdate?.(updated);
         } catch (error) {
             console.error('Failed to update title:', error);
             setEditedTitle(song.title);

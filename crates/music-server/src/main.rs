@@ -217,6 +217,12 @@ struct OpenRouterSettingsRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenRouterCompletionRequest {
+    model_id: String,
+    prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenRouterCoverRequest {
     model_id: String,
     prompt: String,
@@ -273,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
         .route("/v1/openrouter/covers", post(create_openrouter_cover))
+        .route("/v1/openrouter/completions", post(create_openrouter_completion))
         .route("/v1/library/songs", get(library_songs).post(create_library_song))
         .route("/v1/library/import", post(import_library_audio))
         .route("/v1/library/songs/{id}", get(library_song).put(update_library_song).delete(delete_library_song))
@@ -587,6 +594,33 @@ async fn create_openrouter_cover(
         .await
         .map(Json)
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter cover generation failed: {error}")))
+}
+
+/// Text assistance (caption and lyric drafting). The model must declare the
+/// prompt-enhancement capability in the refreshed catalog, so the studio can
+/// never send this to an image or audio-only endpoint.
+async fn create_openrouter_completion(
+    State(state): State<AppState>,
+    Json(input): Json<OpenRouterCompletionRequest>,
+) -> Result<Json<OpenRouterResponse>, (StatusCode, Json<ApiError>)> {
+    let catalog = state
+        .openrouter_catalog
+        .read()
+        .await
+        .catalog
+        .clone()
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "Refresh the OpenRouter catalog before using the assistant.".into()))?;
+    let request = providers::openrouter::request_for(
+        &catalog,
+        Capability::PromptEnhancement,
+        &input.model_id,
+        &input.prompt,
+    )
+    .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    execute_openrouter_json(request)
+        .await
+        .map(Json)
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter completion failed: {error}")))
 }
 
 fn chrono_like_timestamp() -> String { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|value| value.as_secs().to_string()).unwrap_or_default() }

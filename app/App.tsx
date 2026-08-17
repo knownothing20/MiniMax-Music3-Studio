@@ -6,13 +6,9 @@ import { RightSidebar } from './components/RightSidebar';
 import { Player } from './components/Player';
 import { LibraryView } from './components/LibraryView';
 import { CreatePlaylistModal, AddToPlaylistModal } from './components/PlaylistModals';
-import { VideoGeneratorModal } from './components/VideoGeneratorModal';
 import { CoverRegenModal } from './components/CoverRegenModal';
-import { UsernameModal } from './components/UsernameModal';
-import { UserProfile } from './components/UserProfile';
 import { SettingsModal } from './components/SettingsModal';
-import { SongProfile } from './components/SongProfile';
-import { Song, GenerationParams, View, Playlist } from './types';
+import { Song, Music3Request, Music3Job, View, Playlist } from './types';
 // Resizable panel hook
 function useResizablePanel(key: string, defaultWidth: number, min: number, max: number, direction: 'left' | 'right' = 'left') {
   const [width, setWidth] = React.useState(() => {
@@ -55,7 +51,7 @@ function useResizablePanel(key: string, defaultWidth: number, min: number, max: 
 
   return { width, handle };
 }
-import { generateApi, songsApi, playlistsApi, getAudioUrl } from './services/api';
+import { getAudioUrl } from './services/api';
 import { useAuth } from './context/AuthContext';
 import { useResponsive } from './context/ResponsiveContext';
 import { I18nProvider, useI18n } from './context/I18nContext';
@@ -67,7 +63,6 @@ import { NewsPage } from './components/NewsPage';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { SetupGate } from './components/SetupGate';
 import { StudioToolsPanel } from './components/StudioToolsPanel';
-import { TrainingWorkspace } from './components/TrainingWorkspace';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
 
 const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
@@ -106,12 +101,10 @@ function AppContent() {
   const { isMobile, isDesktop } = useResponsive();
 
   // Auth
-  const { user, token, isAuthenticated, isLoading: authLoading, setupUser, logout } = useAuth();
+  const { user } = useAuth();
   const leftPanel = useResizablePanel('create', 420, 320, 600);
   const rightPanel = useResizablePanel('details', 400, 320, 600, 'right');
-  const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [nativeSetupReady, setNativeSetupReady] = useState(false);
-  const [nativeLibraryAvailable, setNativeLibraryAvailable] = useState(false);
   // Track multiple concurrent generation jobs
   const activeJobsRef = useRef<Map<string, { tempId: string; pollInterval: ReturnType<typeof setInterval> }>>(new Map());
   const nativeReplayPollersRef = useRef<Map<string, ReturnType<typeof window.setInterval>>>(new Map());
@@ -215,7 +208,6 @@ function AppContent() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [likedSongIds, setLikedSongIds] = useState<Set<string>>(new Set());
-  const [referenceTracks, setReferenceTracks] = useState<ReferenceTrack[]>([]);
   const [playQueue, setPlayQueue] = useState<Song[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
 
@@ -255,8 +247,6 @@ function AppContent() {
   const [songToAddToPlaylist, setSongToAddToPlaylist] = useState<Song | null>(null);
 
   // Video Modal
-  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
-  const [songForVideo, setSongForVideo] = useState<Song | null>(null);
 
   // Cover regen modal — manual Pollinations / upload entry from SongList row
   // and RightSidebar. Updates songs.cover_url via /api/songs/:id/regen-cover.
@@ -266,10 +256,8 @@ function AppContent() {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   // Profile View
-  const [viewingUsername, setViewingUsername] = useState<string | null>(null);
 
   // Song View
-  const [viewingSongId, setViewingSongId] = useState<string | null>(null);
 
   // Playlist View
   const [viewingPlaylistId, setViewingPlaylistId] = useState<string | null>(null);
@@ -300,16 +288,6 @@ function AppContent() {
     onConfirm: () => void;
   } | null>(null);
 
-  interface ReferenceTrack {
-    id: string;
-    filename: string;
-    storage_key: string;
-    duration: number | null;
-    file_size_bytes: number | null;
-    tags: string[] | null;
-    created_at: string;
-    audio_url: string;
-  }
 
   const showToast = (message: string, type: ToastType = 'success') => {
     setToast({ message, type, isVisible: true });
@@ -322,7 +300,6 @@ function AppContent() {
   const refreshNativeLibrary = useCallback(async (): Promise<boolean> => {
     try {
       const [nativeSongs, nativePlaylists] = await Promise.all([loadNativeLibrarySongs(), loadNativePlaylists()]);
-      setNativeLibraryAvailable(true);
       setSongs(prev => {
         const generatingSongs = prev.filter(song => song.isGenerating);
         return [...generatingSongs, ...nativeSongs];
@@ -334,7 +311,6 @@ function AppContent() {
       // actions issue requests to a server that is not part of this desktop app.
       return true;
     } catch {
-      setNativeLibraryAvailable(false);
       return false;
     }
   }, []);
@@ -390,25 +366,6 @@ function AppContent() {
     nativeReplayPollersRef.current.clear();
   }, []);
 
-  // Show username modal if not authenticated and not loading
-  useEffect(() => {
-    if (!authLoading && !isAuthenticated) {
-      setShowUsernameModal(true);
-    }
-  }, [authLoading, isAuthenticated]);
-
-  // Load Playlists
-  useEffect(() => {
-    if (nativeLibraryAvailable) return;
-    if (token) {
-      playlistsApi.getMyPlaylists(token)
-        .then(res => setPlaylists(res.playlists))
-        .catch(err => console.error('Failed to load playlists', err));
-    } else {
-      setPlaylists([]);
-    }
-  }, [token, nativeLibraryAvailable]);
-
   // Keep selectedSongRef in sync for use in callbacks without stale closures
   useEffect(() => { selectedSongRef.current = selectedSong; }, [selectedSong]);
 
@@ -446,34 +403,6 @@ function AppContent() {
     }
   };
 
-  // Navigate to Profile Handler
-  const handleNavigateToProfile = (username: string) => {
-    setViewingUsername(username);
-    setCurrentView('profile');
-    window.history.pushState({}, '', `/@${username}`);
-  };
-
-  // Back from Profile Handler
-  const handleBackFromProfile = () => {
-    setViewingUsername(null);
-    setCurrentView('create');
-    window.history.pushState({}, '', '/');
-  };
-
-  // Navigate to Song Handler
-  const handleNavigateToSong = (songId: string) => {
-    setViewingSongId(songId);
-    setCurrentView('song');
-    window.history.pushState({}, '', `/song/${songId}`);
-  };
-
-  // Back from Song Handler
-  const handleBackFromSong = () => {
-    setViewingSongId(null);
-    setCurrentView('create');
-    window.history.pushState({}, '', '/');
-  };
-
   // Theme Effect
   useEffect(() => {
     localStorage.setItem('theme', theme);
@@ -494,32 +423,11 @@ function AppContent() {
       const path = window.location.pathname;
       const params = new URLSearchParams(window.location.search);
 
-      // Handle ?song= query parameter
-      const songParam = params.get('song');
-      if (songParam) {
-        setViewingSongId(songParam);
-        setCurrentView('song');
-        window.history.replaceState({}, '', `/song/${songParam}`);
-        return;
-      }
-
       if (path === '/create' || path === '/') {
         setCurrentView('create');
         setMobileShowList(false);
       } else if (path === '/library') {
         setCurrentView('library');
-      } else if (path.startsWith('/@')) {
-        const username = path.substring(2);
-        if (username) {
-          setViewingUsername(username);
-          setCurrentView('profile');
-        }
-      } else if (path.startsWith('/song/')) {
-        const songId = path.substring(6);
-        if (songId) {
-          setViewingSongId(songId);
-          setCurrentView('song');
-        }
       } else if (path.startsWith('/playlist/')) {
         const playlistId = path.substring(10);
         if (playlistId) {
@@ -539,110 +447,15 @@ function AppContent() {
     return () => window.removeEventListener('popstate', handleUrlChange);
   }, []);
 
-  // Load Songs Effect
+  // Load the native library once at start and whenever the studio signals a
+  // change (generation import, replay, audio import).
   useEffect(() => {
-    const loadSongs = async () => {
-      if (await refreshNativeLibrary()) return;
+    void refreshNativeLibrary();
+    const reload = () => { void refreshNativeLibrary(); };
+    window.addEventListener('music3-library-changed', reload);
+    return () => window.removeEventListener('music3-library-changed', reload);
+  }, [refreshNativeLibrary]);
 
-      if (!isAuthenticated || !token) return;
-
-      try {
-        const mapSong = (s: any): Song => ({
-          id: s.id,
-          title: s.title,
-          lyrics: s.lyrics,
-          style: s.style,
-          // Prefer the real cover saved by the audio-gen pipeline (Pollinations).
-          // Fallback to a seeded picsum for legacy songs without cover_url.
-          coverUrl: s.cover_url || s.coverUrl || `https://picsum.photos/seed/${s.id}/400/400`,
-          duration: s.duration && s.duration > 0 ? `${Math.floor(s.duration / 60)}:${String(Math.floor(s.duration % 60)).padStart(2, '0')}` : '0:00',
-          createdAt: new Date(s.created_at || s.createdAt),
-          tags: s.tags || [],
-          audioUrl: getAudioUrl(s.audio_url, s.id),
-          isPublic: s.is_public,
-          likeCount: s.like_count || 0,
-          viewCount: s.view_count || 0,
-          userId: s.user_id,
-          creator: s.creator,
-          ditModel: s.dit_model || s.ditModel,
-          lmModel: s.lm_model || s.lmModel,
-          lmBackend: s.lm_backend || s.lmBackend,
-          generationTime: s.generation_time || s.generationTime,
-          lrcContent: s.lrc_content || s.lrcContent,
-          openrouterModel: s.openrouter_model || s.openrouterModel,
-          bpm: s.bpm || (s as any).bpm || 0,
-          keyScale: s.key_scale || (s as any).keyScale || '',
-          timeSignature: s.time_signature || (s as any).timeSignature || '',
-          generationParams: (() => {
-            try {
-              if (!s.generation_params) return undefined;
-              return typeof s.generation_params === 'string' ? JSON.parse(s.generation_params) : s.generation_params;
-            } catch {
-              return undefined;
-            }
-          })(),
-        });
-
-        // Load my songs (always works)
-        const mySongsRes = await songsApi.getMySongs(token);
-        const mySongs = mySongsRes.songs.map(mapSong);
-
-        // Load liked songs (may fail — don't block)
-        let likedSongs: Song[] = [];
-        try {
-          const likedSongsRes = await songsApi.getLikedSongs(token);
-          likedSongs = (likedSongsRes.songs || []).map(mapSong);
-        } catch {}
-
-        const songsMap = new Map<string, Song>();
-        // Liked first, then my songs overwrite — my songs have full data (lrc, bpm, etc)
-        [...likedSongs, ...mySongs].forEach(s => songsMap.set(s.id, s));
-
-        setSongs(prev => {
-          const generatingSongs = prev.filter(s => s.isGenerating);
-          const loadedSongs = Array.from(songsMap.values());
-          return [...generatingSongs, ...loadedSongs];
-        });
-
-        const likedIds = new Set(likedSongs.map(s => s.id));
-        setLikedSongIds(likedIds);
-
-      } catch (error) {
-        console.error('Failed to load songs:', error);
-      }
-    };
-
-    loadSongs();
-  }, [isAuthenticated, token, refreshNativeLibrary]);
-
-  const loadReferenceTracks = useCallback(async () => {
-    if (nativeLibraryAvailable) {
-      setReferenceTracks([]);
-      return;
-    }
-    if (!isAuthenticated || !token) return;
-    try {
-      const response = await fetch('/api/reference-tracks', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!response.ok) return;
-      const data = await response.json();
-      setReferenceTracks(data.tracks || []);
-    } catch (error) {
-      console.error('Failed to load reference tracks:', error);
-    }
-  }, [isAuthenticated, nativeLibraryAvailable, token]);
-
-  // Load reference tracks for Library
-  useEffect(() => {
-    loadReferenceTracks();
-  }, [loadReferenceTracks]);
-
-  useEffect(() => {
-    if (currentView === 'library') {
-      loadReferenceTracks();
-    }
-  }, [currentView, loadReferenceTracks]);
 
   // Player Logic
   const getActiveQueue = (song?: Song) => {
@@ -913,42 +726,29 @@ function AppContent() {
   // `song.id` (= tempId) and `song.jobId`; a pre-flight card has tempId but
   // no jobId, so the cancel button passes whatever it has and we figure it
   // out here.
-  const cancelGeneration = useCallback(async (id: string) => {
-    if (!token) return;
+  /// One handler for both card kinds: a pre-flight placeholder only has a
+  /// tempId (no engine job yet, so there is nothing to cancel remotely), while
+  /// a submitted card carries the mm-server job id.
+  const stopEngineJob = useCallback(async (jobId: string) => {
+    try {
+      await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`, { method: 'POST' });
+    } catch (error) {
+      console.error('Cancel request failed:', error);
+    }
+  }, []);
 
-    // First check: is this a pre-flight tempId? If so, abort and bail —
-    // there's no backend job yet to call /cancel on.
+  const cancelGeneration = useCallback(async (id: string) => {
     const preflightAc = preflightAbortersRef.current.get(id);
     if (preflightAc) {
       preflightAc.abort();
       preflightAbortersRef.current.delete(id);
-      // Mark the placeholder as cancelled so the user can hit Reset (X)
-      // to remove it. Same pattern as the audio-cancel branch below.
-      setSongs(prev => prev.map(s =>
-        s.id === id ? { ...s, isGenerating: false, stage: 'cancelled' } : s
-      ));
-      // Release the slot the click claimed; without this the N/10 badge
-      // stays inflated.
+      setSongs(prev => prev.map(song => song.id === id ? { ...song, isGenerating: false, stage: 'cancelled' } : song));
       decrementPendingClicks(1);
-      // Wake any other parked pre-flight in the FIFO chain so it can take
-      // its turn. The chain itself doesn't re-enter `waitForJobsToDrain`
-      // for the same click, but other queued clicks may be waiting.
       drainQueueWaiters();
       return;
     }
 
-    // Otherwise treat as a backend jobId.
-    try {
-      await fetch(`/api/generate/cancel/${id}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch { /* ignore */ }
-
-    // Stop polling but keep the card (user can click "Reset" next).
-    // Remove the job from activeJobsRef so waitForJobsToDrain can resolve;
-    // without this, the cancelled job sits there forever blocking every
-    // subsequent click's pre-flight from starting.
+    await stopEngineJob(id);
     const jobData = activeJobsRef.current.get(id);
     if (jobData) {
       clearInterval(jobData.pollInterval);
@@ -956,530 +756,153 @@ function AppContent() {
       setActiveJobCount(activeJobsRef.current.size);
       if (activeJobsRef.current.size === 0) setIsGenerating(false);
       drainQueueWaiters();
-      // Mark song as cancelled (not generating, show reset option)
-      setSongs(prev => prev.map(s =>
-        s.id === jobData.tempId ? { ...s, isGenerating: false, stage: 'cancelled' } : s
+      setSongs(prev => prev.map(song =>
+        song.id === jobData.tempId ? { ...song, isGenerating: false, stage: 'cancelled' } : song
       ));
     }
-  }, [token, drainQueueWaiters, decrementPendingClicks]);
+  }, [drainQueueWaiters, decrementPendingClicks, stopEngineJob]);
 
-  // Reset a single job — hard cancel (interrupt Gradio GPU + remove card).
-  // `id` may be either a backend jobId or a pre-flight tempId (placeholder
-  // that was already cancelled at pre-flight time and now sits with stage
-  // 'cancelled'). Pre-flight reset is just card removal — there's no GPU
-  // job to interrupt.
+  /// Reset drops the card as well as the job: the engine is asked to stop, then
+  /// the placeholder is removed so the list matches reality.
   const resetSingleJob = useCallback(async (id: string) => {
-    if (!token) return;
-
     const jobData = activeJobsRef.current.get(id);
-
-    // Pre-flight tempId path — no Gradio call, just drop the card.
     if (!jobData) {
-      // Defensive: if the placeholder still has an aborter (user clicks
-      // Reset on a card that was never cancelled), abort it now.
-      const ac = preflightAbortersRef.current.get(id);
-      if (ac) {
-        ac.abort();
+      const aborter = preflightAbortersRef.current.get(id);
+      if (aborter) {
+        aborter.abort();
         preflightAbortersRef.current.delete(id);
       }
-      setSongs(prev => prev.filter(s => s.id !== id));
+      setSongs(prev => prev.filter(song => song.id !== id));
       drainQueueWaiters();
       return;
     }
 
-    // Real-job path — send cancel to Gradio to interrupt diffusion
-    try {
-      await fetch('/api/generate/reset', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch { /* ignore */ }
-
+    await stopEngineJob(id);
+    clearInterval(jobData.pollInterval);
     activeJobsRef.current.delete(id);
-    setSongs(prev => prev.filter(s => s.id !== jobData.tempId));
+    setSongs(prev => prev.filter(song => song.id !== jobData.tempId));
     setActiveJobCount(activeJobsRef.current.size);
-    if (activeJobsRef.current.size === 0) {
-      setIsGenerating(false);
-    }
-    // Wake parked pre-flight clicks — without this the FIFO chain hangs
-    // forever and the next click never fires its LLM.
+    if (activeJobsRef.current.size === 0) setIsGenerating(false);
     drainQueueWaiters();
-  }, [token, drainQueueWaiters]);
+  }, [drainQueueWaiters, stopEngineJob]);
 
-  // Cancel all generation jobs
   const cancelAllGenerations = useCallback(async () => {
-    if (!token) return;
-    try {
-      await fetch('/api/generate/cancel-all', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch { /* ignore */ }
-
-    // Abort every in-flight pre-flight LLM call. Without this, an
-    // OpenRouter request that's already 15 s into its 60 s response
-    // would still complete after Cancel-all, fire `onGenerate`, and spawn
-    // a new audio job — i.e. cancel-all wouldn't actually cancel.
-    preflightAbortersRef.current.forEach(ac => ac.abort());
+    preflightAbortersRef.current.forEach(aborter => aborter.abort());
     preflightAbortersRef.current.clear();
 
-    // Clean up all active jobs
-    activeJobsRef.current.forEach(({ tempId, pollInterval }) => {
-      clearInterval(pollInterval);
-    });
-    const tempIds = new Set([...activeJobsRef.current.values()].map(j => j.tempId));
+    const running = [...activeJobsRef.current.entries()];
+    await Promise.all(running.map(([jobId]) => stopEngineJob(jobId)));
+    running.forEach(([, { pollInterval }]) => clearInterval(pollInterval));
+    const tempIds = new Set(running.map(([, job]) => job.tempId));
     activeJobsRef.current.clear();
-    // Drop both active-job placeholders AND any pre-flight cards still in
-    // the songs[] (they have isGenerating=true but no jobId yet — match by
-    // `isGenerating && !jobId` so we don't accidentally remove songs that
-    // legitimately just finished).
-    setSongs(prev => prev.filter(s => !tempIds.has(s.id) && !(s.isGenerating && !s.jobId)));
+    setSongs(prev => prev.filter(song => !tempIds.has(song.id) && !(song.isGenerating && !song.jobId)));
     setActiveJobCount(0);
     setIsGenerating(false);
-    // Wake up any pre-flight clicks that were waiting for this drained queue.
-    // Without this, after cancel-all the FIFO chain stays parked forever and
-    // the next click hangs on waitForJobsToDrain → no LLM ever fires.
-    drainQueueWaiters();
-    // Reset the visual click-pending counter too — same reasoning.
-    setPendingClickCount(0);
-  }, [token, drainQueueWaiters]);
-
-  // Hard reset — cancel + interrupt GPU generation
-  const resetGeneration = useCallback(async () => {
-    if (!token) return;
-    try {
-      await fetch('/api/generate/reset', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch { /* ignore */ }
-
-    // Abort every in-flight pre-flight LLM call (same reason as in
-    // cancelAllGenerations — without this, the OR request keeps running
-    // and would spawn a new audio job after Reset-all).
-    preflightAbortersRef.current.forEach(ac => ac.abort());
-    preflightAbortersRef.current.clear();
-
-    // Clean up all active jobs
-    activeJobsRef.current.forEach(({ tempId, pollInterval }) => {
-      clearInterval(pollInterval);
-    });
-    const tempIds = new Set([...activeJobsRef.current.values()].map(j => j.tempId));
-    activeJobsRef.current.clear();
-    // Drop active-job placeholders AND any pre-flight cards (no jobId yet).
-    setSongs(prev => prev.filter(s => !tempIds.has(s.id) && !(s.isGenerating && !s.jobId)));
-    setActiveJobCount(0);
-    setIsGenerating(false);
-    // Mirror cancelAllGenerations: wake parked pre-flight clicks and reset the
-    // visual click-pending counter. Without this, after Reset-all the FIFO
-    // chain stays parked forever and the next click hangs on
-    // waitForJobsToDrain → no LLM ever fires; the N/10 badge also gets stuck
-    // showing whatever pendingClickCount was at the moment of reset.
     drainQueueWaiters();
     setPendingClickCount(0);
-  }, [token, drainQueueWaiters]);
+  }, [drainQueueWaiters, stopEngineJob]);
+
+  const resetGeneration = cancelAllGenerations;
 
   // Refresh songs list (called when any job completes successfully)
   const refreshSongsList = useCallback(async () => {
-    if (nativeLibraryAvailable) {
-      await refreshNativeLibrary();
-      return;
-    }
-    if (!token) return;
-    try {
-      const response = await songsApi.getMySongs(token);
-      const loadedSongs: Song[] = response.songs.map(s => ({
-        id: s.id,
-        title: s.title,
-        lyrics: s.lyrics,
-        style: s.style,
-        // Prefer real cover saved by Pollinations integration.
-        coverUrl: (s as any).cover_url || (s as any).coverUrl || `https://picsum.photos/seed/${s.id}/400/400`,
-        duration: s.duration && s.duration > 0 ? `${Math.floor(s.duration / 60)}:${String(Math.floor(s.duration % 60)).padStart(2, '0')}` : '0:00',
-        createdAt: new Date(s.created_at),
-        tags: s.tags || [],
-        audioUrl: getAudioUrl(s.audio_url, s.id),
-        isPublic: s.is_public,
-        likeCount: s.like_count || 0,
-        viewCount: s.view_count || 0,
-        userId: s.user_id,
-        creator: s.creator,
-        ditModel: s.dit_model || s.ditModel,
-        lmModel: s.lm_model || s.lmModel,
-        lmBackend: s.lm_backend || s.lmBackend,
-        generationTime: s.generation_time || s.generationTime,
-        lrcContent: s.lrc_content || s.lrcContent,
-        openrouterModel: s.openrouter_model || s.openrouterModel,
-        bpm: s.bpm || (s as any).bpm || 0,
-        keyScale: s.key_scale || (s as any).keyScale || '',
-        timeSignature: s.time_signature || (s as any).timeSignature || '',
-        generationParams: (() => {
-          try {
-            if (!s.generation_params) return undefined;
-            return typeof s.generation_params === 'string' ? JSON.parse(s.generation_params) : s.generation_params;
-          } catch {
-            return undefined;
-          }
-        })(),
-      }));
+    await refreshNativeLibrary();
+  }, [refreshNativeLibrary]);
 
-      // Preserve any generating songs that aren't in the loaded list
-      setSongs(prev => {
-        // Keep only generating songs that aren't in the loaded list
-        const stillGenerating = prev.filter(s => s.isGenerating && !loadedSongs.some(l => l.id === s.id));
-        const mergedSongs = [...stillGenerating, ...loadedSongs];
-        // Sort by creation date, newest first
-        return mergedSongs.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-      });
-
-      // If the current selection was a temp/generating song, replace it with newest real song
-      const current = selectedSongRef.current;
-      if (current?.isGenerating || (current && !loadedSongs.some(s => s.id === current.id))) {
-        setSelectedSong(loadedSongs[0] ?? null);
-      }
-    } catch (error) {
-      console.error('Failed to refresh songs:', error);
-    }
-  }, [nativeLibraryAvailable, refreshNativeLibrary, token]);
+  /// Native Music3 job phases mapped onto the studio's stage labels. mm-server
+  /// reports a phase rather than a percentage, so the card shows an honest
+  /// stage name and an indeterminate bar instead of a fabricated progress
+  /// number.
+  const NATIVE_STAGE: Record<string, string> = {
+    queued: 'stageWaitingInQueue',
+    running: 'stageGeneratingAudio',
+  };
 
   const beginPollingJob = useCallback((jobId: string, tempId: string) => {
-    if (!token) return;
     if (activeJobsRef.current.has(jobId)) return;
 
     const pollInterval = setInterval(async () => {
       try {
-        const status = await generateApi.getStatus(jobId, token);
-        const normalizedProgress = Number.isFinite(Number(status.progress))
-          ? (Number(status.progress) > 1 ? Number(status.progress) / 100 : Number(status.progress))
-          : undefined;
+        const response = await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`);
+        if (!response.ok) throw new Error(`Job status request failed (${response.status})`);
+        const job: Music3Job = await response.json();
 
-        setSongs(prev => {
-          const song = prev.find(s => s.id === tempId);
-          if (!song) return prev;
-          const newQueuePos = status.status === 'queued' ? status.queuePosition : undefined;
-          const newProgress = normalizedProgress ?? song.progress;
-          const newStage = status.stage ?? song.stage;
-          // Skip update if nothing changed to avoid unnecessary re-renders
-          if (newProgress === song.progress && newStage === song.stage && newQueuePos === song.queuePosition) {
-            return prev;
-          }
-          return prev.map(s => {
-            if (s.id !== tempId) return s;
-            return { ...s, queuePosition: newQueuePos, progress: newProgress, stage: newStage };
-          });
-        });
+        setSongs(prev => prev.map(song => song.id === tempId
+          ? { ...song, stage: NATIVE_STAGE[job.status] ?? song.stage, queuePosition: job.status === 'queued' ? 0 : undefined }
+          : song));
 
-        if (status.status === 'succeeded' && status.result) {
+        if (job.status === 'completed') {
           cleanupJob(jobId, tempId);
+          setSongs(prev => prev.filter(song => song.id !== tempId));
           await refreshSongsList();
-
-          if (window.innerWidth < 768) {
-            setMobileShowList(true);
-          }
-        } else if (status.status === 'failed') {
+          const finished = job.songs?.[0] ?? job.song;
+          if (finished?.id) setSelectedSong(current => current?.id === tempId ? null : current);
+          showToast(job.songs && job.songs.length > 1
+            ? `${job.songs.length} ${t('tracksReady') || 'tracks ready'}`
+            : (t('trackReady') || 'Track ready'));
+          if (window.innerWidth < 768) setMobileShowList(true);
+        } else if (job.status === 'failed' || job.status === 'cancelled') {
           cleanupJob(jobId, tempId);
-          console.error(`Job ${jobId} failed:`, status.error);
-          const err = status.error || 'Unknown error';
-          if (err.includes('VRAM') || err.includes('Insufficient free')) {
-            showToast(t('vramError') || 'Not enough GPU VRAM. Reduce duration, batch size, or switch to a lighter model.', 'error');
-          } else {
-            showToast(`${t('generationFailed')}: ${err}`, 'error');
-          }
+          setSongs(prev => prev.filter(song => song.id !== tempId));
+          showToast(job.message || `${t('generationFailed')}`, job.status === 'failed' ? 'error' : 'info');
         }
-      } catch (pollError) {
-        console.error(`Polling error for job ${jobId}:`, pollError);
+      } catch (error) {
+        console.error(`Polling error for job ${jobId}:`, error);
         cleanupJob(jobId, tempId);
+        setSongs(prev => prev.filter(song => song.id !== tempId));
+        showToast(error instanceof Error ? error.message : String(error), 'error');
       }
-    }, 2000);
+    }, 1500);
 
     activeJobsRef.current.set(jobId, { tempId, pollInterval });
     setActiveJobCount(activeJobsRef.current.size);
-    // No client-side timeout — backend reports status='failed' if something goes wrong.
-    // Long generations (XL SFT 50 steps, batch, covers) can take 15+ minutes legitimately.
-  }, [token, cleanupJob, refreshSongsList]);
+  }, [cleanupJob, refreshSongsList, t]);
 
-  const buildTempSongFromParams = (params: GenerationParams, tempId: string, createdAt?: string) => ({
-    id: tempId,
-    title: params.title || t('generating') || 'Generating...',
-    lyrics: '',
-    style: params.style || params.songDescription || '',
-    coverUrl: 'https://picsum.photos/200/200?blur=10',
-    duration: '--:--',
-    createdAt: createdAt ? new Date(createdAt) : new Date(),
-    isGenerating: true,
-    tags: params.customMode ? ['custom'] : ['simple'],
-    isPublic: true,
-  });
-
-  // Handlers
-  const handleGenerate = async (params: GenerationParams) => {
-    if (!isAuthenticated || !token) {
-      // CreatePanel pre-allocated a placeholder card + bumped pendingClickCount
-      // before calling onGenerate. If we bail here without cleanup, the card
-      // sticks around as a ghost (no jobId, never promoted) and the N/10 badge
-      // stays inflated by 1 until reload.
-      if (params._tempId) {
-        setSongs(prev => prev.filter(s => s.id !== params._tempId));
-      }
-      decrementPendingClicks(1);
-      setShowUsernameModal(true);
-      return;
-    }
-
-    setIsGenerating(true);
-    setCurrentView('create');
-    setMobileShowList(false);
-
-    // If CreatePanel already created an instant placeholder card via
-    // createTempSongForClick (so the user sees something AT click time, not
-    // after the 20s LLM pre-flight), reuse that card. Otherwise create one
-    // here as before.
-    const preCreatedId = params._tempId;
-    const tempId = preCreatedId || `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    if (preCreatedId) {
-      // Promote the placeholder with whatever metadata the pre-flight produced.
-      setSongs(prev => prev.map(s => s.id === tempId ? {
-        ...s,
-        title: params.title || s.title,
-        style: params.style || s.style,
-        tags: params.customMode ? ['custom'] : ['simple'],
-        stage: 'stageStartingTrack',
-      } : s));
-      setSelectedSong(prev => prev?.id === tempId ? { ...prev, title: params.title || prev.title, style: params.style || prev.style } : prev);
-    } else {
-      const tempSong: Song = {
+  const handleGenerate = async (params: Music3Request & { _tempId?: string }) => {
+    const tempId = params._tempId || `temp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    if (!params._tempId) {
+      setSongs(prev => [{
         id: tempId,
-        title: params.title || t('generating') || 'Generating...',
-        lyrics: '',
-        style: params.style,
-        coverUrl: 'https://picsum.photos/200/200?blur=10',
+        title: params.title?.trim() || t('generating') || 'Generating...',
+        lyrics: params.lyrics || '',
+        style: params.caption || '',
+        coverUrl: '',
         duration: '--:--',
         createdAt: new Date(),
         isGenerating: true,
-        tags: params.customMode ? ['custom'] : ['simple'],
-        isPublic: true
-      };
-      setSongs(prev => [tempSong, ...prev]);
-      setSelectedSong(tempSong);
-      setShowRightSidebar(true);
+        stage: 'stageWaitingInQueue',
+        tags: ['music3'],
+      }, ...prev]);
+    } else {
+      setSongs(prev => prev.map(song => song.id === tempId
+        ? { ...song, title: params.title?.trim() || song.title, style: params.caption || song.style, lyrics: params.lyrics || song.lyrics }
+        : song));
     }
 
+    setIsGenerating(true);
     try {
-      // Simple mode: LLM generates caption + lyrics + metadata from description
-      let enrichedParams = { ...params };
-      if (!params.customMode && params.songDescription && token) {
-        try {
-          // Use the i18n KEY here (SongList does t(song.stage)) so the label
-          // tracks language switches mid-generation. Storing the resolved
-          // string would freeze the label in the locale active at click time.
-          setSongs(prev => prev.map(s => s.id === tempId ? { ...s, stage: 'writingLyricsAndStyle' } : s));
-          const sample = await generateApi.createSample({
-            query: params.songDescription,
-            instrumental: params.instrumental,
-            vocalLanguage: params.vocalLanguage,
-          }, token);
-          if (sample.caption) {
-            enrichedParams = {
-              ...enrichedParams,
-              customMode: true,
-              style: sample.caption,
-              lyrics: sample.lyrics || '',
-              instrumental: sample.instrumental,
-              vocalLanguage: sample.vocalLanguage || params.vocalLanguage,
-              bpm: sample.bpm > 0 ? sample.bpm : undefined,
-              duration: sample.duration > 0 ? sample.duration : undefined,
-              keyScale: sample.keyScale || undefined,
-              timeSignature: sample.timeSignature || undefined,
-              thinking: true,
-              isFormatCaption: true,
-            };
-            setSongs(prev => prev.map(s => s.id === tempId ? { ...s, title: String(sample.caption || '').slice(0, 50) || s.title, style: String(sample.caption || '') } : s));
-          }
-        } catch (err) {
-          // create_sample failed — block generation, remove temp song.
-          // Release the pending-click slot so the N/10 badge doesn't stick.
-          console.error('[Simple] create_sample failed:', err);
-          setSongs(prev => prev.filter(s => s.id !== tempId));
-          showToast('LLM not available — model may be loading or Gradio restarting. Wait and try again.', 'error');
-          setIsGenerating(false);
-          decrementPendingClicks(1);
-          return;
-        }
+      const { _tempId, ...request } = params;
+      const response = await fetch('/v1/music/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      const job: Music3Job & { error?: string; message?: string } = await response.json().catch(() => ({}) as Music3Job);
+      if (!response.ok || job.status === 'failed') {
+        throw new Error(job.message || job.error || `Music3 rejected this request (${response.status})`);
       }
-
-      const job = await generateApi.startGeneration({
-        customMode: enrichedParams.customMode,
-        songDescription: enrichedParams.songDescription,
-        lyrics: enrichedParams.lyrics,
-        style: enrichedParams.style,
-        title: enrichedParams.title,
-        instrumental: enrichedParams.instrumental,
-        vocalLanguage: enrichedParams.vocalLanguage,
-        duration: enrichedParams.duration && enrichedParams.duration > 0 ? enrichedParams.duration : undefined,
-        bpm: enrichedParams.bpm,
-        keyScale: enrichedParams.keyScale,
-        timeSignature: enrichedParams.timeSignature,
-        inferenceSteps: params.inferenceSteps,
-        guidanceScale: params.guidanceScale,
-        batchSize: params.batchSize,
-        randomSeed: params.randomSeed,
-        seed: params.seed,
-        thinking: enrichedParams.thinking ?? params.thinking,
-        enhance: params.enhance,
-        audioFormat: params.audioFormat,
-        inferMethod: params.inferMethod,
-        shift: params.shift,
-        lmTemperature: params.lmTemperature,
-        lmCfgScale: params.lmCfgScale,
-        lmTopK: params.lmTopK,
-        lmTopP: params.lmTopP,
-        lmNegativePrompt: params.lmNegativePrompt,
-        lmBackend: params.lmBackend,
-        lmModel: params.lmModel,
-        referenceAudioUrl: params.referenceAudioUrl,
-        sourceAudioUrl: params.sourceAudioUrl,
-        referenceAudioTitle: params.referenceAudioTitle,
-        sourceAudioTitle: params.sourceAudioTitle,
-        audioCodes: params.audioCodes,
-        repaintingStart: params.repaintingStart,
-        repaintingEnd: params.repaintingEnd,
-        instruction: params.instruction,
-        audioCoverStrength: params.audioCoverStrength,
-        taskType: params.taskType,
-        useAdg: params.useAdg,
-        cfgIntervalStart: params.cfgIntervalStart,
-        cfgIntervalEnd: params.cfgIntervalEnd,
-        customTimesteps: params.customTimesteps,
-        useCotMetas: params.useCotMetas,
-        useCotCaption: params.useCotCaption,
-        useCotLanguage: params.useCotLanguage,
-        autogen: params.autogen,
-        constrainedDecodingDebug: params.constrainedDecodingDebug,
-        allowLmBatch: params.allowLmBatch,
-        getScores: params.getScores,
-        getLrc: params.getLrc,
-        scoreScale: params.scoreScale,
-        lmBatchChunkSize: params.lmBatchChunkSize,
-        trackName: params.trackName,
-        completeTrackClasses: params.completeTrackClasses,
-        isFormatCaption: enrichedParams.isFormatCaption ?? params.isFormatCaption,
-        coverNoiseStrength: params.coverNoiseStrength,
-        samplerMode: params.samplerMode as 'euler' | 'heun',
-        schedulerType: params.schedulerType,
-        velocityNormThreshold: params.velocityNormThreshold,
-        velocityEmaFactor: params.velocityEmaFactor,
-        mp3Bitrate: params.mp3Bitrate,
-        mp3SampleRate: params.mp3SampleRate,
-        enableNormalization: params.enableNormalization,
-        normalizationDb: params.normalizationDb,
-        fadeInDuration: params.fadeInDuration,
-        fadeOutDuration: params.fadeOutDuration,
-        latentShift: params.latentShift,
-        latentRescale: params.latentRescale,
-        repaintMode: params.repaintMode,
-        repaintStrength: params.repaintStrength,
-        ditModel: params.ditModel,
-        // Fields the CreatePanel customPayload IIFE builds — must be mirrored
-        // explicitly here because `generateApi.startGeneration` whitelists the
-        // payload and any field not listed is silently dropped.
-        prompt: params.prompt,
-        dcwEnabled: params.dcwEnabled,
-        dcwMode: params.dcwMode,
-        dcwScaler: params.dcwScaler,
-        dcwHighScaler: params.dcwHighScaler,
-        dcwWavelet: params.dcwWavelet,
-        retakeSeed: params.retakeSeed,
-        retakeVariance: params.retakeVariance,
-        flowEditMorph: params.flowEditMorph,
-        flowEditSourceCaption: params.flowEditSourceCaption,
-        flowEditSourceLyrics: params.flowEditSourceLyrics,
-        flowEditNMin: params.flowEditNMin,
-        flowEditNMax: params.flowEditNMax,
-        flowEditNAvg: params.flowEditNAvg,
-        loraLoaded: params.loraLoaded,
-        // OpenRouter — model id used for the AI lyric/caption run (persisted on song row).
-        openrouterModel: params.openrouterModel,
-        // Pollinations.ai cover-gen config — opaque blob mirrored to backend.
-        pollinations: params.pollinations,
-        // Pre-created placeholder card id (instant feedback at click time).
-        _tempId: params._tempId,
-      }, token);
-
-      // Store jobId on the temp song so cancel button works
-      setSongs(prev => prev.map(s => s.id === tempId ? { ...s, jobId: job.jobId } : s));
-
-      beginPollingJob(job.jobId, tempId);
-      // Hand off the click counter to the active counter — keeps the UI badge
-      // continuous instead of blinking 1→0→1 between pre-flight and polling.
+      setSongs(prev => prev.map(song => song.id === tempId ? { ...song, jobId: job.id } : song));
+      beginPollingJob(job.id, tempId);
       decrementPendingClicks(1);
-
-    } catch (e) {
-      console.error('Generation error:', e);
-      setSongs(prev => prev.filter(s => s.id !== tempId));
-      // Failure path: release the pending click slot so the badge accurately
-      // reflects "nothing in flight" instead of being stuck.
+    } catch (error) {
+      console.error('Generation error:', error);
+      setSongs(prev => prev.filter(song => song.id !== tempId));
       decrementPendingClicks(1);
-
-      // Only set isGenerating to false if no other jobs are running
-      if (activeJobsRef.current.size === 0) {
-        setIsGenerating(false);
-      }
-      showToast(t('generationFailed'), 'error');
+      if (activeJobsRef.current.size === 0) setIsGenerating(false);
+      showToast(error instanceof Error ? error.message : t('generationFailed'), 'error');
     }
   };
 
-  // Resume active jobs on refresh so progress keeps updating
-  useEffect(() => {
-    if (!isAuthenticated || !token) return;
-
-    const resumeJobs = async () => {
-      try {
-        const history = await generateApi.getHistory(token);
-        const jobs = Array.isArray(history.jobs) ? history.jobs : [];
-
-        const activeStatuses = new Set(['pending', 'queued', 'running']);
-        const jobsToResume = jobs.filter((job: any) => activeStatuses.has(job.status));
-
-        if (jobsToResume.length === 0) return;
-
-        setSongs(prev => {
-          const existingIds = new Set(prev.map(s => s.id));
-          const next = [...prev];
-
-          for (const job of jobsToResume) {
-            const jobId = job.id || job.jobId;
-            if (!jobId) continue;
-            const tempId = `job_${jobId}`;
-            if (existingIds.has(tempId)) continue;
-
-            const params = (() => {
-              try {
-                if (!job.params) return {};
-                return typeof job.params === 'string' ? JSON.parse(job.params) : job.params;
-              } catch {
-                return {};
-              }
-            })();
-
-            next.unshift(buildTempSongFromParams(params, tempId, job.created_at));
-            existingIds.add(tempId);
-          }
-          return next;
-        });
-
-        for (const job of jobsToResume) {
-          const jobId = job.id || job.jobId;
-          if (!jobId) continue;
-          const tempId = `job_${jobId}`;
-          beginPollingJob(jobId, tempId);
-        }
-      } catch (error) {
-        console.error('Failed to resume jobs:', error);
-      }
-    };
-
-    resumeJobs();
-  }, [isAuthenticated, token, beginPollingJob]);
 
   const togglePlay = () => {
     const song = currentSong || selectedSong;
@@ -1519,9 +942,6 @@ function AppContent() {
       setSelectedSong(updatedSong);
       setIsPlaying(true);
       setSongs(prev => prev.map(s => s.id === song.id ? updatedSong : s));
-      if (!nativeLibraryAvailable) {
-        songsApi.trackPlay(song.id, token).catch(err => console.error('Failed to track play:', err));
-      }
     } else {
       togglePlay();
     }
@@ -1542,52 +962,18 @@ function AppContent() {
     setCurrentTime(time);
   };
 
-  const toggleLike = async (songId: string) => {
-    if (!token) return;
-
+  /// Favourites are a local library flag: the desktop studio has no social
+  /// service, so the star is persisted next to the library instead of being
+  /// posted to a server that does not exist.
+  const toggleLike = (songId: string) => {
     const isLiked = likedSongIds.has(songId);
-
-    // Optimistic update
     setLikedSongIds(prev => {
       const next = new Set(prev);
       if (isLiked) next.delete(songId);
       else next.add(songId);
-      if (nativeLibraryAvailable) saveNativeLikedSongIds(next);
+      saveNativeLikedSongIds(next as Set<string>);
       return next;
     });
-
-    setSongs(prev => prev.map(s => {
-      if (s.id === songId) {
-        const newCount = (s.likeCount || 0) + (isLiked ? -1 : 1);
-        return { ...s, likeCount: Math.max(0, newCount) };
-      }
-      return s;
-    }));
-
-    if (selectedSong?.id === songId) {
-      setSelectedSong(prev => prev ? {
-        ...prev,
-        likeCount: Math.max(0, (prev.likeCount || 0) + (isLiked ? -1 : 1))
-      } : null);
-    }
-
-    // Native Music3 has no social/remote likes endpoint. Keep the library
-    // control responsive locally instead of sending the click to retired ACE.
-    if (nativeLibraryAvailable) return;
-
-    // Persist to the retained legacy backend only when it is actually active.
-    try {
-      await songsApi.toggleLike(songId, token);
-    } catch (error) {
-      console.error('Failed to toggle like:', error);
-      // Revert on error
-      setLikedSongIds(prev => {
-        const next = new Set(prev);
-        if (isLiked) next.add(songId);
-        else next.delete(songId);
-        return next;
-      });
-    }
   };
 
   const handleDeleteSong = (song: Song) => {
@@ -1595,7 +981,7 @@ function AppContent() {
   };
 
   const handleDeleteSongs = (songsToDelete: Song[]) => {
-    if ((!token && !nativeLibraryAvailable) || songsToDelete.length === 0) return;
+    if (songsToDelete.length === 0) return;
 
     const isSingle = songsToDelete.length === 1;
     const title = isSingle ? t('confirmDeleteTitle') : t('confirmDeleteManyTitle');
@@ -1615,8 +1001,7 @@ function AppContent() {
 
         for (const song of songsToDelete) {
           try {
-            if (nativeLibraryAvailable) await deleteNativeSong(song.id);
-            else await songsApi.deleteSong(song.id, token!);
+            await deleteNativeSong(song.id);
             succeeded.push(song.id);
           } catch (error) {
             console.error('Failed to delete song:', error);
@@ -1660,45 +1045,11 @@ function AppContent() {
     });
   };
 
-  const handleDeleteReferenceTrack = (trackId: string) => {
-    if (!token) return;
-
-    setConfirmDialog({
-      title: t('delete'),
-      message: t('deleteUploadConfirm'),
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        try {
-          const response = await fetch(`/api/reference-tracks/${trackId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token!}` }
-          });
-          if (!response.ok) {
-            throw new Error('Failed to delete upload');
-          }
-          setReferenceTracks(prev => prev.filter(track => track.id !== trackId));
-          showToast(t('songDeleted'));
-        } catch (error) {
-          console.error('Failed to delete upload:', error);
-          showToast(t('failedToDeleteSong'), 'error');
-        }
-      },
-    });
-  };
-
   const createPlaylist = async (name: string, description: string) => {
-    if (!token && !nativeLibraryAvailable) return;
     try {
-      const playlist = nativeLibraryAvailable
-        ? await createNativePlaylist(name, description, songToAddToPlaylist ? [songToAddToPlaylist.id] : [])
-        : (await playlistsApi.create(name, description, true, token!)).playlist;
+      const playlist = await createNativePlaylist(name, description, songToAddToPlaylist ? [songToAddToPlaylist.id] : []);
       setPlaylists(prev => [playlist, ...prev]);
-
-      if (songToAddToPlaylist) {
-        if (!nativeLibraryAvailable) await playlistsApi.addSong(playlist.id, songToAddToPlaylist.id, token!);
-        setSongToAddToPlaylist(null);
-        if (!nativeLibraryAvailable) playlistsApi.getMyPlaylists(token!).then(r => setPlaylists(r.playlists)).catch(() => {});
-      }
+      if (songToAddToPlaylist) setSongToAddToPlaylist(null);
       showToast(t('playlistCreated'));
     } catch (error) {
       console.error('Create playlist error:', error);
@@ -1712,20 +1063,15 @@ function AppContent() {
   };
 
   const addSongToPlaylist = async (playlistId: string) => {
-    if (!songToAddToPlaylist || (!token && !nativeLibraryAvailable)) return;
+    if (!songToAddToPlaylist) return;
     try {
-      if (nativeLibraryAvailable) {
-        const playlist = playlists.find(item => item.id === playlistId);
-        if (!playlist) throw new Error('Native playlist was not found');
-        const songIds = Array.from(new Set([...(playlist.songIds || []), songToAddToPlaylist.id]));
-        const updated = await updateNativePlaylist(playlist.id, playlist, songIds);
-        setPlaylists(prev => prev.map(item => item.id === updated.id ? updated : item));
-      } else {
-        await playlistsApi.addSong(playlistId, songToAddToPlaylist.id, token!);
-      }
+      const playlist = playlists.find(item => item.id === playlistId);
+      if (!playlist) throw new Error('Playlist was not found in the local library');
+      const songIds = Array.from(new Set([...(playlist.songIds || []), songToAddToPlaylist.id]));
+      const updated = await updateNativePlaylist(playlist.id, playlist, songIds);
+      setPlaylists(prev => prev.map(item => item.id === updated.id ? updated : item));
       setSongToAddToPlaylist(null);
       showToast(t('songAddedToPlaylist'));
-      if (!nativeLibraryAvailable) playlistsApi.getMyPlaylists(token!).then(r => setPlaylists(r.playlists)).catch(() => {});
     } catch (error) {
       console.error('Add song error:', error);
       showToast(t('failedToAddSong'), 'error');
@@ -1778,26 +1124,8 @@ function AppContent() {
     window.history.pushState({}, '', '/library');
   };
 
-  const openVideoGenerator = (song: Song) => {
-    if (nativeLibraryAvailable) {
-      showToast('Video rendering is not installed in the native Music3 runtime yet.', 'error');
-      return;
-    }
-    if (isPlaying) {
-      setIsPlaying(false);
-      if (audioRef.current) audioRef.current.pause();
-    }
-    setSongForVideo(song);
-    setIsVideoModalOpen(true);
-  };
-
   const openCoverRegen = (song: Song) => {
-    if (nativeLibraryAvailable) {
-      showToast('Cover rendering is not installed in the native Music3 runtime yet.', 'error');
-      return;
-    }
-    // Don't pause playback here — cover regen is non-destructive and the
-    // modal is small enough that the user may want to keep listening.
+    // Cover work is non-destructive, so playback deliberately keeps running.
     setSongForCoverRegen(song);
   };
 
@@ -1810,40 +1138,19 @@ function AppContent() {
     setSelectedSong(prev => prev?.id === songId ? { ...prev, coverUrl: bust } : prev);
   }, []);
 
-  // Handle username setup
-  const handleUsernameSubmit = async (username: string) => {
-    await setupUser(username);
-    setShowUsernameModal(false);
-  };
-
   // Render Layout Logic
   const renderContent = () => {
-    if (nativeLibraryAvailable) {
-      if (currentView === 'training') {
-        return <NativeUnavailableView title="Adapter training is not available" detail="MiniMax Music3 inference is ready, but its native adapter-training format and runtime are not installed. The ACE training controls are kept out of this build so they cannot send work to a missing server." />;
-      }
-      if (currentView === 'profile' || currentView === 'song' || currentView === 'search') {
-        return <NativeUnavailableView title="This social-library route is offline" detail="This desktop build stores music in the local Music3 library. Public profiles, feed search and remote song pages require a separate service and are not presented as local features." />;
-      }
-    }
-
     switch (currentView) {
       case 'tools':
         return <StudioToolsPanel />;
 
-      case 'training':
-        return <TrainingWorkspace />;
-
       case 'library': {
-        const allSongs = nativeLibraryAvailable
-          ? songs
-          : (user ? songs.filter(s => s.userId === user.id || s.nativeReplayAvailable) : songs.filter(s => s.nativeReplayAvailable));
+        const allSongs = songs;
         return (
           <LibraryView
             allSongs={allSongs}
             likedSongs={songs.filter(s => likedSongIds.has(s.id))}
             playlists={playlists}
-            referenceTracks={referenceTracks}
             onPlaySong={playSong}
             onCreatePlaylist={() => {
               setSongToAddToPlaylist(null);
@@ -1851,30 +1158,12 @@ function AppContent() {
             }}
             onSelectPlaylist={(p) => handleNavigateToPlaylist(p.id)}
             onAddToPlaylist={openAddToPlaylistModal}
-            onOpenVideo={openVideoGenerator}
             onReusePrompt={handleReuse}
             onDeleteSong={handleDeleteSong}
-            onDeleteReferenceTrack={handleDeleteReferenceTrack}
-            isNativeLibrary={nativeLibraryAvailable}
+            isNativeLibrary
           />
         );
       }
-
-      case 'profile':
-        if (!viewingUsername) return null;
-        return (
-          <UserProfile
-            username={viewingUsername}
-            onBack={handleBackFromProfile}
-            onPlaySong={playSong}
-            onNavigateToProfile={handleNavigateToProfile}
-            onNavigateToPlaylist={handleNavigateToPlaylist}
-            currentSong={currentSong}
-            isPlaying={isPlaying}
-            likedSongIds={likedSongIds}
-            onToggleLike={toggleLike}
-          />
-        );
 
       case 'playlist':
         if (!viewingPlaylistId) return null;
@@ -1887,33 +1176,17 @@ function AppContent() {
               setSelectedSong(s);
               setShowRightSidebar(true);
             }}
-            onNavigateToProfile={handleNavigateToProfile}
-          />
-        );
-
-      case 'song':
-        if (!viewingSongId) return null;
-        return (
-          <SongProfile
-            songId={viewingSongId}
-            onBack={handleBackFromSong}
-            onPlay={playSong}
-            onNavigateToProfile={handleNavigateToProfile}
-            currentSong={currentSong}
-            isPlaying={isPlaying}
-            likedSongIds={likedSongIds}
-            onToggleLike={toggleLike}
           />
         );
 
       case 'search':
         return (
           <SearchPage
+            songs={songs}
+            playlists={playlists}
             onPlaySong={playSong}
             currentSong={currentSong}
             isPlaying={isPlaying}
-            onNavigateToProfile={handleNavigateToProfile}
-            onNavigateToSong={handleNavigateToSong}
             onNavigateToPlaylist={handleNavigateToPlaylist}
           />
         );
@@ -1967,7 +1240,6 @@ function AppContent() {
                 selectedSong={selectedSong}
                 likedSongIds={likedSongIds}
                 isPlaying={isPlaying}
-                referenceTracks={referenceTracks}
                 onPlay={playSong}
                 onSelect={(s) => {
                   setSelectedSong(s);
@@ -1975,10 +1247,8 @@ function AppContent() {
                 }}
                 onToggleLike={toggleLike}
                 onAddToPlaylist={openAddToPlaylistModal}
-                onOpenVideo={openVideoGenerator}
                 onOpenCoverRegen={openCoverRegen}
                 onShowDetails={handleShowDetails}
-                onNavigateToProfile={handleNavigateToProfile}
                 onReusePrompt={handleReuse}
                 onReplayMusic={handleNativeReplay}
                 onDelete={handleDeleteSong}
@@ -2007,13 +1277,10 @@ function AppContent() {
                 <RightSidebar
                   song={selectedSong}
                   onClose={() => setShowRightSidebar(false)}
-                  onOpenVideo={() => selectedSong && openVideoGenerator(selectedSong)}
                   onOpenCoverRegen={() => selectedSong && openCoverRegen(selectedSong)}
                   onReuse={handleReuse}
                   onReplayMusic={handleNativeReplay}
                   onSongUpdate={handleSongUpdate}
-                  onNavigateToProfile={handleNavigateToProfile}
-                  onNavigateToSong={handleNavigateToSong}
                   isLiked={selectedSong ? likedSongIds.has(selectedSong.id) : false}
                   onToggleLike={toggleLike}
                   onDelete={handleDeleteSong}
@@ -2042,12 +1309,6 @@ function AppContent() {
 
   return (
     <div className="flex h-[100dvh] min-h-0 min-w-0 flex-col overflow-hidden bg-white dark:bg-suno-DEFAULT text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-colors duration-300">
-      {authLoading && (
-        <div className="bg-zinc-800 text-zinc-300 text-xs text-center py-1.5 flex items-center justify-center gap-2 flex-shrink-0">
-          <div className="w-3 h-3 border-2 border-pink-500 border-t-transparent rounded-full animate-spin" />
-          {t('connectingToServer') || 'Connecting to server...'}
-        </div>
-      )}
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <Sidebar
           currentView={currentView}
@@ -2064,16 +1325,12 @@ function AppContent() {
               window.history.pushState({}, '', '/news');
             } else if (v === 'tools') {
               window.history.pushState({}, '', '/tools');
-            } else if (v === 'training') {
-              window.history.pushState({}, '', '/training');
             }
             if (isMobile) setShowLeftSidebar(false);
           }}
           theme={theme}
           onToggleTheme={toggleTheme}
           user={user}
-          onLogin={() => setShowUsernameModal(true)}
-          onLogout={logout}
           onOpenSettings={() => setShowSettingsModal(true)}
           isOpen={showLeftSidebar}
           onToggle={() => setShowLeftSidebar(!showLeftSidebar)}
@@ -2104,8 +1361,6 @@ function AppContent() {
         onToggleRepeat={() => setRepeatMode(prev => prev === 'none' ? 'all' : prev === 'all' ? 'one' : 'none')}
         isLiked={currentSong ? likedSongIds.has(currentSong.id) : false}
         onToggleLike={() => currentSong && toggleLike(currentSong.id)}
-        onNavigateToSong={handleNavigateToSong}
-        onOpenVideo={() => currentSong && openVideoGenerator(currentSong)}
         onReusePrompt={() => currentSong && handleReuse(currentSong)}
         onAddToPlaylist={() => currentSong && openAddToPlaylistModal(currentSong)}
         onDelete={() => currentSong && handleDeleteSong(currentSong)}
@@ -2134,32 +1389,21 @@ function AppContent() {
         onClose={closeToast}
         duration={toast.type === 'error' ? 8000 : 3000}
       />
-      <VideoGeneratorModal
-        isOpen={isVideoModalOpen}
-        onClose={() => setIsVideoModalOpen(false)}
-        song={songForVideo}
-      />
       {/* Cover regen modal — only mounted while a song is selected for regen.
           Unmounting on close revokes blob URLs (see CoverRegenModal cleanup
           effect) so generated previews don't leak across modal opens. */}
-      {songForCoverRegen && token && (
+      {songForCoverRegen && (
         <CoverRegenModal
           song={songForCoverRegen}
-          token={token}
           onClose={() => setSongForCoverRegen(null)}
           onCoverSaved={applyCoverUpdate}
         />
       )}
-      <UsernameModal
-        isOpen={showUsernameModal}
-        onSubmit={handleUsernameSubmit}
-      />
       <SettingsModal
         isOpen={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
         theme={theme}
         onToggleTheme={toggleTheme}
-        onNavigateToProfile={handleNavigateToProfile}
       />
 
       {/* Mobile Details Modal */}
@@ -2173,13 +1417,10 @@ function AppContent() {
             <RightSidebar
               song={selectedSong}
               onClose={() => setShowMobileDetails(false)}
-              onOpenVideo={() => selectedSong && openVideoGenerator(selectedSong)}
               onOpenCoverRegen={() => selectedSong && openCoverRegen(selectedSong)}
               onReuse={handleReuse}
               onReplayMusic={handleNativeReplay}
               onSongUpdate={handleSongUpdate}
-              onNavigateToProfile={handleNavigateToProfile}
-              onNavigateToSong={handleNavigateToSong}
               isLiked={selectedSong ? likedSongIds.has(selectedSong.id) : false}
               onToggleLike={toggleLike}
               onDelete={handleDeleteSong}

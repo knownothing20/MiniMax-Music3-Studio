@@ -58,139 +58,55 @@ export interface Comment {
   createdAt: Date;
 }
 
-export interface GenerationParams {
-  // Mode
-  customMode: boolean;
-
-  // Simple Mode
-  songDescription?: string;
-
-  // Custom Mode
-  prompt: string;
+/**
+ * The exact MiniMax Music3 request the native server accepts. Field names match
+ * `/v1/music/jobs`, which in turn mirrors the `MM3Request` struct in the pinned
+ * minimaxmusic.cpp: there is no translation layer that could silently drop a
+ * control, and anything not listed here is not a real engine parameter.
+ */
+export interface Music3Request {
+  caption: string;
   lyrics: string;
-  style: string;
-  title: string;
-  ditModel?: string;
-
-  // Common
-  instrumental: boolean;
-  vocalLanguage: string;
-
-  // Music Parameters
-  bpm: number;
-  keyScale: string;
-  timeSignature: string;
-  duration: number;
-
-  // Generation Settings
-  inferenceSteps: number;
-  guidanceScale: number;
-  batchSize: number;
-  randomSeed: boolean;
-  seed: number;
-  thinking: boolean;
-  enhance?: boolean;
-  audioFormat: 'mp3' | 'flac';
-  inferMethod: 'ode' | 'sde';
-  shift: number;
-
-  // LM Parameters
-  lmTemperature: number;
-  lmCfgScale: number;
-  lmTopK: number;
-  lmTopP: number;
-  lmNegativePrompt: string;
-  lmBackend?: 'pt' | 'vllm';
-  lmModel?: string;
-
-  // Expert Parameters
-  referenceAudioUrl?: string;
-  sourceAudioUrl?: string;
-  referenceAudioTitle?: string;
-  sourceAudioTitle?: string;
-  audioCodes?: string;
-  repaintingStart?: number;
-  repaintingEnd?: number;
-  instruction?: string;
-  audioCoverStrength?: number;
-  taskType?: string;
-  useAdg?: boolean;
-  cfgIntervalStart?: number;
-  cfgIntervalEnd?: number;
-  customTimesteps?: string;
-  useCotMetas?: boolean;
-  useCotCaption?: boolean;
-  useCotLanguage?: boolean;
-  autogen?: boolean;
-  constrainedDecodingDebug?: boolean;
-  allowLmBatch?: boolean;
-  getScores?: boolean;
-  getLrc?: boolean;
-  scoreScale?: number;
-  lmBatchChunkSize?: number;
-  trackName?: string;
-  completeTrackClasses?: string[];
-  isFormatCaption?: boolean;
-
-  // v1.5 XL parameters
-  coverNoiseStrength?: number;
-  samplerMode?: string;
-  schedulerType?: string;
-  velocityNormThreshold?: number;
-  velocityEmaFactor?: number;
-  mp3Bitrate?: string;
-  mp3SampleRate?: number;
-  enableNormalization?: boolean;
-  normalizationDb?: number;
-  fadeInDuration?: number;
-  fadeOutDuration?: number;
-  latentShift?: number;
-  latentRescale?: number;
-  repaintMode?: 'conservative' | 'balanced' | 'aggressive';
-  repaintStrength?: number;
-
-  // OpenRouter
-  openrouterModel?: string | null;
-
-  // DCW (Differential Correction in Wavelet domain) — present at runtime,
-  // typed here so the App.tsx whitelist can drop the `as any` casts.
-  dcwEnabled?: boolean;
-  dcwMode?: 'low' | 'high' | 'double' | 'pix';
-  dcwScaler?: number;
-  dcwHighScaler?: number;
-  dcwWavelet?: string;
-
-  // Retake / Flow-edit
-  retakeSeed?: number;
-  retakeVariance?: number;
-  flowEditMorph?: boolean;
-  flowEditSourceCaption?: string;
-  flowEditSourceLyrics?: string;
-  flowEditNMin?: number;
-  flowEditNMax?: number;
-  flowEditNAvg?: number;
-
-  // LoRA loaded flag
-  loraLoaded?: boolean;
-
-  // Pre-created placeholder card id from CreatePanel — App.tsx promotes the
-  // existing card instead of creating a duplicate.
-  _tempId?: string;
-
-  // Pollinations.ai cover-generation config — opaque blob mirrored to backend.
-  pollinations?: {
-    enabled: boolean;
-    apiKey?: string;
-    model?: string;
-    width?: number;
-    height?: number;
-    seedMode?: 'song' | 'random';
-    enhance?: boolean;
-    nologo?: boolean;
-    safe?: boolean;
-    prompt?: string;
-  };
+  duration_seconds: number;
+  steps: number;
+  /** DiT (flow-matching) noise seed. Omit for a random seed. */
+  seed?: number;
+  /** Autoregressive language-model seed. Omit for a random seed. */
+  lm_seed?: number;
+  lm_cfg: number;
+  lm_top_k: number;
+  /** Songs sampled from this prompt, each with its own LM stream. */
+  lm_batch_size: number;
+  /** Flow-matching variations per song, 1..9. */
+  synth_batch_size: number;
+  dit_cfg: number;
+  /** Percentile peak normalisation; 0 disables clipping. WAV32 ignores it. */
+  peak_clip: number;
+  output_format: 'mp3' | 'wav16' | 'wav24' | 'wav32';
+  mp3_bitrate: number;
+  /** Library title only — never sent to the engine. */
+  title?: string;
 }
+
+export interface Music3JobSong {
+  id: string;
+  audio_url: string;
+}
+
+export interface Music3Job {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  phase: string;
+  message: string;
+  title?: string;
+  caption: string;
+  lyrics: string;
+  duration_seconds: number;
+  generation_settings: Record<string, unknown>;
+  song?: Music3JobSong;
+  songs?: Music3JobSong[];
+}
+
 
 export interface PlayerState {
   currentSong: Song | null;
@@ -222,4 +138,4 @@ export interface UserProfile {
 }
 
 // Simplified views for ACE-Step UI
-export type View = 'create' | 'library' | 'training' | 'tools' | 'profile' | 'song' | 'playlist' | 'search' | 'news';
+export type View = 'create' | 'library' | 'tools' | 'playlist' | 'search' | 'news';
