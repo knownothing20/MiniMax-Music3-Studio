@@ -39,6 +39,8 @@ pub type OpenRouterMusicStreamRequest = AuthenticatedOpenRouterRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Base64AudioInput<'a> {
+    /// Ask for per-segment and per-word times.
+    pub timestamps: bool,
     /// Raw base64 bytes, without a data-URL prefix.
     pub data: &'a str,
     pub format: &'a str,
@@ -275,6 +277,13 @@ pub fn stt_request_for(
     if let Some(language) = audio.language.filter(|language| !language.trim().is_empty()) {
         body["language"] = Value::String(language.to_owned());
     }
+    if audio.timestamps {
+        // Karaoke needs times, and a plain transcription carries none. This is
+        // the OpenAI-compatible way to ask for them; a model that ignores it
+        // answers without segments and the caller says so plainly.
+        body["response_format"] = Value::String("verbose_json".into());
+        body["timestamp_granularities"] = json!(["segment", "word"]);
+    }
     Ok(OpenRouterRequest {
         method: HttpMethod::Post,
         path: TRANSCRIPTIONS_PATH,
@@ -380,7 +389,7 @@ mod tests {
         let request = stt_request_for(
             &catalog,
             "catalog/stt",
-            Base64AudioInput { data: "UklGRg==", format: "wav", language: Some("en") },
+            Base64AudioInput { timestamps: true, data: "UklGRg==", format: "wav", language: Some("en") },
         )
         .unwrap();
         assert_eq!(request.path, TRANSCRIPTIONS_PATH);
@@ -410,7 +419,7 @@ mod tests {
         assert!(stt_request_for(
             &catalog,
             "catalog/image",
-            Base64AudioInput { data: "UklGRg==", format: "wav", language: None },
+            Base64AudioInput { timestamps: false, data: "UklGRg==", format: "wav", language: None },
         )
         .is_err());
     }

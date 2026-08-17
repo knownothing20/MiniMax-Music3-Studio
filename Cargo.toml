@@ -27,5 +27,8 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "fs", "io-util", "time"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+parakeet-rs = { version = "0.3.6", default-features = false, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "api-24"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm", "isomp4", "aac"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 uuid = { version = "1.16", features = ["serde", "v7"] }

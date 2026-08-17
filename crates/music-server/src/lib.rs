@@ -1,6 +1,9 @@
 mod providers;
 mod assistant;
 mod assistant_runtime;
+mod audio_pcm;
+mod downloads;
+mod lyrics_sync;
 mod credentials;
 mod model_manager;
 mod presets;
@@ -812,6 +815,7 @@ async fn create_openrouter_transcription(
         &catalog,
         &input.model_id,
         providers::openrouter::Base64AudioInput {
+            timestamps: false,
             data: &input.audio_base64,
             format: &input.audio_format,
             language: input.language.as_deref(),
