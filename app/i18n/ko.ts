@@ -1278,4 +1278,7 @@ export const ko = {
     stageOutputHint: '보코더 이후 디스크에 기록되는 것: 음량 상한, 컨테이너, 비트레이트.',
     assistantWriting: '도우미가 작성 중',
     secondsShort: '초',
+    stepModels: '모델 파일',
+    stepEngine: '엔진 시작 중',
+    stepReady: '생성 준비 완료',
 };

@@ -168,14 +168,30 @@ impl MmServerSupervisor {
             .arg("--port")
             .arg(self.config.port.to_string());
         self.config.options.apply(&mut command);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.stdin(Stdio::null());
+        // Everything the engine says while it is starting - loading weights,
+        // choosing a device, failing - happens before its HTTP log exists.
+        // Without this the first-run screen has nothing to show but a spinner.
+        match std::fs::File::create(startup_log_path()) {
+            Ok(log) => {
+                let err = log.try_clone().ok();
+                command.stdout(Stdio::from(log));
+                match err {
+                    Some(handle) => { command.stderr(Stdio::from(handle)); }
+                    None => { command.stderr(Stdio::null()); }
+                }
+            }
+            Err(_) => {
+                command.stdout(Stdio::null());
+                command.stderr(Stdio::null());
+            }
+        }
         configure_child_process(&mut command);
         let child = command
             .spawn()
             .with_context(|| format!("start mm-server {}", self.config.executable.display()))?;
+        // The engine must not outlive the studio, however the studio ends.
+        music_core::process::adopt(&child);
         self.child = Some(child);
         if let Err(error) = self.wait_until_healthy(readiness_timeout) {
             let _ = self.stop(Duration::from_secs(1));
@@ -184,7 +200,7 @@ impl MmServerSupervisor {
         Ok(StartOutcome::Started)
     }
 
-    /// Requests the shutdown mechanism implemented upstream. If the process
+/// Requests the shutdown mechanism implemented upstream. If the process
     /// does not exit within the grace period, it is forcibly stopped so Studio
     /// never leaves an orphaned local engine process behind.
     pub fn stop(&mut self, grace_period: Duration) -> Result<StopOutcome> {
@@ -422,4 +438,23 @@ mod tests {
     fn health_check_is_false_without_a_server() {
         assert!(!health_check("127.0.0.1", 65534, Duration::from_millis(10)));
     }
+}
+
+/// Where the engine's startup output is kept: beside the studio's data, so the
+/// first-run screen can read it before the engine serves anything itself.
+pub fn startup_log_path() -> PathBuf {
+    let root = std::env::var_os("MINIMAX_STUDIO_DATA_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&root);
+    root.join("engine-startup.log")
+}
+
+/// The tail of that file, oldest first.
+pub fn startup_log_tail(lines: usize) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(startup_log_path()) else {
+        return Vec::new();
+    };
+    let all: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    all.iter().rev().take(lines).rev().map(|line| (*line).to_string()).collect()
 }

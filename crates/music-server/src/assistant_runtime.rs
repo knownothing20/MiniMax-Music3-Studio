@@ -422,6 +422,7 @@ impl AssistantRuntime {
         let child = command
             .spawn()
             .with_context(|| format!("start llama-server {}", binary.display()))?;
+        music_core::process::adopt(&child);
         let base_url = format!("http://127.0.0.1:{port}/v1");
         let server = RunningServer { child, model_id: model_id.clone(), base_url: base_url.clone() };
         state.server = Some(server);

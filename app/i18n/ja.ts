@@ -1278,4 +1278,7 @@ export const ja = {
     stageOutputHint: 'ボコーダー後にディスクへ書き出す内容: ラウドネス上限、コンテナ、ビットレート。',
     assistantWriting: 'アシスタントが執筆中',
     secondsShort: '秒',
+    stepModels: 'モデルファイル',
+    stepEngine: 'エンジンを起動中',
+    stepReady: '生成の準備完了',
 };

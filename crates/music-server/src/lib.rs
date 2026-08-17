@@ -438,9 +438,25 @@ pub async fn serve() -> anyhow::Result<()> {
             "/v1/music/jobs/{job_id}",
             get(music_job_status).post(cancel_music_job),
         )
-        .with_state(state)
+        .with_state(state.clone())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
+
+    // Start the engine as soon as a complete set is installed. It takes about
+    // three seconds; making the user press a button for it - or worse, wait
+    // without knowing what for - is the studio being lazy on their time.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let ready = state.model_manager.status(effective_install_target(&state).await).await.ready;
+            if !ready || state.music_server.health().await {
+                return;
+            }
+            if let Err(error) = restart_engine(&state).await {
+                eprintln!("the local engine did not start on its own: {error}");
+            }
+        });
+    }
 
     let address = SocketAddr::from(([127, 0, 0, 1], listen_port()));
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -1056,12 +1072,19 @@ async fn compose_setup_status(state: &AppState, manager_status: model_manager::M
 /// Recent native engine output. This is the only progress detail upstream
 /// exposes: `/job` reports a phase, and everything finer lives in the log ring.
 async fn engine_logs(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
-    let lines = state
-        .music_server
-        .logs_snapshot(std::time::Duration::from_millis(700))
-        .await
-        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("mm-server logs are unavailable: {error}")))?;
-    Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "lines": lines })))
+    // While the engine is starting it has no HTTP log yet, so the file it
+    // writes from its first line is the only thing that can be shown - and it
+    // is exactly what the first-run screen needs.
+    match state.music_server.logs_snapshot(std::time::Duration::from_millis(700)).await {
+        Ok(lines) => Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "lines": lines }))),
+        Err(error) => {
+            let lines = music_engine::mm_server::startup_log_tail(60);
+            if lines.is_empty() {
+                return Err(api_error(StatusCode::SERVICE_UNAVAILABLE, format!("mm-server logs are unavailable: {error}")));
+            }
+            Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "lines": lines, "source": "startup" })))
+        }
+    }
 }
 
 /// Live machine resources. ACE Studio's resource readout is kept, but every

@@ -1278,4 +1278,7 @@ export const zh = {
     stageOutputHint: '经声码器后写入磁盘的内容：响度上限、容器与码率。',
     assistantWriting: '助手正在写作',
     secondsShort: '秒',
+    stepModels: '模型文件',
+    stepEngine: '正在启动引擎',
+    stepReady: '可以开始生成',
 };

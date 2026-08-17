@@ -1283,4 +1283,7 @@ export const en = {
     stageOutputHint: 'What is written to disk after the vocoder: loudness ceiling, container and bitrate.',
     assistantWriting: 'The assistant is writing',
     secondsShort: 's',
+    stepModels: 'Model files',
+    stepEngine: 'Starting the engine',
+    stepReady: 'Ready to generate',
 };

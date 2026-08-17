@@ -1282,4 +1282,7 @@ export const ru = {
     stageOutputHint: 'Что записывается на диск после вокодера: ограничение громкости, формат и битрейт.',
     assistantWriting: 'Ассистент пишет',
     secondsShort: 'с',
+    stepModels: 'Файлы моделей',
+    stepEngine: 'Запуск движка',
+    stepReady: 'Готово к генерации',
 };
