@@ -1040,4 +1040,13 @@ export const ja = {
     chooseFiles: 'ファイルを選択',
     allSongs: 'すべての曲',
     maxBatchHint: '1 リクエストで複数曲を生成するには、設定 → ローカルエンジンで --max-batch を上げる必要があります。超過したリクエストは拒否されます。',
+    componentOverride: 'このリクエストのコンポーネント',
+    componentOverrideHint: 'エンジンは各役割に任意のインストール済み GGUF を読み込めます。既定のままにするか、5 つすべてを選んでこの生成だけプロファイルを上書きします。',
+    profileDefault: 'プロファイル既定',
+    useProfileComponents: 'プロファイルの構成を使用',
+    componentOverridePartial: '5 つの役割すべてを選択してください。エンジンは不完全な構成を拒否します。',
+    replayTitle: 'このトラックを再レンダリング',
+    replayHint: '保存済みのオーディオコードを再利用するため自己回帰段階は省略され、メロディは変わりません。ステップ、シード、DiT CFG、出力形式は変更できます。',
+    replayStart: '再レンダリング',
+    replayQueued: '再レンダリングをキューに追加しました。',
 };

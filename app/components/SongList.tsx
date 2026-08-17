@@ -26,10 +26,6 @@ interface SongListProps {
     onDelete?: (song: Song) => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onDeleteMany?: (songs: Song[]) => void;
-    onUseAsReference?: (song: Song) => void;
-    onCoverSong?: (song: Song) => void;
-    onUseUploadAsReference?: (track: { audio_url: string; filename: string }) => void;
-    onCoverUpload?: (track: { audio_url: string; filename: string }) => void;
     onCancelJob?: (jobId: string) => void;
     onResetJob?: (jobId: string) => void;
     onCancelAll?: () => void;
@@ -110,10 +106,6 @@ export const SongList: React.FC<SongListProps> = ({
     onDelete,
     onSongUpdate,
     onDeleteMany,
-    onUseAsReference,
-    onCoverSong,
-    onUseUploadAsReference,
-    onCoverUpload,
     onCancelJob,
     onCancelAll,
     onResetJob,
@@ -426,8 +418,6 @@ export const SongList: React.FC<SongListProps> = ({
                                     onReplayMusic={item.song.nativeReplayAvailable ? () => onReplayMusic?.(item.song) : undefined}
                                     onDelete={() => onDelete?.(item.song)}
                                     onSongUpdate={onSongUpdate}
-                                    onUseAsReference={() => onUseAsReference?.(item.song)}
-                                    onCoverSong={() => onCoverSong?.(item.song)}
                                     // Cancel button is also available during pre-flight (placeholder
                                     // card with no jobId yet) — pass `song.id` (= tempId) and the
                                     // App.tsx handler routes to the registered AbortController.
@@ -463,8 +453,6 @@ export const SongList: React.FC<SongListProps> = ({
                                             isPublic: false,
                                         } as Song);
                                     }}
-                                    onUseAsReference={() => onUseUploadAsReference?.(item.track)}
-                                    onCoverSong={() => onCoverUpload?.(item.track)}
                                 />
                             )
                         ))
@@ -496,8 +484,6 @@ interface SongItemProps {
     onReplayMusic?: () => void;
     onDelete?: () => void;
     onSongUpdate?: (updatedSong: Song) => void;
-    onUseAsReference?: () => void;
-    onCoverSong?: () => void;
     onCancelJob?: () => void;
     onResetJob?: () => void;
 }
@@ -523,8 +509,6 @@ const SongItem: React.FC<SongItemProps> = ({
     onReplayMusic,
     onDelete,
     onSongUpdate,
-    onUseAsReference,
-    onCoverSong,
     onCancelJob,
     onResetJob,
 }) => {
@@ -814,8 +798,6 @@ const SongItem: React.FC<SongItemProps> = ({
                                 onReplayMusic={onReplayMusic}
                                 onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                 onDelete={() => onDelete?.(song)}
-                                onUseAsReference={() => onUseAsReference?.()}
-                                onCoverSong={() => onCoverSong?.()}
                             />
                         </div>
                     </div>
@@ -858,8 +840,6 @@ const SongItem: React.FC<SongItemProps> = ({
 const UploadItem: React.FC<{
     track: { id: string; filename: string; audio_url: string; duration?: number | null };
     onPlay: (audioUrl: string, title: string) => void;
-    onUseAsReference?: () => void;
-    onCoverSong?: () => void;
 }> = ({ track, onPlay, onUseAsReference, onCoverSong }) => {
     const title = track.filename.replace(/\.[^/.]+$/, '');
     const duration = track.duration
@@ -895,8 +875,6 @@ const UploadItem: React.FC<{
             onNavigateToProfile={() => undefined}
             onReusePrompt={undefined}
             onDelete={() => undefined}
-            onUseAsReference={onUseAsReference}
-            onCoverSong={onCoverSong}
         />
     );
 };

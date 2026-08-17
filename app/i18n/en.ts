@@ -1045,4 +1045,13 @@ export const en = {
     chooseFiles: 'Choose files',
     allSongs: 'All songs',
     maxBatchHint: 'Rendering more than one song per request needs a higher --max-batch in Settings → Local engine; the engine rejects requests above it.',
+    componentOverride: 'Components for this request',
+    componentOverrideHint: 'The engine can load any installed GGUF per role. Leave a role on the profile default, or choose all five to override the selected profile for this generation only.',
+    profileDefault: 'Profile default',
+    useProfileComponents: 'Use profile components',
+    componentOverridePartial: 'Choose all five roles - the engine rejects a partial component set.',
+    replayTitle: 'Re-render this track',
+    replayHint: 'The saved audio codes are reused, so the autoregressive stage is skipped and the melody stays the same. Steps, seed, DiT CFG and output format can differ.',
+    replayStart: 'Re-render',
+    replayQueued: 'Re-render queued.',
 };

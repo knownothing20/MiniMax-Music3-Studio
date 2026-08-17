@@ -1040,4 +1040,13 @@ export const zh = {
     chooseFiles: '选择文件',
     allSongs: '全部歌曲',
     maxBatchHint: '每次请求生成多首曲目需要在设置 → 本地引擎中提高 --max-batch；超出限制的请求会被引擎拒绝。',
+    componentOverride: '本次请求的组件',
+    componentOverrideHint: '引擎可为每个角色加载任意已安装的 GGUF。保留配置档案默认值，或选择全部五个以仅对本次生成覆盖配置档案。',
+    profileDefault: '配置档案默认',
+    useProfileComponents: '使用配置档案组件',
+    componentOverridePartial: '请选择全部五个角色——引擎会拒绝不完整的组件集。',
+    replayTitle: '重新渲染此曲目',
+    replayHint: '复用已保存的音频编码，因此跳过自回归阶段，旋律保持不变。步数、种子、DiT CFG 与输出格式可更改。',
+    replayStart: '重新渲染',
+    replayQueued: '重新渲染已加入队列。',
 };

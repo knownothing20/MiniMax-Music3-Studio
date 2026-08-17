@@ -7,6 +7,7 @@ import { Player } from './components/Player';
 import { LibraryView } from './components/LibraryView';
 import { CreatePlaylistModal, AddToPlaylistModal } from './components/PlaylistModals';
 import { CoverRegenModal } from './components/CoverRegenModal';
+import { ReplayModal } from './components/ReplayModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Song, Music3Request, Music3Job, View, Playlist } from './types';
 // Resizable panel hook
@@ -236,7 +237,6 @@ function AppContent() {
   useEffect(() => {
     if (isMobile) setShowLeftSidebar(false);
   }, [isMobile]);
-  const [pendingAudioSelection, setPendingAudioSelection] = useState<{ target: 'reference' | 'source'; url: string; title?: string } | null>(null);
 
   // Mobile UI Toggle
   const [mobileShowList, setMobileShowList] = useState(false);
@@ -251,6 +251,7 @@ function AppContent() {
   // Cover regen modal — manual Pollinations / upload entry from SongList row
   // and RightSidebar. Updates songs.cover_url via /api/songs/:id/regen-cover.
   const [songForCoverRegen, setSongForCoverRegen] = useState<Song | null>(null);
+  const [songForReplay, setSongForReplay] = useState<Song | null>(null);
 
   // Settings Modal
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -315,51 +316,39 @@ function AppContent() {
     }
   }, []);
 
-  const handleNativeReplay = useCallback(async (song: Song) => {
-    if (!song.nativeReplayAvailable) return;
+  /// Watches a re-render job to completion and refreshes the library when the
+  /// new take lands.
+  const trackReplayJob = useCallback((jobId: string) => {
+    showToast(t('replayQueued'));
+    const poll = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`);
+        if (!response.ok) throw new Error(`Re-render status request failed (${response.status})`);
+        const status: { status?: string; message?: string } = await response.json();
+        const state = status.status?.toLowerCase();
+        if (!state || !['completed', 'failed', 'cancelled'].includes(state)) return;
 
-    try {
-      const response = await fetch('/v1/music/replay', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ song_id: song.id }),
-      });
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(error || `Replay request failed (${response.status})`);
-      }
-
-      const job: { id?: string } = await response.json();
-      if (!job.id) throw new Error('Replay response did not include a job id.');
-
-      showToast('Replay synthesis queued.');
-      const poll = window.setInterval(async () => {
-        try {
-          const statusResponse = await fetch(`/v1/music/jobs/${encodeURIComponent(job.id!)}`);
-          if (!statusResponse.ok) throw new Error(`Replay status request failed (${statusResponse.status})`);
-          const status: { status?: string; message?: string } = await statusResponse.json();
-          const state = status.status?.toLowerCase();
-          if (!state || !['completed', 'failed', 'cancelled'].includes(state)) return;
-
-          window.clearInterval(poll);
-          nativeReplayPollersRef.current.delete(job.id!);
-          if (state === 'completed') {
-            await refreshNativeLibrary();
-            showToast('Replay synthesis completed.');
-          } else {
-            showToast(status.message || `Replay synthesis ${state}.`, 'error');
-          }
-        } catch (error) {
-          window.clearInterval(poll);
-          nativeReplayPollersRef.current.delete(job.id!);
-          showToast(error instanceof Error ? error.message : 'Replay status polling failed.', 'error');
+        window.clearInterval(poll);
+        nativeReplayPollersRef.current.delete(jobId);
+        if (state === 'completed') {
+          await refreshNativeLibrary();
+          showToast(t('trackReady'));
+        } else {
+          showToast(status.message || `Re-render ${state}.`, 'error');
         }
-      }, 1000);
-      nativeReplayPollersRef.current.set(job.id, poll);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Replay synthesis could not be started.', 'error');
-    }
-  }, [refreshNativeLibrary]);
+      } catch (error) {
+        window.clearInterval(poll);
+        nativeReplayPollersRef.current.delete(jobId);
+        showToast(error instanceof Error ? error.message : 'Re-render polling failed.', 'error');
+      }
+    }, 1500);
+    nativeReplayPollersRef.current.set(jobId, poll);
+  }, [refreshNativeLibrary, t]);
+
+  const handleNativeReplay = useCallback((song: Song) => {
+    if (!song.nativeReplayAvailable) return;
+    setSongForReplay(song);
+  }, []);
 
   useEffect(() => () => {
     nativeReplayPollersRef.current.forEach((poll) => window.clearInterval(poll));
@@ -1129,39 +1118,9 @@ function AppContent() {
     window.history.pushState({}, '', `/playlist/${playlistId}`);
   };
 
-  const handleUseAsReference = (song: Song) => {
-    if (!song.audioUrl) return;
-    setPendingAudioSelection({ target: 'reference', url: song.audioUrl, title: song.title });
-    setCurrentView('create');
-    setMobileShowList(false);
-  };
 
-  const handleCoverSong = (song: Song) => {
-    if (!song.audioUrl) return;
-    setPendingAudioSelection({ target: 'source', url: song.audioUrl, title: song.title });
-    setCurrentView('create');
-    setMobileShowList(false);
-  };
 
-  const handleUseUploadAsReference = (track: { audio_url: string; filename: string }) => {
-    setPendingAudioSelection({
-      target: 'reference',
-      url: track.audio_url,
-      title: track.filename.replace(/\.[^/.]+$/, ''),
-    });
-    setCurrentView('create');
-    setMobileShowList(false);
-  };
 
-  const handleCoverUpload = (track: { audio_url: string; filename: string }) => {
-    setPendingAudioSelection({
-      target: 'source',
-      url: track.audio_url,
-      title: track.filename.replace(/\.[^/.]+$/, ''),
-    });
-    setCurrentView('create');
-    setMobileShowList(false);
-  };
 
   const handleBackFromPlaylist = () => {
     setViewingPlaylistId(null);
@@ -1260,17 +1219,6 @@ function AppContent() {
                 isGenerating={isGenerating}
                 activeJobCount={activeJobCount + pendingClickCount}
                 initialData={reuseData}
-                createdSongs={songs}
-                pendingAudioSelection={pendingAudioSelection}
-                onAudioSelectionApplied={() => setPendingAudioSelection(null)}
-                waitForJobsToDrain={waitForJobsToDrain}
-                incrementPendingClicks={incrementPendingClicks}
-                decrementPendingClicks={decrementPendingClicks}
-                createTempSongForClick={createTempSongForClick}
-                updateTempSongForClick={updateTempSongForClick}
-                removeTempSongForClick={removeTempSongForClick}
-                registerPreflightAbort={registerPreflightAbort}
-                unregisterPreflightAbort={unregisterPreflightAbort}
               />
             </div>
             {leftPanel.handle}
@@ -1299,10 +1247,6 @@ function AppContent() {
                 onReplayMusic={handleNativeReplay}
                 onDelete={handleDeleteSong}
                 onDeleteMany={handleDeleteSongs}
-                onUseAsReference={handleUseAsReference}
-                onCoverSong={handleCoverSong}
-                onUseUploadAsReference={handleUseUploadAsReference}
-                onCoverUpload={handleCoverUpload}
                 onSongUpdate={handleSongUpdate}
                 onCancelJob={cancelGeneration}
                 onResetJob={resetSingleJob}
@@ -1438,6 +1382,13 @@ function AppContent() {
       {/* Cover regen modal — only mounted while a song is selected for regen.
           Unmounting on close revokes blob URLs (see CoverRegenModal cleanup
           effect) so generated previews don't leak across modal opens. */}
+      {songForReplay && (
+        <ReplayModal
+          song={songForReplay}
+          onClose={() => setSongForReplay(null)}
+          onQueued={trackReplayJob}
+        />
+      )}
       {songForCoverRegen && (
         <CoverRegenModal
           song={songForCoverRegen}

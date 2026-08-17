@@ -23,8 +23,6 @@ interface SongDropdownMenuProps {
     onAddToPlaylist?: () => void;
     onDownload?: () => void;
     onDelete?: () => void;
-    onUseAsReference?: () => void;
-    onCoverSong?: () => void;
 }
 
 interface MenuItemProps {
@@ -68,8 +66,6 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     onAddToPlaylist,
     onDownload,
     onDelete,
-    onUseAsReference,
-    onCoverSong,
 }) => {
     const { t } = useI18n();
     const menuRef = useRef<HTMLDivElement>(null);
@@ -177,24 +173,8 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
             {onReplayMusic && (
                 <MenuItem
                     icon={<Repeat size={14} />}
-                    label="Replay synthesis"
+                    label={t('replayTitle')}
                     onClick={() => handleAction(onReplayMusic)}
-                />
-            )}
-            {onUseAsReference && (
-                <MenuItem
-                    icon={<Layers size={14} />}
-                    label={t('useAsReference')}
-                    onClick={() => handleAction(onUseAsReference)}
-                    disabled={!song.audioUrl}
-                />
-            )}
-            {onCoverSong && (
-                <MenuItem
-                    icon={<Layers size={14} />}
-                    label={t('coverSong')}
-                    onClick={() => handleAction(onCoverSong)}
-                    disabled={!song.audioUrl}
                 />
             )}
 

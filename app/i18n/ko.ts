@@ -1040,4 +1040,13 @@ export const ko = {
     chooseFiles: '파일 선택',
     allSongs: '모든 곡',
     maxBatchHint: '요청당 여러 트랙을 생성하려면 설정 → 로컬 엔진에서 --max-batch 를 높여야 합니다. 초과 요청은 거부됩니다.',
+    componentOverride: '이 요청의 구성 요소',
+    componentOverrideHint: '엔진은 각 역할에 설치된 GGUF 를 자유롭게 불러올 수 있습니다. 기본값을 유지하거나 다섯 개를 모두 선택해 이번 생성에만 프로필을 덮어씁니다.',
+    profileDefault: '프로필 기본값',
+    useProfileComponents: '프로필 구성 사용',
+    componentOverridePartial: '다섯 역할을 모두 선택하세요 - 엔진은 불완전한 세트를 거부합니다.',
+    replayTitle: '이 트랙 다시 렌더링',
+    replayHint: '저장된 오디오 코드를 재사용하므로 자기회귀 단계를 건너뛰고 멜로디는 그대로 유지됩니다. 스텝, 시드, DiT CFG, 출력 형식은 변경할 수 있습니다.',
+    replayStart: '다시 렌더링',
+    replayQueued: '다시 렌더링이 대기열에 추가되었습니다.',
 };

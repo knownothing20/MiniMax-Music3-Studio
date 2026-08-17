@@ -23,6 +23,18 @@ interface CreatePanelProps {
   initialData?: { song: Song; timestamp: number } | null;
 }
 
+type EngineCatalog = {
+  models?: { lm?: string[]; depth?: string[]; cond?: string[]; dit?: string[]; vae?: string[] };
+};
+
+type ComponentOverrides = {
+  lm_model?: string;
+  depth_model?: string;
+  cond_model?: string;
+  dit_model?: string;
+  vae_model?: string;
+};
+
 type SetupStatus = {
   ready?: boolean;
   engine_ready?: boolean;
@@ -102,6 +114,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [logs, setLogs] = useState<string[]>([]);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [assistantModel, setAssistantModel] = useState<string | null>(null);
+  const [engineCatalog, setEngineCatalog] = useState<EngineCatalog | null>(null);
+  const [overrides, setOverrides] = useState<ComponentOverrides>({});
   const [assisting, setAssisting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -155,6 +169,15 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     }
   }, [initialData]);
 
+  // The engine can load any installed GGUF per component, not only the ones
+  // belonging to the selected profile. Offer exactly what it reports.
+  useEffect(() => {
+    void fetch('/v1/local-models/music')
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+      .then((body: { catalog?: EngineCatalog }) => setEngineCatalog(body.catalog ?? null))
+      .catch(() => setEngineCatalog(null));
+  }, [setup?.engine_ready]);
+
   // Engine logs are the only fine-grained progress upstream exposes.
   useEffect(() => {
     if (!showLogs) return;
@@ -186,6 +209,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     setFormat('mp3');
     setSeed('');
     setLmSeed('');
+    setOverrides({});
   };
 
   const runAssistant = async () => {
@@ -265,6 +289,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
         output_format: format,
         mp3_bitrate: mp3Bitrate,
         title: title.trim() || undefined,
+        // Only send a component set when every role is chosen: the engine
+        // requires all five together and rejects a partial selection.
+        models: componentsComplete ? (overrides as Required<ComponentOverrides>) : undefined,
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Invalid generation settings.');
@@ -274,6 +301,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   // `--max-batch` is a launch flag of the engine and it rejects any request
   // above it, so the control never offers more than the engine will accept.
   const maxSongs = Math.max(1, setup?.effective_max_batch ?? 1);
+  const componentRoles: Array<{ key: keyof ComponentOverrides; label: string; options: string[] }> = [
+    { key: 'lm_model', label: 'Language model', options: engineCatalog?.models?.lm ?? [] },
+    { key: 'depth_model', label: 'Depth decoder', options: engineCatalog?.models?.depth ?? [] },
+    { key: 'cond_model', label: 'Condition encoder', options: engineCatalog?.models?.cond ?? [] },
+    { key: 'dit_model', label: 'DiT', options: engineCatalog?.models?.dit ?? [] },
+    { key: 'vae_model', label: 'Vocoder', options: engineCatalog?.models?.vae ?? [] },
+  ];
+  const chosenRoles = componentRoles.filter(role => overrides[role.key]);
+  const componentsComplete = chosenRoles.length === componentRoles.length;
+  const componentChoiceAvailable = componentRoles.some(role => role.options.length > 1);
   const totalTracks = Math.min(lmBatch, maxSongs) * synthBatch;
 
   return (
@@ -450,8 +487,45 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <NumberField label={t('mp3Bitrate')} value={mp3Bitrate} min={64} max={320} step={16} onChange={setMp3Bitrate} disabled={format !== 'mp3'} />
               </div>
               <p className="text-[11px] leading-4 text-zinc-500">
-                Peak clip normalises to the (1 − clip/1e6) percentile; 0 disables clipping and WAV 32-bit float skips it entirely.
+                Peak clip normalises to the (1 - clip/1e6) percentile; 0 disables clipping and WAV 32-bit float skips it entirely.
               </p>
+
+              {componentChoiceAvailable && (
+                <div className="rounded-xl border border-zinc-200 p-3 dark:border-white/10">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('componentOverride')}</span>
+                    {chosenRoles.length > 0 && (
+                      <button type="button" onClick={() => setOverrides({})} className="text-[11px] font-semibold text-pink-600 hover:text-pink-500">
+                        {t('useProfileComponents')}
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-1 text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">{t('componentOverrideHint')}</p>
+                  <div className="mt-2 space-y-2">
+                    {componentRoles.map(role => (
+                      <label key={role.key} className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                        <span className="mb-1 block">{role.label}</span>
+                        <select
+                          value={overrides[role.key] ?? ''}
+                          onChange={event => setOverrides(current => {
+                            const next = { ...current };
+                            if (event.target.value) next[role.key] = event.target.value;
+                            else delete next[role.key];
+                            return next;
+                          })}
+                          className={CONTROL}
+                        >
+                          <option value="">{t('profileDefault')}</option>
+                          {role.options.map(option => <option key={option} value={option}>{option.replace('MiniMax-Music3-', '')}</option>)}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                  {chosenRoles.length > 0 && !componentsComplete && (
+                    <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-300">{t('componentOverridePartial')}</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
