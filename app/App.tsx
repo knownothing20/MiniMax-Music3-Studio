@@ -858,6 +858,51 @@ function AppContent() {
     setActiveJobCount(activeJobsRef.current.size);
   }, [cleanupJob, refreshSongsList, t]);
 
+  /// mm-server reports a phase, not a percentage, but its log ring counts the
+  /// autoregressive frames and the flow-matching steps. Reading that gives the
+  /// generating card a real progress bar instead of an invented one.
+  useEffect(() => {
+    if (activeJobCount === 0) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const response = await fetch('/v1/engine/logs');
+        if (!response.ok) return;
+        const body: { lines?: string[] } = await response.json();
+        const lines = body.lines ?? [];
+        let progress: number | undefined;
+        let stage: string | undefined;
+        for (let index = lines.length - 1; index >= 0; index -= 1) {
+          const frame = /\[AR\] Frame (\d+)\/(\d+)/.exec(lines[index]);
+          if (frame) {
+            // The autoregressive pass is roughly the first half of the work,
+            // the diffusion pass the second; both are reported by the engine.
+            progress = (Number(frame[1]) / Number(frame[2])) * 0.5;
+            stage = 'stageGeneratingAudio';
+            break;
+          }
+          const step = /\[DiT\] .*?(\d+)\/(\d+)/.exec(lines[index]);
+          if (step) {
+            progress = 0.5 + (Number(step[1]) / Number(step[2])) * 0.5;
+            stage = 'stageGeneratingAudio';
+            break;
+          }
+        }
+        if (cancelled || progress === undefined) return;
+        setSongs(prev => prev.map(song => song.isGenerating && song.jobId
+          ? { ...song, progress, stage: stage ?? song.stage }
+          : song));
+      } catch {
+        // Progress detail is a nicety; the job status poll remains the truth.
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(poll, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeJobCount]);
+
   const handleGenerate = async (params: Music3Request & { _tempId?: string }) => {
     const tempId = params._tempId || `temp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     if (!params._tempId) {

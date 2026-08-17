@@ -34,8 +34,9 @@ try {
     # Release output must be built from tested native code.  The installer
     # deliberately contains only executables and UI assets; model weights stay
     # in the first-run model manager and are never downloaded at launch.
+    # The studio is a single executable: the service is compiled into the
+    # desktop binary, so there is no second program to build, ship or launch.
     cargo test --workspace
-    cargo build --release -p music-server
     & (Join-Path $PSScriptRoot 'build-minimax-runtime.ps1') -OutputDirectory $engineResourceRoot -RuntimeBackend $RuntimeBackend -CudaArchitecture universal
 
     $config = Get-Content -Raw $templatePath
@@ -64,7 +65,6 @@ try {
     $portableRoot = Join-Path $releaseDir "MiniMax-Music3-Studio-$Version-portable"
     New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
     Copy-Item (Join-Path $tauriRoot 'target\release\minimax-music3-studio-desktop.exe') (Join-Path $portableRoot 'MiniMax-Music3-Studio.exe') -Force
-    Copy-Item (Join-Path $repoRoot 'target\release\music-server.exe') (Join-Path $portableRoot 'music-server.exe') -Force
     Copy-Item $engineResourceRoot (Join-Path $portableRoot 'resources\minimaxmusic-cpp') -Recurse -Force
     New-Item -ItemType File -Path (Join-Path $portableRoot 'portable.flag') -Force | Out-Null
     Compress-Archive -Path "$portableRoot\*" -DestinationPath (Join-Path $releaseDir "MiniMax-Music3-Studio-$Version-portable.zip") -Force

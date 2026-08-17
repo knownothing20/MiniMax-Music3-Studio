@@ -13,7 +13,6 @@
   },
   "bundle": {
     "resources": {
-      "../../target/release/music-server.exe": "music-server.exe",
       "resources/minimaxmusic-cpp": "resources/minimaxmusic-cpp"
     }
   }

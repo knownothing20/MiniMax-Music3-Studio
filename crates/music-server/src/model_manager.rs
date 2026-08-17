@@ -248,9 +248,15 @@ impl ModelManager {
                     bail!("cancelled");
                 }
                 if verified_file_async(self.root.join(component.filename), component.clone()).await? {
+                    self.set_published_progress(&selection).await?;
                     continue;
                 }
                 self.download_component(component).await?;
+                // Streaming only counts the bytes that crossed the network. A
+                // component resumed from a complete `.part`, or already present
+                // from an earlier attempt, would otherwise leave the bar short
+                // of 100% on a successful install.
+                self.set_published_progress(&selection).await?;
             }
             Ok(())
         }
@@ -330,6 +336,22 @@ impl ModelManager {
             bail!("{} SHA-256 does not match the pinned Hugging Face LFS oid; the partial file was discarded so the next attempt starts clean", component.filename);
         }
         fs::rename(part, target).with_context(|| format!("publish {}", target.display()))?;
+        Ok(())
+    }
+
+    /// Re-bases progress on what is actually published on disk.
+    async fn set_published_progress(&self, selection: &ResolvedInstall) -> Result<()> {
+        let published: u64 = selection
+            .components
+            .iter()
+            .filter(|component| published_component(&self.root.join(component.filename), component))
+            .map(|component| component.bytes)
+            .sum();
+        let mut state = self.state.write().await;
+        if let Some(job) = &mut state.active {
+            job.downloaded_bytes = published.min(job.total_bytes);
+            self.persist_locked(&state)?;
+        }
         Ok(())
     }
 

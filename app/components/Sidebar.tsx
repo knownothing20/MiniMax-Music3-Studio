@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AudioLines, Disc, Library, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
+import { Disc, Library, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
 import { View } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { ResourceMonitor } from './ResourceMonitor';
@@ -111,8 +111,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <aside className={`fixed inset-y-0 left-0 z-50 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-zinc-200 bg-white py-4 transition-[width,transform] duration-300 dark:border-white/5 dark:bg-suno-sidebar md:relative md:inset-auto ${isOpen ? 'w-[min(20rem,calc(100vw-2.5rem))] md:w-[200px]' : 'w-[72px]'}`}>
         <div className="mb-6 flex min-w-0 items-center justify-between gap-2 px-3">
           <div className="flex min-w-0 items-center gap-3">
-            <button type="button" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-pink-500 to-purple-600 shadow-lg transition-transform hover:scale-105" onClick={() => onNavigate('create')} title="MiniMax Music 3 Studio">
-              <AudioLines size={22} className="text-white" />
+            {/* The studio mark: three ascending bars in the accent ramp, the
+                same shape as the application icon. */}
+            <button type="button" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] bg-gradient-to-b from-orange-500 via-pink-500 to-purple-600 shadow-lg transition-transform hover:scale-105" onClick={() => onNavigate('create')} title="MiniMax Music 3 Studio">
+              <svg viewBox="0 0 32 32" className="h-5 w-5" aria-hidden="true">
+                <g fill="#ffffff" fillOpacity="0.95">
+                  <rect x="8.1" y="11.5" width="3.4" height="9" rx="1.7" />
+                  <rect x="14.3" y="7.4" width="3.4" height="17.2" rx="1.7" />
+                  <rect x="20.5" y="9.6" width="3.4" height="12.8" rx="1.7" />
+                </g>
+              </svg>
             </button>
             {isOpen && <span className="min-w-0 truncate text-sm font-bold text-zinc-900 dark:text-white" title="MiniMax Music 3 Studio">MiniMax Music 3 Studio</span>}
           </div>
@@ -130,7 +138,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <NavItem icon={<Library size={20} />} label={t('library')} active={currentView === 'library'} onClick={() => onNavigate('library')} isExpanded={isOpen} />
           <NavItem icon={<Search size={20} />} label={t('search')} active={currentView === 'search'} onClick={() => onNavigate('search')} isExpanded={isOpen} />
           <NavItem icon={<Newspaper size={20} />} label={t('news')} active={currentView === 'news'} onClick={() => onNavigate('news')} isExpanded={isOpen} />
-          <NavItem icon={<SlidersHorizontal size={20} />} label="Studio tools" active={currentView === 'tools'} onClick={() => onNavigate('tools')} isExpanded={isOpen} />
+          <NavItem icon={<SlidersHorizontal size={20} />} label={t('studioTools')} active={currentView === 'tools'} onClick={() => onNavigate('tools')} isExpanded={isOpen} />
 
           <div className="mt-auto flex flex-col gap-2">
             <ResourceMonitor isOpen={isOpen} />

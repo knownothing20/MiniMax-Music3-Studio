@@ -278,7 +278,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
         <div className="space-y-4 p-4 pb-6 pt-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <h1 className="truncate text-base font-bold">{t('createMusic') || 'Create music'}</h1>
+              <h1 className="truncate text-base font-bold">{t('createMusic')}</h1>
               <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">MiniMax Music 3 · local C++/CUDA inference</p>
             </div>
             <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${ready ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
@@ -313,7 +313,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
 
           {mode === 'simple' ? (
             <div className="space-y-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card">
-              <Field label={t('songDescription') || 'Track idea'}>
+              <Field label={t('trackIdea')}>
                 <textarea
                   value={idea}
                   onChange={event => setIdea(event.target.value)}
@@ -353,7 +353,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           ) : null}
 
           <div className="space-y-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/5 dark:bg-suno-card">
-            <Field label={t('styleOfMusic') || 'Caption / style'}>
+            <Field label={t('captionStyle')}>
               <textarea
                 value={caption}
                 onChange={event => setCaption(event.target.value)}
@@ -361,7 +361,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 className={`${CONTROL} h-24 resize-none`}
               />
             </Field>
-            <Field label={t('lyrics') || 'Lyrics'}>
+            <Field label={t('lyrics')}>
               <textarea
                 value={lyrics}
                 onChange={event => setLyrics(event.target.value)}
@@ -385,8 +385,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               </button>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <NumberField label="Duration, s" value={duration} min={10} max={300} step={5} onChange={setDuration} />
-              <NumberField label="DiT steps" value={steps} min={2} max={80} step={1} onChange={setSteps} />
+              <NumberField label={t('durationSeconds')} value={duration} min={10} max={300} step={5} onChange={setDuration} />
+              <NumberField label={t('ditSteps')} value={steps} min={2} max={80} step={1} onChange={setSteps} />
             </div>
             <p className="mt-3 text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
               Engine defaults: 60 s · 30 steps · LM CFG 1.5 · top-k 50 · DiT CFG 1.7.
@@ -411,26 +411,26 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <NumberField label="LM CFG" value={lmCfg} min={0.5} max={4} step={0.1} onChange={setLmCfg} />
                 <NumberField label="LM top-k" value={topK} min={1} max={200} step={1} onChange={setTopK} />
                 <NumberField label="DiT CFG" value={ditCfg} min={0.5} max={5} step={0.1} onChange={setDitCfg} />
-                <NumberField label="Peak clip" value={peakClip} min={0} max={1000} step={1} onChange={setPeakClip} />
+                <NumberField label={t('peakClipLabel')} value={peakClip} min={0} max={1000} step={1} onChange={setPeakClip} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <NumberField label="Songs (LM batch)" value={lmBatch} min={1} max={4} step={1} onChange={setLmBatch} />
-                <NumberField label="Variations per song" value={synthBatch} min={1} max={9} step={1} onChange={setSynthBatch} />
+                <NumberField label={t('songsLmBatch')} value={lmBatch} min={1} max={4} step={1} onChange={setLmBatch} />
+                <NumberField label={t('variationsPerSong')} value={synthBatch} min={1} max={9} step={1} onChange={setSynthBatch} />
               </div>
               <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
                 This request renders <b>{totalTracks}</b> {totalTracks === 1 ? 'track' : 'tracks'}: each song samples its own LM
                 stream, each variation re-runs flow matching on the same condition track.
               </p>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="DiT seed (blank = random)">
+                <Field label={t('ditSeed')}>
                   <input inputMode="numeric" value={seed} onChange={event => setSeed(event.target.value)} placeholder="Random" className={CONTROL} />
                 </Field>
-                <Field label="LM seed (blank = random)">
+                <Field label={t('lmSeedLabel')}>
                   <input inputMode="numeric" value={lmSeed} onChange={event => setLmSeed(event.target.value)} placeholder="Random" className={CONTROL} />
                 </Field>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Output format">
+                <Field label={t('outputFormat')}>
                   <select value={format} onChange={event => setFormat(event.target.value as Music3Request['output_format'])} className={CONTROL}>
                     <option value="mp3">MP3</option>
                     <option value="wav16">WAV 16-bit</option>
@@ -438,7 +438,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                     <option value="wav32">WAV 32-bit float</option>
                   </select>
                 </Field>
-                <NumberField label="MP3 bitrate, kbps" value={mp3Bitrate} min={64} max={320} step={16} onChange={setMp3Bitrate} disabled={format !== 'mp3'} />
+                <NumberField label={t('mp3Bitrate')} value={mp3Bitrate} min={64} max={320} step={16} onChange={setMp3Bitrate} disabled={format !== 'mp3'} />
               </div>
               <p className="text-[11px] leading-4 text-zinc-500">
                 Peak clip normalises to the (1 − clip/1e6) percentile; 0 disables clipping and WAV 32-bit float skips it entirely.
@@ -490,7 +490,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-pink-600 text-base font-bold text-white shadow-lg transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isGenerating ? <Square size={18} /> : <Sparkles size={18} />}
-          {t('create') || 'Create'}
+          {t('create')}
           {activeJobCount > 0 && <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">{activeJobCount}/10</span>}
         </button>
       </footer>

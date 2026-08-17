@@ -1,25 +1,23 @@
-//! Tauri shell for the native music service.
+//! Desktop shell for MiniMax Music3 Studio.
 //!
-//! The service remains an independent Rust process in development and release
-//! layouts. The shell owns a process it starts and shuts it down on exit; if a
-//! compatible local service is already listening, it leaves that process alone.
+//! The whole studio is this one executable: the window, and the native service
+//! hosted inside it. The service in turn supervises the `minimaxmusic.cpp`
+//! engine, so there is exactly one owner of that process and no launcher
+//! script in the release layout. If a compatible service is already listening
+//! on loopback — a developer running it separately — the shell uses it instead
+//! of starting a second one.
 
 use std::{
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
     path::{Path, PathBuf},
-    process::{Child, Command},
-    sync::Mutex,
     time::{Duration, Instant},
 };
 
-use music_engine::mm_server::{MmServerLocation, MmServerSupervisor};
+use music_engine::mm_server::MmServerLocation;
 
 const SERVER_PORT: u16 = 8765;
 const RELEASES_URL: &str = "https://github.com/timoncool/MiniMax-Music3-Studio/releases/latest";
 const STUDIO_DATA_DIRECTORY: &str = "MiniMax Music3 Studio";
-
-struct ServerProcess(Mutex<Option<Child>>);
-struct EngineProcess(Mutex<Option<MmServerSupervisor>>);
 
 /// The bundled runtime can be overridden for development or a portable
 /// installation.  The supervisor itself validates that every configured path
@@ -110,53 +108,6 @@ fn configure_studio_runtime_paths() {
     }
 }
 
-fn start_primary_engine() -> (Option<MmServerSupervisor>, Option<String>) {
-    let config = match primary_engine_location().resolve() {
-        Ok(config) => config,
-        Err(error) => return (None, Some(error.to_string())),
-    };
-
-    // The Axum bridge consumes this documented base URL.  Set it before that
-    // child is started, so a user-selected loopback port remains consistent.
-    unsafe {
-        std::env::set_var(
-            "MINIMAX_MUSIC_CPP_BASE_URL",
-            format!("http://{}:{}", config.host, config.port),
-        );
-    }
-
-    let mut supervisor = match MmServerSupervisor::new(config) {
-        Ok(supervisor) => supervisor,
-        Err(error) => return (None, Some(error.to_string())),
-    };
-    match supervisor.ensure_started(Duration::from_secs(30)) {
-        Ok(_) => (Some(supervisor), None),
-        Err(error) => (None, Some(error.to_string())),
-    }
-}
-
-#[tauri::command]
-fn start_primary_engine_after_setup(engine: tauri::State<'_, EngineProcess>) -> Result<(), String> {
-    let mut engine = engine
-        .0
-        .lock()
-        .map_err(|_| "local engine state is unavailable".to_string())?;
-
-    if let Some(supervisor) = engine.as_mut() {
-        supervisor
-            .ensure_started(Duration::from_secs(30))
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    let (supervisor, error) = start_primary_engine();
-    let supervisor = supervisor.ok_or_else(|| {
-        error.unwrap_or_else(|| "could not start the local minimaxmusic.cpp engine".into())
-    })?;
-    *engine = Some(supervisor);
-    Ok(())
-}
-
 fn service_is_ready() -> bool {
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, SERVER_PORT);
     TcpStream::connect_timeout(&address.into(), Duration::from_millis(150)).is_ok()
@@ -184,66 +135,37 @@ fn is_portable() -> bool {
     executable_directory().join("portable.flag").is_file()
 }
 
-fn repository_root() -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("MINIMAX_MUSIC3_STUDIO_ROOT") {
-        return Some(PathBuf::from(root));
-    }
-
-    let mut directory = executable_directory();
-    for _ in 0..8 {
-        if directory.join("crates").is_dir() && directory.join("Cargo.toml").is_file() {
-            return Some(directory);
-        }
-        if !directory.pop() {
-            break;
-        }
-    }
-    None
-}
-
-fn server_command() -> Result<Command, String> {
-    if let Some(path) = std::env::var_os("MINIMAX_MUSIC_SERVER_BIN") {
-        return Ok(Command::new(path));
-    }
-
-    let executable_name = if cfg!(windows) { "music-server.exe" } else { "music-server" };
-    let adjacent = executable_directory().join(executable_name);
-    if adjacent.is_file() {
-        return Ok(Command::new(adjacent));
-    }
-
-    let bundled_resource = executable_directory().join("resources").join(executable_name);
-    if bundled_resource.is_file() {
-        return Ok(Command::new(bundled_resource));
-    }
-
-    let root = repository_root().ok_or_else(|| {
-        "could not locate MiniMax Music3 Studio workspace; set MINIMAX_MUSIC_SERVER_BIN".to_string()
-    })?;
-    let debug_binary = root.join("target").join("debug").join(executable_name);
-    if debug_binary.is_file() {
-        return Ok(Command::new(debug_binary));
-    }
-
-    let mut command = Command::new("cargo");
-    command.current_dir(root).args(["run", "-p", "music-server"]);
-    Ok(command)
-}
-
-fn start_service() -> Result<Option<Child>, String> {
+/// Hosts the studio service inside this process.
+///
+/// A release is one executable: there is no second binary to locate, no
+/// launcher script, and nothing that can be left running if the window is
+/// closed. The service is started on its own runtime thread and the window
+/// only opens once it answers on loopback.
+fn start_service() -> Result<(), String> {
     if service_is_ready() {
-        return Ok(None);
+        return Ok(());
     }
 
-    let child = server_command()
-        .and_then(|mut command| command.spawn().map_err(|error| error.to_string()))?;
+    std::thread::Builder::new()
+        .name("music-server".into())
+        .spawn(|| {
+            let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("could not create the studio service runtime: {error}");
+                    return;
+                }
+            };
+            if let Err(error) = runtime.block_on(music_server::serve()) {
+                eprintln!("studio service stopped: {error}");
+            }
+        })
+        .map_err(|error| format!("could not start the studio service thread: {error}"))?;
 
     if wait_until_ready(Duration::from_secs(30)) {
-        Ok(Some(child))
+        Ok(())
     } else {
-        let mut child = child;
-        let _ = child.kill();
-        Err("music-server did not become ready on 127.0.0.1:8765".into())
+        Err(format!("the studio service did not become ready on 127.0.0.1:{SERVER_PORT}"))
     }
 }
 
@@ -340,13 +262,9 @@ pub fn run() {
     // avoids starting a runtime against partial weights.
     configure_studio_runtime_paths();
 
-    let child = match start_service() {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!("failed to start music-server: {error}");
-            None
-        }
-    };
+    if let Err(error) = start_service() {
+        eprintln!("failed to start the studio service: {error}");
+    }
 
     // The updater is configured only in release builds, where the signing
     // public key and the release endpoint are injected into the config. The
@@ -369,9 +287,6 @@ pub fn run() {
     }
 
     builder
-        .manage(ServerProcess(Mutex::new(child)))
-        .manage(EngineProcess(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![start_primary_engine_after_setup])
         .setup(move |app| {
             if updater_configured {
                 spawn_update_check(app.handle().clone(), is_portable());
@@ -382,24 +297,3 @@ pub fn run() {
         .expect("error while running MiniMax Music3 Studio");
 }
 
-impl Drop for ServerProcess {
-    fn drop(&mut self) {
-        if let Ok(child) = self.0.get_mut() {
-            if let Some(child) = child.as_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
-impl Drop for EngineProcess {
-    fn drop(&mut self) {
-        if let Ok(engine) = self.0.get_mut() {
-            // Dropping the supervisor requests its documented graceful
-            // shutdown before it falls back to terminating only this owned
-            // child process.
-            let _ = engine.take();
-        }
-    }
-}

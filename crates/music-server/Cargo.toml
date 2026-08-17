@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "music_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "music-server"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true

@@ -18,6 +18,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 music-engine = { path = "../../crates/music-engine" }
+music-server = { path = "../../crates/music-server" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 # The desktop shell is deliberately isolated from the engine workspace. Its
 # release cadence and Tauri dependency graph must not modify native engines.

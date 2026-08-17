@@ -4,15 +4,20 @@ import { OpenRouterMediaPanel } from './OpenRouterMediaPanel';
 
 interface SetupStatus {
   ready?: boolean;
-  active_profile?: string;
-  message?: string;
+  engine_ready?: boolean;
+  engine_id?: string;
+  model_root?: string;
+  selected_profile_id?: string | null;
+  selected_component_ids?: string[] | null;
+  hardware?: { gpuName?: string; totalVramGb?: number; reason?: string };
 }
 
 interface Capabilities {
   engines?: Array<{
     id?: string;
-    label?: string;
+    display_name?: string;
     execution_mode?: string;
+    installed?: boolean;
     capabilities?: string[];
   }>;
 }
@@ -60,13 +65,19 @@ export function StudioToolsPanel(): React.ReactElement {
           <section className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/[0.03]">
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white"><ShieldCheck size={17} className="text-pink-500" /> Native music runtime</div>
             <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
-              {setup ? (setup.ready ? `Ready${setup.active_profile ? `: ${setup.active_profile}` : ''}` : (setup.message || 'Not installed yet. Open Create to install a complete compatible package.')) : 'Runtime status is unavailable.'}
+              {!setup
+                ? 'Runtime status is unavailable.'
+                : setup.ready
+                  ? `${setup.engine_ready ? 'Running' : 'Installed, engine not started'} · ${setup.selected_component_ids?.length ? 'custom component set' : setup.selected_profile_id ?? 'no profile selected'}`
+                  : 'No complete component set is installed yet. Open Create to choose and download one.'}
             </p>
           </section>
           <section className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-white/10 dark:bg-white/[0.03]">
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white"><Boxes size={17} className="text-pink-500" /> Available provider capabilities</div>
             <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
-              {engines.length ? engines.map((engine) => `${engine.label || engine.id}: ${(engine.capabilities || []).join(', ') || 'no capabilities reported'}`).join(' · ') : 'No provider capability catalog is currently reported by the native server.'}
+              {engines.length
+                ? engines.map((engine) => `${engine.display_name || engine.id}${engine.installed === false ? ' (not installed)' : ''}: ${(engine.capabilities || []).join(', ') || 'no capabilities reported'}`).join(' · ')
+                : 'No provider capability catalog is currently reported by the native server.'}
             </p>
           </section>
         </div>
