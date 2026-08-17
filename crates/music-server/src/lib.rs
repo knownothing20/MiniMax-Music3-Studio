@@ -1285,11 +1285,14 @@ async fn create_song_karaoke(
     }
     .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
 
-    let lines = lyrics_sync::align_lyrics(&words, &song.lyrics);
+    // Word by word, because that is what karaoke means: a line time alone
+    // leaves a player sweeping the highlight linearly through the line, which
+    // drifts off the singing immediately.
+    let lines = lyrics_sync::align_lyrics_words(&words, &song.lyrics);
     if lines.is_empty() {
         return Err(api_error(StatusCode::BAD_GATEWAY, "the recogniser heard nothing that matches these lyrics".into()));
     }
-    let lrc = lyrics_sync::lrc_from_segments(&lines);
+    let lrc = lyrics_sync::enhanced_lrc(&lines);
     state
         .library
         .set_song_lrc(&id, &lrc)

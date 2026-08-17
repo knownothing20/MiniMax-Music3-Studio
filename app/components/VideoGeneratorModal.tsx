@@ -4,6 +4,8 @@ import { Song } from '../types';
 import { X, Play, Pause, Download, Wand2, Image as ImageIcon, Music, Video, Loader2, Palette, Layers, Zap, Type, Monitor, Aperture, Activity, Circle, Grid, Box, BarChart2, Waves, Disc, Upload, Plus, Trash2, Settings2, MousePointer2, Search, ExternalLink, Sun, Film, Minus } from 'lucide-react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { createHardwareEncoder, type HardwareEncoder } from '../services/videoEncoder';
+import { lineProgress } from '../services/lrc-parser';
 import { useResponsive } from '../context/ResponsiveContext';
 
 interface VideoGeneratorModalProps {
@@ -782,6 +784,8 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     const currentIntensities = intensitiesRef.current;
     const currentTexts = textLayersRef.current;
     const capturedFrames: string[] = [];
+    // One GPU encoder for the whole export, or none and the JPEG path below.
+    const hardware: HardwareEncoder | null = await createHardwareEncoder({ width, height, fps }).catch(() => null);
 
     for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
       const time = frameIndex / fps;
@@ -972,7 +976,9 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
 
           if (lrcStyle === 'karaoke' && !(!lrcShowSections && lrcLine.isSection)) {
             const nextT = Math.min(lrcIdx + 1 < lrcLines.length ? lrcLines[lrcIdx + 1].time : lrcLine.time + 5, lrcLine.time + 5);
-            const prog = Math.min(1, (lrcTime - lrcLine.time) / (nextT - lrcLine.time));
+            // Word times drive the sweep when the file has them; a line time
+            // alone can only be swept linearly, and that is what drifts.
+            const prog = lineProgress(lrcLine, lrcTime, nextT);
             // Hide line if fully sung (prog=1) for more than 1s
             if (prog >= 1 && lrcTime > nextT + 1) { /* skip — line already sung */ } else {
             const m = ctx.measureText(lrcLine.text);
@@ -993,7 +999,9 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
             }
           } else if (lrcStyle === 'scroll' && !(!lrcShowSections && lrcLine.isSection)) {
             const nextT = Math.min(lrcIdx + 1 < lrcLines.length ? lrcLines[lrcIdx + 1].time : lrcLine.time + 5, lrcLine.time + 5);
-            const prog = Math.min(1, (lrcTime - lrcLine.time) / (nextT - lrcLine.time));
+            // Word times drive the sweep when the file has them; a line time
+            // alone can only be swept linearly, and that is what drifts.
+            const prog = lineProgress(lrcLine, lrcTime, nextT);
             const m = ctx.measureText(lrcLine.text);
             const scrollOff = prog * (m.width + width * 0.5);
             ctx.fillStyle = `rgba(${parseInt(lyricsBgColorRef.current.slice(1,3),16)},${parseInt(lyricsBgColorRef.current.slice(3,5),16)},${parseInt(lyricsBgColorRef.current.slice(5,7),16)}, ${lyricsBgOpacityRef.current/100})`;
@@ -1139,9 +1147,14 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
         ctx.fillRect(0, height - barHeight, width, barHeight);
       }
 
-      // Capture frame as base64
-      const frameData = canvas.toDataURL('image/jpeg', 0.85);
-      capturedFrames.push(frameData.split(',')[1]);
+      // Straight to the GPU encoder when the machine has one; the JPEG round
+      // trip below is the fallback, and it is what made this slow.
+      if (hardware) {
+        await hardware.encode(canvas, frameIndex);
+      } else {
+        const frameData = canvas.toDataURL('image/jpeg', 0.85);
+        capturedFrames.push(frameData.split(',')[1]);
+      }
 
       // Update progress + yield to prevent Chrome "page not responding" alert
       if (frameIndex % 30 === 0) {
@@ -1152,6 +1165,63 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
 
     setExportStage('encoding');
     setExportProgress(70);
+
+    /// Hands the finished file to the user and tears the export down. Both the
+    /// hardware and the WebAssembly path end here.
+    const finishExport = async (blob: Blob) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.style.display = 'none';
+      link.href = url;
+      link.download = `${song.title || 'minimax-music3'}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 1000);
+      await audioCtx.close().catch(() => undefined);
+      setExportProgress(100);
+      setTimeout(() => {
+        setIsExporting(false);
+        setExportStage('idle');
+      }, 500);
+    };
+
+    // The hardware path has already encoded the video; all that is left is
+    // putting the song next to it, which is a mux and a short audio encode
+    // rather than re-encoding every frame.
+    if (hardware) {
+      const silent = await hardware.finish();
+      const audioSource = song.audioUrl || (song as unknown as { audio_url?: string }).audio_url || '';
+      if (!audioSource) {
+        await finishExport(new Blob([silent], { type: 'video/mp4' }));
+        return;
+      }
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on('progress', ({ progress: value }) => {
+        setExportProgress(80 + Math.round(Math.max(0, Math.min(1, value)) * 18));
+      });
+      await ffmpeg.load({
+        coreURL: await toBlobURL('/ffmpeg/ffmpeg-core.js', 'text/javascript'),
+        wasmURL: await toBlobURL('/ffmpeg/ffmpeg-core.wasm', 'application/wasm'),
+      });
+      const audioExtension = audioSource.toLowerCase().includes('.wav') ? 'wav' : 'mp3';
+      await ffmpeg.writeFile('video.mp4', silent);
+      await ffmpeg.writeFile(`audio.${audioExtension}`, new Uint8Array(await (await fetch(audioSource)).arrayBuffer()));
+      await ffmpeg.exec([
+        '-i', 'video.mp4',
+        '-i', `audio.${audioExtension}`,
+        // The picture is already H.264: copy it rather than encode it twice.
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest',
+        '-movflags', '+faststart',
+        'out.mp4',
+      ]);
+      const merged = (await ffmpeg.readFile('out.mp4')) as Uint8Array;
+      if (merged.length === 0) throw new Error('The encoder produced an empty file.');
+      await finishExport(new Blob([merged], { type: 'video/mp4' }));
+      return;
+    }
 
     // Assemble the captured frames locally. ffmpeg is compiled to WebAssembly
     // and served from the application itself, so no service and no network is
@@ -1195,39 +1265,7 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
       throw new Error('The encoder produced an empty file.');
     }
     setExportProgress(98);
-
-    const blob = new Blob([outputData], { type: 'video/mp4' });
-    const url = URL.createObjectURL(blob);
-    console.log('[Video] Created blob URL:', url, 'Size:', blob.size);
-
-    // More reliable download method
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = url;
-    a.download = `${song.title || 'suno-video'}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-
-    // Delay cleanup to ensure download starts
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 1000);
-
-    console.log('[Video] Download triggered!');
-
-    // Cleanup done server-side
-    setExportProgress(98);
-    // Server cleanup already handled
-    await audioCtx.close();
-
-    setExportProgress(100);
-
-    // Small delay before hiding the progress to show completion
-    setTimeout(() => {
-      setIsExporting(false);
-      setExportStage('idle');
-    }, 500);
+    await finishExport(new Blob([outputData], { type: 'video/mp4' }));
   };
 
   const stopRecording = () => {

@@ -458,6 +458,130 @@ pub fn segments_from_verbose_json(body: &serde_json::Value) -> Vec<(f64, String)
     segments
 }
 
+/// One written line, with a time for every word in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedLine {
+    pub start: f64,
+    /// The words of the written line, each with the moment it is sung.
+    pub words: Vec<(f64, String)>,
+}
+
+impl TimedLine {
+    pub fn text(&self) -> String {
+        self.words.iter().map(|(_, word)| word.as_str()).collect::<Vec<_>>().join(" ")
+    }
+}
+
+/// Enhanced LRC - the A2 format every karaoke player understands: a line time
+/// followed by a time before each word. Without per-word times a player has
+/// nothing to do but sweep the highlight linearly, which drifts away from the
+/// singing within a line.
+pub fn enhanced_lrc(lines: &[TimedLine]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        if line.words.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("[{}]", stamp(line.start)));
+        for (at, word) in &line.words {
+            out.push_str(&format!("<{}>{} ", stamp(*at), word));
+        }
+        out.pop();
+        out.push('\n');
+    }
+    out
+}
+
+fn stamp(seconds: f64) -> String {
+    let total = seconds.max(0.0);
+    let minutes = (total as u64) / 60;
+    let rest = total - (minutes * 60) as f64;
+    format!("{minutes:02}:{rest:05.2}")
+}
+
+/// Puts the track's own lyrics on the recogniser's clock, word by word.
+///
+/// The line anchoring is the same as before; inside a line each written word
+/// takes the time of the recognised word it matches, and words nobody matched
+/// are spread across the gap in proportion to their length. That is what makes
+/// a karaoke highlight land on the syllable instead of drifting through it.
+pub fn align_lyrics_words(words: &[(f64, String)], lyrics: &str) -> Vec<TimedLine> {
+    let anchored = align_lyrics(words, lyrics);
+    if anchored.is_empty() {
+        return Vec::new();
+    }
+    let heard: Vec<(f64, String)> = words.iter().map(|(at, word)| (*at, normalise(word))).collect();
+    let mut timed: Vec<TimedLine> = Vec::with_capacity(anchored.len());
+
+    for (index, (start, text)) in anchored.iter().enumerate() {
+        let end = anchored.get(index + 1).map(|(next, _)| *next).unwrap_or_else(|| {
+            // The last line runs to the last thing anyone heard.
+            heard.last().map(|(at, _)| *at + 2.0).unwrap_or(start + 4.0)
+        });
+        let written: Vec<&str> = text.split_whitespace().collect();
+        if written.is_empty() {
+            continue;
+        }
+
+        // The recognised words that fall inside this line's span.
+        let inside: Vec<&(f64, String)> = heard.iter().filter(|(at, _)| *at >= *start - 0.01 && *at < end).collect();
+        let mut placed: Vec<Option<f64>> = vec![None; written.len()];
+        let mut cursor = 0usize;
+        for (position, word) in written.iter().enumerate() {
+            let expected = normalise(word);
+            if expected.is_empty() {
+                continue;
+            }
+            if let Some(found) = inside[cursor..].iter().position(|(_, heard_word)| {
+                // Compare by characters, never by bytes: slicing "неон" at a
+                // byte index lands inside a letter and panics.
+                heard_word == &expected || (expected.chars().count() > 3 && heard_word.starts_with(&stem(&expected)))
+            }) {
+                placed[position] = Some(inside[cursor + found].0);
+                cursor += found + 1;
+            }
+        }
+
+        // Anything unmatched is spread by length across the gap it sits in.
+        let mut previous_time = *start;
+        let mut position = 0usize;
+        while position < written.len() {
+            if let Some(at) = placed[position] {
+                previous_time = at;
+                position += 1;
+                continue;
+            }
+            let gap_start = position;
+            while position < written.len() && placed[position].is_none() {
+                position += 1;
+            }
+            let next_time = placed.get(position).copied().flatten().unwrap_or(end);
+            let span = (next_time - previous_time).max(0.05);
+            let weight: usize = written[gap_start..position].iter().map(|word| word.chars().count().max(1)).sum();
+            let mut used = 0usize;
+            for offset in gap_start..position {
+                let length = written[offset].chars().count().max(1);
+                // Centred in its own share of the gap: a word placed exactly on
+                // the previous word's time would highlight two words at once.
+                let share = (used as f64 + length as f64 / 2.0) / weight as f64;
+                placed[offset] = Some(previous_time + span * share);
+                used += length;
+            }
+            previous_time = next_time;
+        }
+
+        timed.push(TimedLine {
+            start: *start,
+            words: written
+                .iter()
+                .zip(placed)
+                .map(|(word, at)| (at.unwrap_or(*start), (*word).to_string()))
+                .collect(),
+        });
+    }
+    timed
+}
+
 /// Puts the track's own lyrics on the recogniser's clock.
 ///
 /// The words are already known - the model sang what it was given - so the
@@ -539,6 +663,12 @@ fn interpolate(lines: &[&str], placed: &mut [Option<f64>], first: f64, last: f64
             *slot = Some(before + (after - before) * ((offset + 1) as f64 / steps));
         }
     }
+}
+
+/// A word without its last character, for tolerating inflected endings.
+fn stem(word: &str) -> String {
+    let count = word.chars().count();
+    word.chars().take(count.saturating_sub(1)).collect()
 }
 
 fn normalise(word: &str) -> String {
@@ -723,6 +853,48 @@ Driving home
 
         // The user's words, on the recogniser's clock - never the mishearing.
         assert_eq!(lines, vec![(1.0, "Neon on the glass".to_string()), (9.0, "Driving home".to_string())]);
+    }
+
+    #[test]
+    fn every_word_gets_its_own_time_and_the_file_says_so() {
+        let heard = vec![
+            (1.0, "neon".into()),
+            (1.4, "arms".into()),
+            (1.8, "the".into()),
+            (2.2, "glass".into()),
+            (9.0, "driving".into()),
+            (9.6, "home".into()),
+        ];
+        let lines = align_lyrics_words(&heard, "Neon on the glass
+Driving home");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text(), "Neon on the glass");
+        // "Neon", "the" and "glass" were heard; "on" was not, so it lands
+        // between the words either side of it rather than on the line start.
+        assert_eq!(lines[0].words[0].0, 1.0);
+        assert_eq!(lines[0].words[2].0, 1.8);
+        assert_eq!(lines[0].words[3].0, 2.2);
+        assert!(lines[0].words[1].0 > 1.0 && lines[0].words[1].0 < 1.8, "got {}", lines[0].words[1].0);
+
+        let lrc = enhanced_lrc(&lines);
+        assert!(lrc.starts_with("[00:01.00]<00:01.00>Neon <"), "{lrc}");
+        assert!(lrc.contains("<00:09.00>Driving <00:09.60>home"), "{lrc}");
+    }
+
+    #[test]
+    fn russian_lyrics_align_without_slicing_a_letter_in_half() {
+        let heard = vec![
+            (1.0, "неон".into()),
+            (1.5, "дрожит".into()),
+            (2.0, "на".into()),
+            (2.4, "коже".into()),
+        ];
+        let lines = align_lyrics_words(&heard, "Неон дрожит на мокрой коже");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].words.len(), 5);
+        assert_eq!(lines[0].words[0].0, 1.0);
+        assert_eq!(lines[0].words[1].0, 1.5);
+        assert!(enhanced_lrc(&lines).contains("<00:01.50>дрожит"));
     }
 
     #[test]
