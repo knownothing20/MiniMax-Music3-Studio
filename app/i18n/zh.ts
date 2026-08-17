@@ -1033,4 +1033,5 @@ export const zh = {
     captionStyle: '描述 / 风格',
     trackIdea: '创作灵感',
     studioTools: '工作室工具',
+    templateHint: 'Music3 按照给定歌词演唱。模板会填入可编辑的描述与歌词，不会联网。',
 };

@@ -1,306 +1,204 @@
-# MiniMax Music3 Studio — full engineering handoff
+# MiniMax Music3 Studio — engineering handoff
 
 Date: 2026-08-17
 
-## Purpose and acceptance target
+## What this project is
 
-This fork is intended to preserve the useful desktop-studio workflow and visual
-language of ACE-Step Studio while replacing ACE inference with **full-fidelity
-MiniMax Music3**, using a native Windows stack:
+A Windows desktop music studio built on **MiniMax Music3**, running natively:
 
 ```text
-React ACE-derived UI -> Rust music-server (:8765) -> minimaxmusic.cpp mm-server (:8086)
-Tauri desktop hosts and starts the native services
+React UI  ─┐
+           ├─ one executable: minimax-music3-studio-desktop.exe
+Rust axum ─┘        │
+                    └─ supervises minimaxmusic.cpp `mm-server` (C++/CUDA) on :8086
 ```
 
-The product is not accepted merely because the UI renders or a job is queued.
-Acceptance requires working user-visible functionality, verified native routes,
-and a real installer/first-run/generation path.
+It is a fork of ACE-Step Studio that keeps the studio workflow — library,
+player, playlists, search, setup flow, resource monitor — and replaces ACE
+inference with Music3. The ACE sources are **not** in this repository; they
+live in their own repository, and everything carried over was re-implemented
+against the native `/v1` API.
 
-## Original brief and decision history
+There is no Python and no Node.js in the runtime, and no launcher script: the
+release is a single `.exe`.
 
-The work began with a request to assess two paths: add MiniMax Music3 to
-`timoncool/ACE-Step-Studio`, or fork the Studio for Music3. The chosen direction
-was a dedicated fork because Music3 has a different inference graph and a
-directly carried-over ACE backend would leave a large amount of misleading
-model-specific UI. The non-negotiable product intent is nevertheless **an ACE
-Studio successor**, not a bare demo: retain its useful layout, library, player,
-creation workflow, model management, tools and desktop behavior where a real
-Music3/native equivalent exists.
+## Verified on this machine
 
-The user subsequently set these binding decisions:
+Everything below was executed, not inferred.
 
-1. Stack: native Windows desktop, Rust + Tauri + C++ inference; do not ship a
-   ComfyUI/Python runtime as the local Music3 engine.
-2. Preserve the useful ACE visual system and product workflows; remove or
-   replace controls that have no actual backend rather than keeping fake UI.
-3. Modes: local first and fastest; OpenRouter may provide cloud/hybrid music,
-   LLM, ASR and images only from a dynamically verified catalog.
-4. Models: no automatic download at startup. First run presents one deliberately
-   selected recommended complete configuration; all other components are
-   downloaded from Model Manager.
-5. Quality: full original Music3 capability/quality is the default acceptance
-   target. A Light quant is a speed/low-VRAM choice, never the claimed quality
-   default on capable hardware.
-6. Packaging: installer and update behavior must follow the proven Dub Studio
-   pattern.
+| Check | Result |
+| --- | --- |
+| Local generation, Q8 Quality profile, 60 s / 30 steps / LM CFG 1.5 / top-k 50 / DiT CFG 1.7, seeds 424242 + 314159 | Completed. The engine log shows `CFG=1.50, top_k=50`, 1500 AR frames, 14 DiT windows × 30 steps, `[Done] 39.0 s total`. |
+| Rendered file | 15,894,572-byte WAV, RIFF/WAVE, **stereo, 44.1 kHz, 24-bit, 60.07 s**, served byte-identical by `/v1/library/media/{id}`. |
+| Provenance stored | `source=local_generation`, `engine_id=minimaxmusic-cpp`, `profile_id=quality-q8`, `dit_model=…transformer-Q8_0.gguf`, `lm_model=…language_model-Q8_0.gguf`, both seeds, 49,213 characters of `audio_codes`. |
+| Deterministic replay | `POST /v1/music/replay` with `song_id` re-rendered the track from its saved codes (LM stage skipped) and imported the result. |
+| Model download | Q8 Quality (12.8 GB, five components) downloaded, SHA-256 verified against the pinned HF revision, resumed after an interrupted run. |
+| Engine ownership | The service starts `mm-server`; `/v1/engine/logs` returns its real log ring (registry load, prompt tokens, AR frames, DiT windows, VAE decode). |
+| OpenRouter catalog | Live refresh returns 414 models: 414 text, 38 speech-to-text, 11 image, 2 music (`google/lyria-3-pro-preview`, `google/lyria-3-clip-preview`). No key needed for the catalog. |
+| Desktop application | Built and launched; window opens, hosts the service in-process, starts the engine, survives restart. |
+| Browser E2E | Every request the app issues is native (`/v1/*`, `/setup/*`, `/engine/*`, `/health`). Console is clean. **Zero** `/api/*` requests. |
+| Tests | `cargo test --workspace` — 49 passing. `npm --prefix app run build` and `tsc --noEmit` clean. |
 
-## Research and architecture record
+**Not verified:** perceptual audio quality has not been judged here — listen to
+the Q8 track and compare it against Light yourself. Full Native (28.6 GB) was
+not downloaded on this machine.
 
-### Inference candidates investigated
+## What was actually wrong before, and what fixed it
 
-| Candidate | Finding | Decision |
-| --- | --- | --- |
-| Official MiniMax Music3 release | Defines the reference components and inference behavior. | Source of model contract and quality target. |
-| Comfy-Org Music3 package | Provides official Comfy component files such as `dit_fp16`, `dit_int8_convrot`, pruned int8 text encoder and DAV VAE. | Useful compatibility/reference packaging; Comfy itself is not embedded in the desktop runtime. |
-| `ServeurpersoCom/minimaxmusic.cpp` | Native C++ implementation with GGUF components, HTTP `mm-server`, quality/light/full variants, replay, batch and output support. | Selected local inference engine. Pinned at `9fdedf021049155b9ac194f88c1d014f4a572114`. |
-| `audio.cpp` | Alternative Music3-capable path was catalogued as optional. | Kept optional; not installed or advertised as the primary runtime. |
-| ACE Python/Gradio backend | Original Studio backend; exposes ACE-specific inference, LoRA, training and editing features. | Not used for local Music3 because it would violate the native stack and falsely imply Music3 support. |
+The previous state built and passed tests, yet did not work. Running it
+exposed the following, each fixed and committed separately:
 
-### Quant/component research result
+1. **The desktop app crashed at startup.** The updater plugin was registered
+   unconditionally but only configured in release builds, so it panicked with
+   `PluginInitialization`. It is now registered only when the config declares it.
+2. **The UI still talked to the retired ACE Node service.** On plain page load
+   it issued `/api/auth/auto`, `/api/playlists`, `/api/reference-tracks` and
+   `/api/generate/history` — all 500. The whole client for that service is gone.
+3. **Light was advertised as the recommendation on a 24 GB card.** The
+   recommendation is now derived from the machine: Full Native ≥ 20 GB, Q8
+   Quality ≥ 10 GB, Light only in the low-VRAM tier.
+4. **`POST /setup/download` hung the server.** It hashed every already-present
+   GGUF on the request thread; resuming a 10 GB profile blocked past the client
+   timeout. A completed `.part` also made the range request fail with 416.
+5. **The dark theme was broken.** Surfaces used `dark:bg-suno-DEFAULT`, which is
+   not a class Tailwind generates, so the setup screen and create panel rendered
+   white inside a dark app. Tailwind also came from a CDN — fatal for a desktop
+   app with no network. It is now a local build.
+6. **The engine could only be started through a Tauri command**, so the studio
+   failed in a browser with "cannot read properties of undefined (reading
+   'invoke')". The service now owns the engine via `POST /engine/start`.
+7. **The packaged service wrote its library into the process working directory.**
+8. **Phantom providers.** The default configuration named local engines
+   (`parakeet-tdt`, `local-llm`) that this build does not ship.
+9. **The release was a launcher plus a second binary.** The service is now a
+   library hosted inside the desktop executable.
+10. **The application still wore Dub Studio's icon.**
 
-`minimaxmusic.cpp` expects a complete five-component set. A single DiT quant is
-not a runnable Music3 install. Every valid profile contains:
+## ACE → Music3 parity
 
-```text
-language model + RVQ depth decoder + condition encoder + DiT + vocoder
-```
+| ACE feature | State in this fork |
+| --- | --- |
+| Create panel (simple / custom) | **Carried over.** Full engine contract: caption, lyrics, duration, steps, LM CFG, top-k, DiT CFG, peak clip, both seeds, songs (LM batch), variations per song, `mp3/wav16/wav24/wav32`, MP3 bitrate. "Reset" restores the engine's own defaults. |
+| Generation queue, stages, cancel, reset | **Carried over**, driving `/v1/music/jobs`. |
+| Progress | **Better than before.** ACE showed a fabricated percentage; the card now shows real progress parsed from the engine's AR-frame and DiT-window counters, plus a live engine-log panel. |
+| Library, playlists, rename, delete, favourites | **Carried over** on `/v1/library`. Favourites are local — there is no social service to sync with. |
+| Player, waveform, queue, shuffle, repeat | **Carried over** unchanged. |
+| Search | **Re-aimed.** ACE searched a public feed; this searches the local library and playlists, keeping the genre palette as an authoring aid. |
+| Import audio | **Carried over** — `POST /v1/library/import`, atomic with rollback. |
+| Download / export track | **Carried over.** |
+| Audio editor (AudioMass) | **Carried over** as local static assets; no backend needed. |
+| Cover art | **Re-implemented.** Pollinations is gone with the ACE backend; covers are generated through catalog-verified OpenRouter image models or taken from a file, then stored with the track. |
+| Caption / lyrics assistant | **Re-implemented** on `/v1/openrouter/completions`, enabled only when a catalog-verified text model is configured. |
+| Resource monitor | **Restored and extended.** The first port dropped it. Now: GPU load, VRAM, temperature, power draw, RAM, CPU, engine process memory — all measured, with a dockable pop-out panel. |
+| Model manager, GPU presets, first run | **Carried over and corrected** — five-component profiles, custom component builder, checksum-verified resumable downloads, hardware-aware recommendation, nothing downloaded automatically. |
+| Settings | **Extended** into a real provider matrix: music, speech-to-text, assistant and cover art each independently Local or OpenRouter, cloud models listed only from the live catalog, API key held by the service. |
+| Social profiles, comments, follows, public feed | **Removed.** A single-user desktop studio has no such service; the screens are gone rather than dead. |
+| Video renderer | **Removed** — it required the ACE Node render service. See gaps. |
+| Stem separation (Demucs) | **Removed** — it required the ACE Node service. See gaps. |
+| LoRA training / adapters lab | **Removed** — ACE adapter formats do not apply to Music3. See gaps. |
+| ACE-only conditioning: repaint, Flow Edit, DCW, audio2audio cover | **Removed** — no Music3 equivalent exists. |
 
-Profiles that were catalogued:
+## Known gaps, with the work they need
 
-| Profile | Component level | Intended use |
-| --- | --- | --- |
-| Full Native | LM BF16 + depth BF16 + DiT F32 / matching full components | Full-fidelity target, about >=20 GB VRAM strict peak. |
-| Q8 Quality | Q8 LM + Q8 depth + Q8 DiT / matching shared components | Quality quantized target, about >=10 GB strict peak. |
-| Light | LM Q5_K_M + depth Q8 + DiT Q4_K_M + condition F32 + vocoder F32 | Low-VRAM/speed profile, about 7–9 GB tier. |
+These are absent from the UI rather than present-but-dead:
 
-The first implementation incorrectly made Light the recommended default. This
-was discovered by live QA and corrected in the model-manager/preset policy:
-hardware selection now chooses Full at >=20 GB, Q8 at >=10 GB and Light only in
-the low-VRAM tier. The existing local installation remains Light until a user
-deliberately downloads Full/Q8.
-
-### OpenRouter research/result
-
-The intended integration is capability-based rather than a hard-coded provider
-model list: fetch the catalog, then expose music/LLM/ASR/image choices only when
-the provider declares the relevant modality. The native server contains this
-catalog layer and tests that reject unknown/unsupported model capabilities.
-
-At handoff there is no configured live OpenRouter key/catalog on this machine.
-Therefore no cloud music, ASR, image, or hybrid run has been claimed successful.
-The old ACE browser-local picker and Node routes must not be treated as proof of
-OpenRouter support.
-
-### Installer/updater research/result
-
-Dub Studio was inspected as the reference implementation. Its relevant pattern
-is: Tauri v2 updater driven by Rust, native update dialog, NSIS passive update,
-portable detection, signed GitHub `latest.json`, and no hidden model download.
-The release scripts/configuration in this repository were adjusted to follow
-that pattern, including an early guard for absent signing material.
-
-## Chronological engineering log
-
-| Phase | What happened | Result / lesson |
-| --- | --- | --- |
-| Fork foundation | ACE visual app was retained while Rust workspace, engine contracts, native server and Tauri host were added. | Necessary base, but did not itself establish functional parity. |
-| C++ runtime build | Pinned minimaxmusic.cpp was compiled for the local NVIDIA environment and launched as `mm-server` on `:8086`. | Live health and component discovery verified native Music3 rather than mock inference. |
-| Model manager | Five-part downloadable profiles, checksums, resume, custom component selection and GPU presets were added. | First-run avoids automatic downloads; original Light recommendation was later found insufficient for the quality requirement. |
-| First live smoke generation | A short/low-step result sounded poor. | This exposed ACE-derived defaults and proved that "it generated" is not quality acceptance. |
-| Quality audit + rerun | Exact upstream defaults were used: 60 seconds, 30 steps, LM CFG 1.5, top-k 50, DiT CFG 1.7, WAV24. | Real 60-second native audio was produced, but perceptual quality still requires listening on Q8/Full. |
-| UI conversion | A large native status banner, broken short-window layout, toast interception and legacy HUD were found in browser screenshots. | Banner was reduced, panel scrolling/sidebar constraints were changed, and false resource/backend indicators were removed. |
-| Legacy API failure | UI showed "Connecting to server…" because AuthContext retried retired ACE Node service `:3001`, while Music3 native service was healthy. | Local desktop session fallback was added; native health is no longer masked by dead ACE auth. |
-| Functional parity audit | Live probes showed many remaining ACE screens hit dead `/api/*` routes. | Native library/playlists/replay/likes/delete/import were moved to `/v1`; unsupported screens must not pretend to work. |
-| Packaging audit | Tauri build paths were wrong; release flow incorrectly expected automatic updater metadata. | Build path fixed; desktop executable/server build; release script stages NSIS/portable/updater artifacts but cannot sign without credentials. |
-| Git audit | Worktree contained pre-existing massive staged deletion of ACE source. | Native commits intentionally exclude it; recovery must be deliberate. |
-
-## Commits in this handoff
-
-- `1b70091 feat: establish native MiniMax Music3 Studio foundation`
-- `42d4be4 feat: add native library audio import`
+* **Video renderer.** ACE rendered server-side. A native replacement is
+  plausible with the `@ffmpeg/ffmpeg` dependency already in the app, or with an
+  ffmpeg sidecar; it needs a render pipeline and a job contract.
+* **Stem separation.** Needs a native separator sidecar (BSRoformer.cpp is the
+  model Dub Studio uses) plus a job contract.
+* **Music3 adapter training.** Upstream `minimaxmusic.cpp` has a `training/`
+  tree and a hiddens route; exposing it needs a dataset workflow and a training
+  job contract.
+* **LRC / timed lyrics.** Needs word timings; OpenRouter transcription returns
+  text, so this needs either a timestamp-capable model or a local aligner.
+* **OpenRouter paid requests are unverified.** The catalog is verified live, and
+  every request shape matches OpenRouter's documented contract (`/api/v1/images`
+  with `{model, prompt}`; chat completions with `modalities: ["text","audio"]`,
+  `audio.format`, `stream: true`, audio arriving as `delta.audio.data`). No
+  music, transcription, image or assistant request has been executed, because
+  each one is billed and no key was authorised for this work. To verify: add a
+  key in Settings → Providers, pick a model per capability, run one request each.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
-| `app/` | Main ACE-derived React UI served in development by Vite. |
-| `crates/music-server/` | Native HTTP API, job queue, model manager, library, replay, OpenRouter capability layer. |
-| `crates/music-engine/` | Engine contracts and mm-server client integration. |
-| `desktop/src-tauri/` | Tauri host: starts the Rust service and bundled mm-server; updater dialog. |
-| `scripts/build-minimax-runtime.ps1` | Builds the pinned C++ runtime. |
-| `scripts/build-release.ps1` | Builds/stages signed installer, updater manifest and portable distribution. |
-| `engines/minimaxmusic-cpp-source.json` | Pinned upstream runtime source. |
+| `app/` | React studio UI (Vite, local Tailwind build). |
+| `crates/music-server/` | The service: HTTP API, jobs, model manager, library, replay, resources, credentials, OpenRouter capability layer. A library crate — the desktop binary hosts it. |
+| `crates/music-engine/` | `mm-server` supervisor and engine contracts. |
+| `crates/music-core/` | Capability and provider types. |
+| `desktop/src-tauri/` | The desktop application: window, in-process service, updater. |
+| `engines/minimaxmusic-cpp-source.json` | Pinned upstream engine (`9fdedf021049155b9ac194f88c1d014f4a572114`). |
+| `scripts/build-minimax-runtime.ps1` | Builds the pinned C++ runtime (CUDA or Vulkan). |
+| `scripts/build-release.ps1` | Signed installer, portable archive and updater manifest. |
 
-## Actual local runtime state
+## Native API
 
-The live native server was verified on this machine:
-
-- Studio health: `GET http://127.0.0.1:8765/health` returns native runtime and
-  reachable `minimaxmusic-cpp`.
-- C++ engine: `GET http://127.0.0.1:8086/health` is healthy; `/props` reports
-  pinned upstream commit `9fdedf021049155b9ac194f88c1d014f4a572114`.
-- Installed component set is **Light**, not full fidelity:
-  `LM Q5_K_M`, `depth Q8_0`, `condition F32`, `DiT Q4_K_M`, `vocoder F32`.
-- Model root is `%LOCALAPPDATA%\MiniMax Music3 Studio\models\minimaxmusic-cpp`.
-
-There is no mock or ACE fallback in the native Music3 synthesis route. If the
-C++ engine is unreachable, the job is failed/not configured rather than silently
-replaced with generated placeholder audio.
-
-## Verified end-to-end facts
-
-1. Direct `POST /v1/music/jobs` created a real local job with structured
-   caption/sectioned lyrics and native Quality values.
-2. The job completed and stored a 60.070023-second, stereo, 44.1 kHz, s24le
-   WAV file. The media endpoint returned byte-identical audio.
-3. Provenance showed `source=local_generation`,
-   `engine=minimaxmusic-cpp`, profile selection, and replay `audio_codes`.
-4. `cargo test -p music-server` passed with 34 tests.
-5. `npm --prefix app run build` passed.
-6. The Tauri desktop executable and `music-server.exe` build successfully.
-
-Perceptual audio quality was **not** claimed by automation; it must be listened
-to after switching from the currently installed Light set to Q8 or Full Native.
-
-## Supported native API surface
-
-| Capability | Route / status |
+| Capability | Route |
 | --- | --- |
-| Health/capabilities | `/health`, `/v1/capabilities` — implemented. |
-| First-run/model manager | `/setup/*` — profiles, custom five-part sets, verified downloads, no automatic model download. |
-| Text/caption + lyrics generation | `/v1/music/jobs` — implemented. |
-| Job state/cancel | `/v1/music/jobs/*` — implemented. |
-| Deterministic replay | `/v1/music/replay` — implemented using saved `audio_codes`. |
-| Library/media/playlists | `/v1/library/*` — native storage, media serving, CRUD. |
-| Import | `POST /v1/library/import` — MP3/WAV multipart import, atomic DB/media rollback, provenance `audio_import`. |
-| OpenRouter | Dynamic native capability layer exists; it is **not verified live** without a configured key/catalog. |
+| Health, capabilities, configuration | `/health`, `/v1/capabilities`, `/v1/configuration` |
+| Machine resources | `/v1/system/resources` |
+| Engine control and logs | `/engine/start`, `/engine/presets`, `/engine/preset`, `/v1/engine/logs` |
+| First run and model manager | `/setup/status`, `/setup/catalog`, `/setup/download`, `/setup/cancel` |
+| Generation, status, cancel, replay | `/v1/music/jobs`, `/v1/music/jobs/{id}`, `/v1/music/replay` |
+| Library, media, covers, playlists, import | `/v1/library/*` |
+| OpenRouter | `/v1/openrouter/settings`, `/catalog`, `/catalog/refresh`, `/completions`, `/transcriptions`, `/covers` |
 
-## Music3 quality policy and parameters
+## Model policy
 
-The upstream `minimaxmusic.cpp` contract establishes these default Quality
-generation values:
+Five components are always required — language model, RVQ depth decoder,
+condition encoder, DiT, vocoder. A single quant is not an installation.
 
-```text
-duration=60 seconds, steps=30, lm_cfg=1.5, lm_top_k=50, dit_cfg=1.7
-lm_batch_size=1, synth_batch_size=1, peak_clip=1, mp3_bitrate=128
-```
-
-Supported validated controls additionally include seed, LM seed, output
-`mp3|wav16|wav24|wav32`, synth variations `1..9`, and deterministic replay.
-Persist the full submitted `mm_request` with each generation; never retain only
-the replay result.
-
-Hardware policy is selection-only: it must never auto-download weights.
-
-| VRAM | Selected profile | Notes |
+| VRAM | Recommended profile | Download |
 | --- | --- | --- |
-| >=20 GB | Full Native | BF16/BF16/F32, the full-fidelity target. |
-| >=10 GB | Q8 Quality | Quality quantized profile. |
-| 9 GB tier | Light | Explicit low-VRAM/speed option; never advertise as full quality. |
+| ≥ 20 GB | Full Native (BF16 / BF16 / F32) | 28.6 GB |
+| ≥ 10 GB | Q8 Quality | 12.8 GB |
+| 9 GB tier | Light (speed / low VRAM) | 8.8 GB |
 
-Current 24 GB RTX 4090 hardware therefore selects Full Native on a clean start,
-but the user must deliberately download it in Model Manager. The old default
-Light profile is installed locally and remains a speed fallback only.
+Nothing is ever downloaded automatically. The recommendation is a selection
+only; the user starts the download.
 
-## UI status
+## Packaging
 
-The CreatePanel was rewritten to submit to the native `/v1` Music3 API and to
-remove visible ACE controls with no corresponding Music3 contract: ACE model
-switches, LoRA controls, repaint/flow/DCW, old reference uploads, fake batch
-controls and Pollinations path.
+`npm --prefix desktop run build` produces the single executable. The release
+script builds the pinned C++ runtime, bundles it as `resources/minimaxmusic-cpp`
+next to the application, and emits NSIS, MSI, a portable archive with a
+`portable.flag`, and a `latest.json` built from the real signed artifact.
+Model weights are never in the installer.
 
-Simple/manual/advanced workflows must expose only the verified Music3 contract:
-caption, lyrics, templates, duration, steps, Quality/Quick, seed, LM CFG/top-k,
-DiT CFG, output, and GPU/model profile status.
-
-The rewritten source is valid UTF-8; earlier alleged mojibake was PowerShell
-output corruption. Final visual click-through of the latest panel was not
-completed because the in-app browser runtime became unavailable. Re-run visual
-E2E before calling the UX finished.
-
-The UI was also adjusted to stop falling back to absent ACE Node service `:3001`
-for native-library operations. Local library, deletion, playlists, likes and
-replay must remain on `/v1`. Dead ACE resource-monitor, backend-off indicator
-and Pollinations row were removed/replaced with native status.
-
-## Explicit parity gaps — do not misrepresent as complete
-
-The following ACE features require real compatible native backends before they
-can be reintroduced as active product features:
-
-- Music3 LoRA training/loading and dataset workflow;
-- audio-to-audio cover, repaint, Flow Edit, DCW and ACE-only conditioning;
-- LRC alignment extraction;
-- video studio/render pipeline;
-- Demucs/separation and the audio editor;
-- social profiles, comments, follows and public discovery;
-- OpenRouter cloud music, ASR, image cover and hybrid flows until a dynamic
-  catalog has been fetched and each capability has one successful real request.
-
-Do not leave buttons that call legacy `/api/*` routes as if they work. Either
-route a feature to a tested native implementation or mark it unavailable until
-the service exists.
-
-## Desktop installer and updater
-
-`desktop/src-tauri/tauri.conf.json` now has corrected app build paths.
-Tauri build produces `minimax-music3-studio-desktop.exe`; the release script
-stages the desktop executable, `music-server.exe`, and the minimaxmusic.cpp
-sidecar into portable/installer inputs. Models are deliberately excluded.
-
-The updater follows the Dub Studio pattern: Rust-side check/dialog and signed
-GitHub `latest.json` generated from the signed NSIS artifact. A real signed
-NSIS/MSI/portable release was not emitted because this environment lacks:
-
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-- updater public-key configuration
-
-The release script guards these early and must not expose or generate secrets.
-With signing available, acceptance still requires clean-machine testing:
+**External blocker:** no signing material is available in this environment, so
+no signed installer or updater manifest was produced. The script fails fast and
+says which variable is missing (verified: it stops on
+`TAURI_SIGNING_PRIVATE_KEY`). With `TAURI_SIGNING_PRIVATE_KEY`,
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and `TAURI_UPDATER_PUBKEY` set, the
+remaining acceptance path is a clean machine:
 
 ```text
-install -> first launch without weights -> choose/download full profile
--> engine starts -> generate/play/restart -> updater check -> portable check
+install → first launch with no weights → choose and download a profile
+→ engine starts → generate → play → restart → updater check → portable check
 ```
 
-## Commands for continuation
+## Commands
 
 ```powershell
-# frontend
+cargo test --workspace
 npm --prefix app run build
+npm --prefix desktop run build          # the single executable
+npm --prefix app run dev                # UI against a running service
 
-# server tests
-cargo test -p music-server
-
-# desktop verification
-cargo check --manifest-path desktop/src-tauri/Cargo.toml
-npm --prefix desktop run build
-
-# native development endpoints
 Invoke-WebRequest http://127.0.0.1:8765/health
 Invoke-WebRequest http://127.0.0.1:8765/setup/status
-Invoke-WebRequest http://127.0.0.1:8086/props
+Invoke-WebRequest http://127.0.0.1:8765/v1/system/resources
 ```
 
-## Git safety — critical
+Useful overrides: `MINIMAX_MM_SERVER_BIN`, `MINIMAX_MUSIC_MODELS_ROOT`,
+`MINIMAX_STUDIO_DATA_ROOT`, `MINIMAX_STUDIO_PORT`, `OPENROUTER_API_KEY`.
 
-The index contains a pre-existing massive staged deletion of the original ACE
-tree (about 1,280 paths / 368k lines). It was intentionally excluded from
-`1b70091` and `42d4be4`. Do **not** use `git reset --hard`, blindly commit those
-deletions, or overwrite the tree. First inspect whether the source exists in
-another worktree/history and restore the index deliberately while preserving the
-native Studio commits.
+## Suggested next steps
 
-## Recommended continuation order
-
-1. Recover/secure the ACE source/index state before any broad cleanup.
-2. Visual browser E2E of CreatePanel, native library/player/playlist/import.
-3. Download Q8 or Full Native deliberately and compare actual audio against the
-   Light baseline; validate full provenance/replay.
-4. Implement a single native OpenRouter catalog/settings layer and test each
-   enabled cloud capability with a real request.
-5. Add compatible native services for the parity gaps one by one, keeping
-   unsupported ACE screens absent rather than fake.
-6. Build signed NSIS/MSI/portable and perform the clean-machine release path.
+1. Download Full Native and compare it against Q8 by ear; keep whichever the
+   quality bar requires as the shipped recommendation.
+2. Add a key and execute one real request per cloud capability.
+3. Produce a signed release and run the clean-machine path above.
+4. Close the gaps in the order they matter to you — video, stems, training, LRC.

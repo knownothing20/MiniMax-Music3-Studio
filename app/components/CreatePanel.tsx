@@ -347,7 +347,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 ))}
               </div>
               <p className="text-[11px] leading-4 text-zinc-500 dark:text-zinc-400">
-                Music3 sings explicit lyrics. A template fills an editable caption and lyric sheet without contacting any service.
+                {t('templateHint')}
               </p>
             </div>
           ) : null}

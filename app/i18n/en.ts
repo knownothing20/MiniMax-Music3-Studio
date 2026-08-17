@@ -1038,4 +1038,5 @@ export const en = {
     captionStyle: 'Caption / style',
     trackIdea: 'Track idea',
     studioTools: 'Studio tools',
+    templateHint: 'Music3 sings explicit lyrics. A template fills an editable caption and lyric sheet without contacting any service.',
 };

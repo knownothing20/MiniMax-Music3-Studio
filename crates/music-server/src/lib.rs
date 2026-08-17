@@ -993,11 +993,15 @@ async fn replay_music_job(
     if selected_local_music_engine(&*state.configuration.read().await).as_deref() != Some(PRIMARY_MUSIC_ENGINE_ID) {
         return Err(api_error(StatusCode::CONFLICT, "Replay synthesis requires the local minimaxmusic-cpp engine.".into()));
     }
+    let mut source_title = None;
     let replay = match (&request.song_id, &request.replay_request) {
         (Some(_), Some(_)) => return Err(api_error(StatusCode::BAD_REQUEST, "Provide either song_id or replay_request, not both.".into())),
-        (Some(song_id), None) => state.library.get_song(song_id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found.".into()))?
-            .replay_request.ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "This song has no MiniMax Music3 replay request.".into()))?,
+        (Some(song_id), None) => {
+            let song = state.library.get_song(song_id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+                .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found.".into()))?;
+            source_title = Some(song.title.clone());
+            song.replay_request.ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "This song has no MiniMax Music3 replay request.".into()))?
+        }
         (None, Some(replay)) => replay.clone(),
         (None, None) => return Err(api_error(StatusCode::BAD_REQUEST, "Provide song_id or replay_request.".into())),
     };
@@ -1006,7 +1010,7 @@ async fn replay_music_job(
     let lyrics = synth_request.get("lyrics").and_then(Value::as_str).unwrap_or_default().to_owned();
     let remote = state.music_server.submit(synth_request.clone()).await.map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("mm-server replay synthesis is unavailable: {error}")))?;
     let job = MusicJob {
-        id: remote.id, engine_id: PRIMARY_MUSIC_ENGINE_ID.into(), title: None, status: MusicJobStatus::Queued,
+        id: remote.id, engine_id: PRIMARY_MUSIC_ENGINE_ID.into(), title: source_title, status: MusicJobStatus::Queued,
         dispatch: MusicJobDispatch::Local, phase: MusicJobPhase::Queued, caption, lyrics,
         duration_seconds: synth_request.get("duration").and_then(Value::as_f64).unwrap_or_default(), generation_settings: synth_request,
         song: None, songs: vec![], message: "Submitted replay synthesis to mm-server. audio_codes are present, so the autoregressive LM stage is skipped.".into(),
@@ -1167,8 +1171,13 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
         // The replay request is sparse: upstream omits any field that still
         // holds its default, so a 60-second track has no "duration" key at all.
         // Take the length from the job that was actually submitted.
+        let extension = mm_result::audio_extension(&track.audio_content_type)?;
         let metadata = serde_json::json!({
-            "duration_seconds": replay.get("duration").and_then(Value::as_f64).unwrap_or(job.duration_seconds),
+            "duration_seconds": library::audio_duration_seconds(
+                &track.audio,
+                extension,
+                replay.get("mp3_bitrate").and_then(Value::as_u64).map(|value| value as u32),
+            ),
             "seed": replay.get("seed"),
             "lm_seed": replay.get("lm_seed"),
             "output_format": replay.get("output_format"),
@@ -1177,7 +1186,7 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
             title: job.title.clone(), metadata, caption, lyrics, generation_settings, replay_request: Some(replay), audio_codes: Some(audio_codes),
             engine_id: job.engine_id.clone(), profile_id: profile_id.clone(),
             source: "local_generation".into(),
-            audio_extension: mm_result::audio_extension(&track.audio_content_type)?, audio: track.audio,
+            audio_extension: extension, audio: track.audio,
         })?;
         let audio_url = format!("/v1/library/media/{}", imported_song.song.id);
         imported.push(CompletedSong { id: imported_song.song.id.clone(), song: imported_song.song, audio_url });

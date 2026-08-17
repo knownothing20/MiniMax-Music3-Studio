@@ -1033,4 +1033,5 @@ export const ko = {
     captionStyle: '설명 / 스타일',
     trackIdea: '트랙 아이디어',
     studioTools: '스튜디오 도구',
+    templateHint: 'Music3 는 명시적인 가사를 노래합니다. 템플릿은 편집 가능한 설명과 가사를 채우며 네트워크를 사용하지 않습니다.',
 };

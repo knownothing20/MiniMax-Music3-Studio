@@ -1033,4 +1033,5 @@ export const ja = {
     captionStyle: '説明 / スタイル',
     trackIdea: '曲のアイデア',
     studioTools: 'スタジオツール',
+    templateHint: 'Music3 は明示的な歌詞を歌います。テンプレートは編集可能な説明と歌詞を入力し、通信は行いません。',
 };
