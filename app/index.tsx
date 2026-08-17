@@ -1,8 +1,12 @@
 import './src-styles.css';
 import { installApiBase } from './services/apiBase';
+import { installExternalLinkHandler } from './services/externalLinks';
 
 // Must run before any component issues a request.
 installApiBase();
+// In the desktop window an external link must go to the system browser,
+// not replace the application.
+installExternalLinkHandler();
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';

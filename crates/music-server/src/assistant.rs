@@ -193,7 +193,17 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
 /// An OpenAI-compatible chat request. Both providers speak this shape, so the
 /// only difference between them is the endpoint and the credential.
 pub fn chat_body(model: &str, system: &str, user: &str) -> Value {
-    serde_json::json!({
+    chat_body_with_reasoning(model, system, user, None)
+}
+
+/// The same body, asking the model to think harder.
+///
+/// `effort` is OpenRouter's unified reasoning control - "minimal" through
+/// "max" - which they translate per provider. A local OpenAI-compatible server
+/// has no such parameter, so nothing is sent there and the model decides for
+/// itself; its thinking is read back out of `reasoning_content` either way.
+pub fn chat_body_with_reasoning(model: &str, system: &str, user: &str, effort: Option<&str>) -> Value {
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system },
@@ -201,7 +211,13 @@ pub fn chat_body(model: &str, system: &str, user: &str) -> Value {
         ],
         "temperature": 0.8,
         "stream": false,
-    })
+    });
+    if let Some(effort) = effort.filter(|value| !value.trim().is_empty() && *value != "off") {
+        // The draft is what is wanted, not the thinking: exclude keeps the
+        // response small and the parser looking in one place.
+        body["reasoning"] = serde_json::json!({ "effort": effort, "exclude": true });
+    }
+    body
 }
 
 /// Reads the answer out of a chat completion.
@@ -215,7 +231,9 @@ pub fn content_of(response: &Value) -> Result<String> {
     let message = response
         .pointer("/choices/0/message")
         .context("the assistant response contained no message")?;
-    for field in ["content", "reasoning_content"] {
+    // OpenRouter calls it `reasoning`, llama.cpp `reasoning_content`; both
+    // appear when a model answers with its thinking and an empty content.
+    for field in ["content", "reasoning_content", "reasoning"] {
         if let Some(text) = message.get(field).and_then(Value::as_str) {
             if !text.trim().is_empty() {
                 return Ok(text.to_owned());

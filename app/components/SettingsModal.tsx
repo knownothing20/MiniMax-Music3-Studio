@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Cloud, Cpu, Github, Info, Mic2, Monitor, PenLine, User as UserIcon, X } from 'lucide-react';
+import { Boxes, Cloud, Cpu, Github, Info, Mic2, Monitor, PenLine, User as UserIcon, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
@@ -7,6 +7,7 @@ import { ProviderSettings } from './ProviderSettings';
 import { EngineSettings } from './EngineSettings';
 import { AssistantSettings } from './AssistantSettings';
 import { KaraokeSettings } from './KaraokeSettings';
+import { SetupGate } from './SetupGate';
 
 /**
  * Settings.
@@ -18,7 +19,7 @@ import { KaraokeSettings } from './KaraokeSettings';
  * runs in the cloud, the two optional extras, and the interface.
  */
 
-type SectionId = 'account' | 'engine' | 'cloud' | 'assistant' | 'karaoke' | 'interface' | 'about';
+type SectionId = 'account' | 'models' | 'engine' | 'cloud' | 'assistant' | 'karaoke' | 'interface' | 'about';
 
 const INPUT =
   'w-full rounded-lg border-2 border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-white';
@@ -50,6 +51,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
 
   const sections: Array<{ id: SectionId; label: string; hint: string; icon: React.ReactNode }> = [
     { id: 'account', label: t('account'), hint: t('accountSectionHint'), icon: <UserIcon size={16} /> },
+    { id: 'models', label: t('modelsSection'), hint: t('modelsSectionHint'), icon: <Boxes size={16} /> },
     { id: 'engine', label: t('localEngine'), hint: t('engineSectionHint'), icon: <Cpu size={16} /> },
     { id: 'cloud', label: t('providers'), hint: t('cloudSectionHint'), icon: <Cloud size={16} /> },
     { id: 'assistant', label: t('assistantSection'), hint: t('assistantOptionalPurpose'), icon: <PenLine size={16} /> },
@@ -124,6 +126,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
               </div>
             )}
 
+            {/* The same chooser as the first run, because it is the same
+                decision - only now nothing is waiting on it. */}
+            {section === 'models' && <div className="-m-6"><SetupGate /></div>}
             {section === 'engine' && <EngineSettings />}
             {section === 'cloud' && <ProviderSettings />}
             {section === 'assistant' && <AssistantSettings />}
@@ -182,21 +187,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
             )}
 
             {section === 'about' && (
-              <div className="max-w-lg space-y-3 text-sm text-zinc-600 dark:text-zinc-400">
-                <p>{t('version')} 2.0.0</p>
-                <p>MiniMax Music3 Studio — {t('localAIMusicGenerator')}</p>
-                <p className="text-xs text-zinc-400 dark:text-zinc-500">{t('poweredBy')}</p>
+              <div className="max-w-lg space-y-6 text-sm text-zinc-600 dark:text-zinc-400">
+                <div className="space-y-1">
+                  <p className="text-zinc-900 dark:text-white">MiniMax Music3 Studio · {t('version')} 2.0.0</p>
+                  <p>{t('localAIMusicGenerator')}</p>
+                  <p className="text-xs text-zinc-400 dark:text-zinc-500">{t('poweredBy')}</p>
+                </div>
+
+                {/* Whose studio this is, and where to find the rest of it. */}
                 <div className="space-y-3 border-t border-zinc-200 pt-4 dark:border-zinc-700/50">
-                  <p className="font-medium text-zinc-900 dark:text-white">{t('createdBy')}</p>
+                  <p className="font-medium text-zinc-900 dark:text-white">Nerual Dreming</p>
+                  <p className="text-xs leading-5">{t('authorLine')}</p>
                   <div className="flex flex-wrap gap-2">
-                    <a href="https://x.com/AmbsdOP" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-black">
-                      {t('follow')} @AmbsdOP
+                    <a href="https://t.me/nerual_dreming" target="_blank" rel="noopener noreferrer" className="rounded-lg bg-[#2AABEE] px-3 py-1.5 text-xs font-medium text-white">Telegram · @nerual_dreming</a>
+                    <a href="https://t.me/neuroport" target="_blank" rel="noopener noreferrer" className="rounded-lg bg-[#2AABEE]/80 px-3 py-1.5 text-xs font-medium text-white">Telegram · @neuroport</a>
+                    <a href="https://github.com/timoncool" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-medium text-white dark:bg-zinc-700">
+                      <Github size={14} />timoncool
                     </a>
-                    <a href="https://github.com/timoncool/MiniMax-Music3-Studio" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-white dark:bg-zinc-700">
-                      <Github size={16} />MiniMax Music3 Studio
-                    </a>
+                    <a href="https://neuro-cartel.com" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:border-zinc-600 dark:text-zinc-200">neuro-cartel.com</a>
+                    <a href="https://artgeneration.me" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:border-zinc-600 dark:text-zinc-200">ArtGeneration.me</a>
                   </div>
-                  <p className="text-xs text-zinc-400 dark:text-zinc-500">{t('reportIssues')}</p>
+                </div>
+
+                {/* Support, in the author's own words: the software is free. */}
+                <div className="space-y-3 border-t border-zinc-200 pt-4 dark:border-zinc-700/50">
+                  <p className="font-medium text-zinc-900 dark:text-white">{t('supportTheAuthor')}</p>
+                  <p className="text-xs leading-5">{t('supportLine')}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <a href="https://boosty.to/neuro_art" target="_blank" rel="noopener noreferrer" className="rounded-lg bg-[#F15F2C] px-3 py-1.5 text-xs font-semibold text-white">Boosty</a>
+                    <a href="https://dalink.to/nerual_dreming" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:border-zinc-600 dark:text-zinc-200">{t('allLinks')}</a>
+                  </div>
+                  <div className="space-y-1 rounded-lg bg-zinc-100 p-3 font-mono text-[11px] text-zinc-600 dark:bg-black/30 dark:text-zinc-400">
+                    <div><span className="text-zinc-400">BTC</span> 1E7dHL22RpyhJGVpcvKdbyZgksSYkYeEBC</div>
+                    <div><span className="text-zinc-400">ETH</span> 0xb5db65adf478983186d4897ba92fe2c25c594a0c</div>
+                    <div><span className="text-zinc-400">USDT · TRC20</span> TQST9Lp2TjK6FiVkn4fwfGUee7NmkxEE7C</div>
+                  </div>
+                </div>
+
+                <div className="space-y-2 border-t border-zinc-200 pt-4 dark:border-zinc-700/50">
+                  <p className="font-medium text-zinc-900 dark:text-white">{t('thisStudio')}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <a href="https://github.com/timoncool/MiniMax-Music3-Studio" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-medium text-white dark:bg-zinc-700">
+                      <Github size={14} />MiniMax Music3 Studio
+                    </a>
+                    <a href="https://github.com/timoncool/MiniMax-Music3-Studio/issues" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:border-zinc-600 dark:text-zinc-200">{t('reportIssues')}</a>
+                  </div>
                 </div>
               </div>
             )}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Download, Loader2, ScrollText, Square, X } from 'lucide-react';
+import { Check, ChevronDown, Download, Loader2, Square, X } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import {
   componentKindLabel,
@@ -68,70 +68,6 @@ const bytes = (value: number) => (value < 1024 ** 3 ? `${Math.round(value / 1024
 const errorMessage = async (response: Response) => {
   const body = await response.json().catch(() => null);
   return body?.error || `Request failed (${response.status})`;
-};
-
-/**
- * What the studio is doing while it is not yet ready.
- *
- * Files present but engine down looked like "download 26 GB" next to a static
- * line of text. It is a progress panel now: the steps, a bar that pulses while
- * something is happening, and the engine's own log underneath, because the
- * engine says more about its own startup than any spinner can.
- */
-const StartupProgress: React.FC<{ modelsReady: boolean; engineReady: boolean }> = ({ modelsReady, engineReady }) => {
-  const { t } = useI18n();
-  const [lines, setLines] = useState<string[]>([]);
-  const [open, setOpen] = useState(true);
-
-  useEffect(() => {
-    if (engineReady) return;
-    const read = () => void fetch('/v1/engine/logs')
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
-      .then((body: { lines?: string[] }) => setLines((body.lines ?? []).slice(-40)))
-      .catch(() => undefined);
-    read();
-    const timer = window.setInterval(read, 1000);
-    return () => window.clearInterval(timer);
-  }, [engineReady]);
-
-  const steps: Array<{ label: string; done: boolean; active: boolean }> = [
-    { label: t('stepModels'), done: modelsReady, active: !modelsReady },
-    { label: t('stepEngine'), done: engineReady, active: modelsReady && !engineReady },
-    { label: t('stepReady'), done: modelsReady && engineReady, active: false },
-  ];
-
-  return (
-    <div className="mt-5 rounded-xl border border-zinc-200 bg-white p-4 dark:border-white/10 dark:bg-suno-card">
-      <div className="space-y-2">
-        {steps.map((step) => (
-          <div key={step.label} className="flex items-center gap-2.5">
-            <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full ${step.done ? 'bg-pink-500 text-white' : step.active ? 'text-pink-500' : 'text-zinc-400'}`}>
-              {step.done ? <Check size={12} strokeWidth={3} /> : step.active ? <Loader2 size={14} className="animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
-            </span>
-            <span className={`text-sm ${step.active ? 'font-medium text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400'}`}>{step.label}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-black/30">
-        <div className={`h-full rounded-full bg-gradient-to-r from-orange-500 to-pink-500 ${engineReady ? 'w-full' : 'w-1/3 animate-pulse'}`} />
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="mt-3 inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-zinc-500 hover:text-pink-500"
-      >
-        <ScrollText size={13} />{t('engineLog')}
-        <ChevronDown size={13} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
-      </button>
-      {open && (
-        <div className="mt-2 max-h-48 overflow-y-auto rounded-lg bg-zinc-50 p-2 font-mono text-[11px] leading-4 text-zinc-600 dark:bg-black/30 dark:text-zinc-400">
-          {lines.length === 0 ? <span className="text-zinc-400">—</span> : lines.map((line, index) => <div key={index} className="break-words">{line}</div>)}
-        </div>
-      )}
-    </div>
-  );
 };
 
 /** One optional capability, with its own catalogue and its own endpoints. */
@@ -325,9 +261,7 @@ export const SetupGate: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
           {status?.hardware?.reason || t('recommendedFallback')}. {t('setupResumable')}
         </div>
 
-        {status && !(status.ready && status.engine_ready) && (
-          <StartupProgress modelsReady={status.ready} engineReady={status.engine_ready} />
-        )}
+
 
         {/* The engine itself: one row per role, one quantisation inside each. */}
         <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/10 dark:bg-suno-card">

@@ -281,6 +281,9 @@ struct AssistantConfig {
     /// A GGUF already on this machine, run by the same sidecar. Machines that
     /// already keep a Gemma around for another tool do not need a second copy.
     managed_path: Option<String>,
+    /// How hard a reasoning model should think, in OpenRouter's own terms:
+    /// minimal, low, medium, high, xhigh, max - or none.
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1171,6 +1174,7 @@ async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
         "available": available,
         "managed_model": config.managed_model,
         "managed_path": config.managed_path,
+        "reasoning_effort": config.reasoning_effort,
         "runtime_ready": runtime.ready,
         "provider": config.provider,
         "local_base_url": config.local_base_url,
@@ -1463,7 +1467,7 @@ async fn assistant_write(
             let authenticated = providers::openrouter::authenticated_request_for(providers::openrouter::OpenRouterRequest {
                 method: providers::openrouter::HttpMethod::Post,
                 path: providers::openrouter::CHAT_COMPLETIONS_PATH,
-                body: assistant::chat_body(&model, &system, &user),
+                body: assistant::chat_body_with_reasoning(&model, &system, &user, config.reasoning_effort.as_deref()),
             })
             .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
             execute_openrouter_json(authenticated.request)
@@ -2337,7 +2341,7 @@ mod tests {
     fn persisted_settings_round_trip_a_complete_custom_component_selection() {
         let settings = PersistedStudioSettings {
             engine_options: EngineOptions { keep_loaded: true, max_batch: Some(2), ..EngineOptions::default() },
-            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None, managed_model: None, managed_path: None },
+            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None, managed_model: None, managed_path: None, reasoning_effort: None },
             configuration: initial_configuration(),
             // Karaoke is off by default and has to survive a restart the same
             // way the assistant does.

@@ -64,6 +64,7 @@ import { SearchPage } from './components/SearchPage';
 import { NewsPage } from './components/NewsPage';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { SetupGate } from './components/SetupGate';
+import { EngineStarting } from './components/EngineStarting';
 import { StudioToolsPanel } from './components/StudioToolsPanel';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
 
@@ -107,6 +108,21 @@ function AppContent() {
   const leftPanel = useResizablePanel('create', 420, 320, 600);
   const rightPanel = useResizablePanel('details', 400, 320, 600, 'right');
   const [nativeSetupReady, setNativeSetupReady] = useState(false);
+  // Whether the five components are on disk. It decides which screen the user
+  // sees while the studio is not ready: a download page or a short wait.
+  const [nativeModelsReady, setNativeModelsReady] = useState(false);
+  useEffect(() => {
+    const read = () => void fetch('/setup/status')
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
+      .then((status: { ready?: boolean; engine_ready?: boolean }) => {
+        setNativeModelsReady(status.ready === true);
+        if (status.ready && status.engine_ready) setNativeSetupReady(true);
+      })
+      .catch(() => undefined);
+    read();
+    const timer = window.setInterval(read, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
   // Track multiple concurrent generation jobs
   const activeJobsRef = useRef<Map<string, { tempId: string; pollInterval: ReturnType<typeof setInterval> }>>(new Map());
   const nativeReplayPollersRef = useRef<Map<string, ReturnType<typeof window.setInterval>>>(new Map());
@@ -1203,8 +1219,14 @@ function AppContent() {
 
       case 'create':
       default:
+        // Two different situations, two different screens: nothing installed
+        // is a decision to make, and an engine coming up is a wait to sit
+        // through. They used to be the same page, which made a running studio
+        // look like it owed 26 GB.
         if (!nativeSetupReady) {
-          return <SetupGate onReady={() => setNativeSetupReady(true)} />;
+          return nativeModelsReady
+            ? <EngineStarting onReady={() => setNativeSetupReady(true)} />
+            : <SetupGate onReady={() => setNativeSetupReady(true)} />;
         }
         return (
           <div className="relative flex h-full min-h-0 min-w-0 w-full overflow-hidden">
