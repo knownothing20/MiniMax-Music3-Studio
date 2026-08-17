@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import {
@@ -9,6 +9,8 @@ import {
     ListPlus,
     Download,
     Trash2,
+    Loader2,
+    Mic2,
 } from 'lucide-react';
 
 interface SongDropdownMenuProps {
@@ -24,6 +26,8 @@ interface SongDropdownMenuProps {
     onExportVideo?: () => void;
     onAddToPlaylist?: () => void;
     onDownload?: () => void;
+    /// Called with the track carrying its new karaoke timings.
+    onSongUpdate?: (song: Song) => void;
     onDelete?: () => void;
 }
 
@@ -55,6 +59,38 @@ const MenuDivider: React.FC = () => (
     <div className="h-px bg-white/10 my-1 mx-2" />
 );
 
+/// Karaoke timings for one track, made on demand. The menu asks the service
+/// whether karaoke is configured at all; with it off nothing is shown.
+function useKaraoke(song: Song, onSongUpdate?: (song: Song) => void) {
+    const [ready, setReady] = useState(false);
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        void fetch('/v1/karaoke/status')
+            .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
+            .then((status: { ready?: boolean }) => setReady(status.ready === true))
+            .catch(() => setReady(false));
+    }, []);
+
+    const make = async () => {
+        setBusy(true);
+        try {
+            const response = await fetch(`/v1/library/songs/${encodeURIComponent(song.id)}/karaoke`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            const body = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(body?.error || String(response.status));
+            onSongUpdate?.({ ...song, lrcContent: body.lrc as string });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return { ready, busy, make };
+}
+
 export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     song,
     isOpen,
@@ -69,9 +105,11 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     onAddToPlaylist,
     onDownload,
     onDelete,
+    onSongUpdate,
 }) => {
     const { t } = useI18n();
     const menuRef = useRef<HTMLDivElement>(null);
+    const { ready: karaokeReady, busy: karaokeBusy, make: makeKaraoke } = useKaraoke(song, onSongUpdate);
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -186,6 +224,17 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
                     icon={<Repeat size={14} />}
                     label={t('replayTitle')}
                     onClick={() => handleAction(onReplayMusic)}
+                />
+            )}
+
+            {/* Karaoke: only offered once it is switched on in Settings, and
+                only for a track that has both audio and written lyrics. */}
+            {karaokeReady && song.audioUrl && song.lyrics?.trim() && (
+                <MenuItem
+                    icon={karaokeBusy ? <Loader2 size={14} className="animate-spin" /> : <Mic2 size={14} />}
+                    label={karaokeBusy ? t('karaokeMaking') : song.lrcContent ? t('karaokeReady') : t('karaokeMake')}
+                    onClick={() => void makeKaraoke()}
+                    disabled={karaokeBusy}
                 />
             )}
 
