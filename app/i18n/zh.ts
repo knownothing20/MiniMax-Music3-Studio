@@ -1241,4 +1241,6 @@ export const zh = {
     assetNoteLlamaCuda: '需要下方的 CUDA 运行时。',
     assetNoteCudart: 'llama.cpp 链接的 CUDA 库。',
     assetNoteLlamaCpu: '适用于没有 NVIDIA 显卡的机器。慢，但能用。',
+    assistantOwnFile: '或使用本机已有的 GGUF',
+    assistantOwnFileHint: '已有文本 GGUF 的完整路径。直接使用，不下载、不复制。',
 };

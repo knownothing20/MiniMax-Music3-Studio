@@ -179,6 +179,15 @@ struct RunningServer {
     base_url: String,
 }
 
+impl RunningServer {
+    /// A sidecar that has exited is not a running server. Without this the
+    /// status kept claiming a model was loaded after llama-server had died,
+    /// and the next request failed with a bare connection error.
+    fn is_alive(&mut self) -> bool {
+        !matches!(self.child.try_wait(), Ok(Some(_)) | Err(_))
+    }
+}
+
 impl Drop for RunningServer {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -197,6 +206,21 @@ impl AssistantRuntime {
 
     fn path_of(&self, asset: &Asset) -> PathBuf {
         self.root.join(asset.relative_path)
+    }
+
+    pub fn log_path(&self) -> PathBuf {
+        self.root.join("llama-server.log")
+    }
+
+    /// The tail of the sidecar log, for error messages that would otherwise
+    /// say only "connection refused".
+    pub fn log_tail(&self) -> String {
+        let Ok(text) = fs::read_to_string(self.log_path()) else {
+            return String::new();
+        };
+        let lines: Vec<&str> = text.lines().rev().take(12).collect();
+        lines.into_iter().rev().collect::<Vec<_>>().join("
+")
     }
 
     /// The extracted llama-server, wherever the zip happened to put it.
@@ -243,7 +267,10 @@ impl AssistantRuntime {
     }
 
     pub async fn status(&self) -> RuntimeStatus {
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
+        if state.server.as_mut().is_some_and(|server| !server.is_alive()) {
+            state.server = None;
+        }
         let models = self.installed_models();
         let server_path = self.server_binary();
         RuntimeStatus {
@@ -317,6 +344,29 @@ impl AssistantRuntime {
         Ok(())
     }
 
+    /// Starts the sidecar on a GGUF that is already on this machine. Models
+    /// downloaded by other tools are perfectly good here, so there is no reason
+    /// to fetch a second copy of one.
+    pub async fn start_path(&self, model_path: &Path, context_size: u32) -> Result<String> {
+        if !model_path.is_file() {
+            bail!("{} is not a file", model_path.display());
+        }
+        let mut magic = [0u8; 4];
+        {
+            use std::io::Read;
+            let mut file = fs::File::open(model_path).with_context(|| format!("open {}", model_path.display()))?;
+            file.read_exact(&mut magic).with_context(|| format!("read {}", model_path.display()))?;
+        }
+        if &magic != b"GGUF" {
+            bail!("{} is not a GGUF file", model_path.display());
+        }
+        let label = model_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| model_path.display().to_string());
+        self.spawn(model_path.to_path_buf(), label, context_size).await
+    }
+
     /// Starts the sidecar for one installed model and returns its base URL.
     pub async fn start(&self, model_id: &str, context_size: u32) -> Result<String> {
         let asset = asset(model_id).ok_or_else(|| anyhow!("unknown assistant model: {model_id}"))?;
@@ -326,13 +376,17 @@ impl AssistantRuntime {
         if !self.is_installed(asset) {
             bail!("{} is not downloaded yet", asset.label);
         }
+        self.spawn(self.path_of(asset), model_id.to_string(), context_size).await
+    }
+
+    async fn spawn(&self, model_path: PathBuf, model_id: String, context_size: u32) -> Result<String> {
         let binary = self
             .server_binary()
             .ok_or_else(|| anyhow!("the llama.cpp runtime is not installed yet"))?;
 
         let mut state = self.state.lock().await;
-        if let Some(server) = state.server.as_ref() {
-            if server.model_id == model_id {
+        if let Some(server) = state.server.as_mut() {
+            if server.model_id == model_id && server.is_alive() {
                 return Ok(server.base_url.clone());
             }
         }
@@ -342,7 +396,7 @@ impl AssistantRuntime {
         let mut command = Command::new(&binary);
         command
             .arg("--model")
-            .arg(self.path_of(asset))
+            .arg(&model_path)
             .arg("--host")
             .arg("127.0.0.1")
             .arg("--port")
@@ -356,15 +410,20 @@ impl AssistantRuntime {
             // nothing" downstream.
             .arg("--jinja")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::null());
+        // llama-server explains its own failures - a model it cannot load, a
+        // card it cannot fit on - and those explanations only exist on stderr.
+        match fs::File::create(self.log_path()) {
+            Ok(log) => { command.stderr(Stdio::from(log)); }
+            Err(_) => { command.stderr(Stdio::null()); }
+        }
         hide_console(&mut command);
 
         let child = command
             .spawn()
             .with_context(|| format!("start llama-server {}", binary.display()))?;
         let base_url = format!("http://127.0.0.1:{port}/v1");
-        let server = RunningServer { child, model_id: model_id.to_string(), base_url: base_url.clone() };
+        let server = RunningServer { child, model_id: model_id.clone(), base_url: base_url.clone() };
         state.server = Some(server);
         drop(state);
 
@@ -399,7 +458,11 @@ impl AssistantRuntime {
 
     /// The base URL of the running sidecar, if any.
     pub async fn base_url(&self) -> Option<String> {
-        self.state.lock().await.server.as_ref().map(|server| server.base_url.clone())
+        let mut state = self.state.lock().await;
+        if state.server.as_mut().is_some_and(|server| !server.is_alive()) {
+            state.server = None;
+        }
+        state.server.as_ref().map(|server| server.base_url.clone())
     }
 }
 

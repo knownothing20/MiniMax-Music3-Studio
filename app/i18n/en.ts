@@ -1246,4 +1246,6 @@ export const en = {
     assetNoteLlamaCuda: 'Needs the CUDA runtime companion below.',
     assetNoteCudart: 'The CUDA libraries llama.cpp links against.',
     assetNoteLlamaCpu: 'For machines without an NVIDIA card. Slow, but it works.',
+    assistantOwnFile: 'Or a GGUF already on this machine',
+    assistantOwnFileHint: 'Full path to a text GGUF you already have. It is used as is - nothing is downloaded, nothing is copied.',
 };

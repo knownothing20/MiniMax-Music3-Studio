@@ -48,6 +48,7 @@ const gigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(bytes < 1e9 ? 2 : 
 
 interface AssistantStatus {
   available?: boolean;
+  managed_path?: string | null;
   provider?: Provider;
   local_base_url?: string | null;
   local_model?: string | null;
@@ -66,6 +67,7 @@ export const AssistantSettings: React.FC = () => {
   const [localModel, setLocalModel] = useState('');
   const [openRouterModel, setOpenRouterModel] = useState('');
   const [managedModel, setManagedModel] = useState('');
+  const [managedPath, setManagedPath] = useState('');
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [available, setAvailable] = useState(false);
   const [catalog, setCatalog] = useState<NativeOpenRouterModel[]>([]);
@@ -81,6 +83,7 @@ export const AssistantSettings: React.FC = () => {
         setLocalModel(status.local_model ?? '');
         setOpenRouterModel(status.openrouter_model ?? '');
         setManagedModel(status.managed_model ?? '');
+        setManagedPath(status.managed_path ?? '');
         setAvailable(status.available === true);
       })
       .catch(() => undefined);
@@ -148,6 +151,7 @@ export const AssistantSettings: React.FC = () => {
           local_model: localModel.trim() || null,
           openrouter_model: openRouterModel.trim() || null,
           managed_model: managedModel.trim() || null,
+          managed_path: managedPath.trim() || null,
         }),
       });
       const body = await response.json().catch(() => null);
@@ -249,6 +253,16 @@ export const AssistantSettings: React.FC = () => {
                 </div>
               );
             })}
+            <div className="rounded-lg border-2 border-dashed border-zinc-300 p-3 dark:border-zinc-700">
+              <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400">{t('assistantOwnFile')}</label>
+              <input
+                value={managedPath}
+                onChange={event => setManagedPath(event.target.value)}
+                placeholder="D:\models\gemma-4-12b-it-qat-q4_0.gguf"
+                className={`${INPUT} mt-1`}
+              />
+              <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('assistantOwnFileHint')}</p>
+            </div>
             {runtime?.active_download?.error && (
               <p className="text-xs text-red-600 dark:text-red-300">{runtime.active_download.error}</p>
             )}

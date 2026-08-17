@@ -1245,4 +1245,6 @@ export const ru = {
     assetNoteLlamaCuda: 'Нужен вместе с CUDA-рантаймом ниже.',
     assetNoteCudart: 'Библиотеки CUDA, с которыми линкуется llama.cpp.',
     assetNoteLlamaCpu: 'Для машин без видеокарты NVIDIA. Медленно, но работает.',
+    assistantOwnFile: 'Или GGUF, который уже есть на этом компьютере',
+    assistantOwnFileHint: 'Полный путь к текстовому GGUF, который у вас уже есть. Он берётся как есть — ничего не качается и не копируется.',
 };

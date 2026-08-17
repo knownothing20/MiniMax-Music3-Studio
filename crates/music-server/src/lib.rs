@@ -271,6 +271,9 @@ struct AssistantConfig {
     /// Id of a model downloaded through the assistant runtime, run as a
     /// sidecar by Studio itself.
     managed_model: Option<String>,
+    /// A GGUF already on this machine, run by the same sidecar. Machines that
+    /// already keep a Gemma around for another tool do not need a second copy.
+    managed_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +303,7 @@ impl AssistantConfig {
             // a model id alone only says one was chosen.
             AssistantProvider::Managed => {
                 self.managed_model.as_deref().is_some_and(|model| !model.trim().is_empty())
+                    || self.managed_path.as_deref().is_some_and(|path| !path.trim().is_empty())
             }
         }
     }
@@ -1056,15 +1060,24 @@ async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
     let runtime = state.assistant_runtime.status().await;
     // A managed model is only usable once its file and the runtime are on disk.
     let available = match config.provider {
-        AssistantProvider::Managed => config
-            .managed_model
-            .as_deref()
-            .is_some_and(|model| runtime.ready && runtime.installed_models.iter().any(|id| id == model)),
+        AssistantProvider::Managed => {
+            let has_runtime = runtime.server_path.is_some();
+            let downloaded = config
+                .managed_model
+                .as_deref()
+                .is_some_and(|model| runtime.installed_models.iter().any(|id| id == model));
+            let own_file = config
+                .managed_path
+                .as_deref()
+                .is_some_and(|path| !path.trim().is_empty() && std::path::Path::new(path.trim()).is_file());
+            has_runtime && (downloaded || own_file)
+        }
         _ => config.available(),
     };
     Json(serde_json::json!({
         "available": available,
         "managed_model": config.managed_model,
+        "managed_path": config.managed_path,
         "runtime_ready": runtime.ready,
         "provider": config.provider,
         "local_base_url": config.local_base_url,
@@ -1097,7 +1110,11 @@ struct AssistantAssetRequest {
 
 #[derive(Debug, Deserialize)]
 struct AssistantModelRequest {
+    #[serde(default)]
     model_id: String,
+    /// A GGUF already on this machine, used instead of a downloaded one.
+    #[serde(default)]
+    model_path: Option<String>,
 }
 
 async fn assistant_runtime_status(State(state): State<AppState>) -> Json<assistant_runtime::RuntimeStatus> {
@@ -1122,12 +1139,14 @@ async fn assistant_runtime_start(
     State(state): State<AppState>,
     Json(request): Json<AssistantModelRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
-    let base_url = state
-        .assistant_runtime
-        .start(&request.model_id, 8192)
-        .await
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
-    Ok(Json(serde_json::json!({ "base_url": base_url, "model_id": request.model_id })))
+    let own_file = request.model_path.clone().unwrap_or_default();
+    let base_url = if own_file.trim().is_empty() {
+        state.assistant_runtime.start(&request.model_id, 8192).await
+    } else {
+        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192).await
+    }
+    .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "base_url": base_url, "model_id": request.model_id, "model_path": own_file })))
 }
 
 async fn assistant_runtime_stop(State(state): State<AppState>) -> Json<Value> {
@@ -1157,13 +1176,15 @@ async fn assistant_write(
             // the second request does not pay for the load again.
             let (base, model) = match config.provider {
                 AssistantProvider::Managed => {
+                    let own_file = config.managed_path.clone().unwrap_or_default();
                     let id = config.managed_model.clone().unwrap_or_default();
-                    let base = state
-                        .assistant_runtime
-                        .start(&id, 8192)
-                        .await
-                        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
-                    (base, id)
+                    let base = if own_file.trim().is_empty() {
+                        state.assistant_runtime.start(&id, 8192).await
+                    } else {
+                        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192).await
+                    }
+                    .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+                    (base, if own_file.trim().is_empty() { id } else { own_file })
                 }
                 _ => (
                     config.local_base_url.clone().unwrap_or_default(),
@@ -1176,7 +1197,14 @@ async fn assistant_write(
                 .timeout(std::time::Duration::from_secs(180))
                 .send()
                 .await
-                .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("the local assistant is unreachable: {error}")))?;
+                .map_err(|error| {
+                    // A sidecar that died mid-request leaves nothing but a
+                    // refused connection unless its own log is quoted back.
+                    let tail = state.assistant_runtime.log_tail();
+                    let detail = if tail.is_empty() { String::new() } else { format!("
+{tail}") };
+                    api_error(StatusCode::BAD_GATEWAY, format!("the local assistant is unreachable: {error}{detail}"))
+                })?;
             let status = sent.status();
             let body = sent.text().await.unwrap_or_default();
             if !status.is_success() {
@@ -2061,7 +2089,7 @@ mod tests {
     fn persisted_settings_round_trip_a_complete_custom_component_selection() {
         let settings = PersistedStudioSettings {
             engine_options: EngineOptions { keep_loaded: true, max_batch: Some(2), ..EngineOptions::default() },
-            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None, managed_model: None },
+            assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None, managed_model: None, managed_path: None },
             configuration: initial_configuration(),
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),

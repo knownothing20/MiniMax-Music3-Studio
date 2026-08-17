@@ -1241,4 +1241,6 @@ export const ko = {
     assetNoteLlamaCuda: '아래 CUDA 런타임도 필요합니다.',
     assetNoteCudart: 'llama.cpp 가 링크하는 CUDA 라이브러리.',
     assetNoteLlamaCpu: 'NVIDIA 그래픽카드가 없는 컴퓨터용. 느리지만 동작합니다.',
+    assistantOwnFile: '또는 이 컴퓨터에 이미 있는 GGUF',
+    assistantOwnFileHint: '이미 있는 텍스트 GGUF 의 전체 경로. 그대로 사용하며 내려받거나 복사하지 않습니다.',
 };

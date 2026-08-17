@@ -12,7 +12,7 @@
 //!   offline, the same approach Dub Studio takes for its own text model;
 //! * OpenRouter, chosen from the live catalogue.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -179,17 +179,41 @@ pub fn chat_body(model: &str, system: &str, user: &str) -> Value {
     })
 }
 
+/// Reads the answer out of a chat completion.
+///
+/// Reasoning models served by llama.cpp put their visible answer in
+/// `content` and their thinking in `reasoning_content` - but with several
+/// Gemma builds `content` comes back empty and everything, the JSON draft
+/// included, arrives in `reasoning_content`. Reading only `content` there
+/// looks exactly like a model that answered nothing.
 pub fn content_of(response: &Value) -> Result<String> {
-    response
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .context("the assistant response contained no message content")
+    let message = response
+        .pointer("/choices/0/message")
+        .context("the assistant response contained no message")?;
+    for field in ["content", "reasoning_content"] {
+        if let Some(text) = message.get(field).and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                return Ok(text.to_owned());
+            }
+        }
+    }
+    Err(anyhow!("the assistant response contained no message content"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_that_arrives_as_reasoning_is_still_an_answer() {
+        let response = serde_json::json!({
+            "choices": [{ "message": { "content": "", "reasoning_content": "{\"lyrics\": \"[verse]\"}" } }]
+        });
+        assert_eq!(content_of(&response).unwrap(), "{\"lyrics\": \"[verse]\"}");
+
+        let empty = serde_json::json!({ "choices": [{ "message": { "content": "  " } }] });
+        assert!(content_of(&empty).is_err());
+    }
 
     fn request(target: AssistTarget) -> AssistRequest {
         AssistRequest {

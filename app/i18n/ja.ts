@@ -1241,4 +1241,6 @@ export const ja = {
     assetNoteLlamaCuda: '下の CUDA ランタイムも必要です。',
     assetNoteCudart: 'llama.cpp がリンクする CUDA ライブラリ。',
     assetNoteLlamaCpu: 'NVIDIA GPU がない環境向け。遅いですが動きます。',
+    assistantOwnFile: 'または既にこの PC にある GGUF',
+    assistantOwnFileHint: '既にあるテキスト GGUF のフルパス。そのまま使い、ダウンロードもコピーもしません。',
 };
