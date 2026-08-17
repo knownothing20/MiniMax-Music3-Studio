@@ -283,7 +283,7 @@ impl LyricsSync {
     /// Runs Parakeet in this process and returns an LRC built from its word
     /// timings. Same stack Dub Studio uses: parakeet-rs over ONNX Runtime,
     /// loaded from the DLL beside the models rather than linked in.
-    pub fn parakeet_lrc(&self, audio: &Path) -> Result<String> {
+    pub fn parakeet_words(&self, audio: &Path) -> Result<Vec<(f64, String)>> {
         let library = self
             .onnxruntime_library()
             .ok_or_else(|| anyhow!("the ONNX Runtime library is not installed"))?;
@@ -314,11 +314,14 @@ impl LyricsSync {
         if words.is_empty() {
             bail!("the recogniser found no words to time");
         }
-        Ok(lrc_from_segments(&group_words(&words)))
+        Ok(words)
     }
 
-    /// Runs whisper.cpp over one audio file and returns the LRC it writes.
-    pub fn whisper_lrc(&self, config: &LyricsSyncConfig, audio: &Path, language: Option<&str>) -> Result<String> {
+    /// Runs whisper.cpp over one audio file and returns the words it heard.
+    ///
+    /// whisper.cpp writes LRC itself, but only line by line; asking for one
+    /// token per line gives the word stream the aligner needs.
+    pub fn whisper_words(&self, config: &LyricsSyncConfig, audio: &Path, language: Option<&str>, lyrics: &str) -> Result<Vec<(f64, String)>> {
         let binary = self.whisper_binary().ok_or_else(|| anyhow!("the Whisper runtime is not installed"))?;
         let model = self
             .whisper_model_path(config)
@@ -340,12 +343,18 @@ impl LyricsSync {
             .arg("--output-lrc")
             .arg("--output-file")
             .arg(&stem)
-            // One line per short phrase reads far better as karaoke than one
-            // line per paragraph-long segment.
+            // One token per line: the aligner puts the written lyrics back on
+            // top of these times, so what is wanted here is the finest
+            // granularity whisper.cpp will emit.
             .arg("--max-len")
-            .arg("42")
+            .arg("1")
             .arg("--language")
             .arg(language.unwrap_or("auto"))
+            // Biasing the decoder with the words that were actually sung is
+            // what every lyric aligner does; without it a dense mix comes back
+            // as "[Music]" and there is nothing to align to.
+            .arg("--prompt")
+            .arg(prompt_from(lyrics))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -361,10 +370,11 @@ impl LyricsSync {
             bail!("whisper-cli exited with {status}");
         }
         let lrc = lrc.context("whisper-cli produced no LRC file")?;
-        if parse_lrc_times(&lrc).is_empty() {
+        let words = words_from_lrc(&lrc);
+        if words.is_empty() {
             bail!("the recogniser found no words to time");
         }
-        Ok(lrc)
+        Ok(words)
     }
 }
 
@@ -576,6 +586,41 @@ pub fn lrc_from_segments(segments: &[(f64, String)]) -> String {
         out.push_str(&format!("[{minutes:02}:{seconds:02}.{hundredths:02}]{text}\n"));
     }
     out
+}
+
+/// The opening lines of the lyrics, as a decoding hint. Whisper's prompt is
+/// bounded, and the first lines are enough to tell it this is singing, in this
+/// language, about these words.
+fn prompt_from(lyrics: &str) -> String {
+    let mut prompt = String::new();
+    for line in lyrics.lines().map(str::trim).filter(|line| !line.is_empty() && !(line.starts_with('[') && line.ends_with(']'))) {
+        if prompt.chars().count() + line.chars().count() > 400 {
+            break;
+        }
+        if !prompt.is_empty() {
+            prompt.push(' ');
+        }
+        prompt.push_str(line);
+    }
+    prompt
+}
+
+/// Reads a whisper.cpp LRC back as a word stream.
+pub fn words_from_lrc(lrc: &str) -> Vec<(f64, String)> {
+    let mut words = Vec::new();
+    for line in lrc.lines() {
+        let Some(rest) = line.strip_prefix('[') else { continue };
+        let Some((stamp, text)) = rest.split_once(']') else { continue };
+        let Some((minutes, seconds)) = stamp.split_once(':') else { continue };
+        let (Ok(minutes), Ok(seconds)) = (minutes.trim().parse::<f64>(), seconds.trim().parse::<f64>()) else {
+            continue;
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            words.push((minutes * 60.0 + seconds, text.to_string()));
+        }
+    }
+    words
 }
 
 /// The timestamps in an LRC body, in seconds. Also the emptiness check: a file

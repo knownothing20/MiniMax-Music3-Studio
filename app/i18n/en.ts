@@ -762,7 +762,7 @@ export const en = {
     shareViaEmail: 'Share via Email',
     copyLink: 'Copy Link',
     emailSubject: 'Check out this AI song',
-    emailBody: 'Hey!\n\nI created this AI-generated song and thought you\'d love it:\n\n"{title}" by {creator}\n{style}\n\nListen here: {url}\n\nMade with MiniMax Music3 Studio.',
+    emailBody: "Hey!\n\nI created this AI-generated song and thought you\'d love it:\n\n\"{title}\" by {creator}\n{style}\n\nListen here: {url}\n\nMade with MiniMax Music3 Studio.",
 
     // Reference Modal
     referenceModalTitle: 'Reference',
@@ -1250,4 +1250,15 @@ export const en = {
     assistantOwnFileHint: 'Full path to a text GGUF you already have. It is used as is - nothing is downloaded, nothing is copied.',
     serviceUnavailable: 'Studio service is not responding',
     serviceUnavailableHint: 'The local service is not running. Restart MiniMax Music3 Studio; nothing in your library is lost.',
+    karaokeSection: 'Karaoke timings',
+    karaokeHint: "The track's own lyrics are put on a recogniser's clock, so the video studio and the player can follow along. Off by default; nothing is downloaded until you ask.",
+    karaokeEnable: 'Enable karaoke',
+    karaokeWhisperModel: 'Whisper model',
+    karaokeRuntimeHint: 'The CUDA runtime is used when installed; the CPU one works everywhere.',
+    karaokeOpenRouterManual: 'Model id',
+    karaokeOpenRouterHint: 'Timings come back only from OpenAI-compatible providers - the Whisper family on OpenAI, Groq or Together. Other models answer with text alone and are refused. Billed to your key.',
+    karaokeMake: 'Make karaoke',
+    karaokeMaking: 'Timing…',
+    karaokeReady: 'Karaoke ready',
+    karaokeOff: 'Turn karaoke on in Settings first.',
 };

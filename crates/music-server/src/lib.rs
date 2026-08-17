@@ -49,6 +49,8 @@ struct AppState {
     engine_options: Arc<RwLock<EngineOptions>>,
     assistant: Arc<RwLock<AssistantConfig>>,
     assistant_runtime: Arc<assistant_runtime::AssistantRuntime>,
+    lyrics_sync: Arc<lyrics_sync::LyricsSync>,
+    lyrics_sync_config: Arc<RwLock<lyrics_sync::LyricsSyncConfig>>,
 }
 
 #[derive(Clone)]
@@ -204,6 +206,7 @@ struct PersistedStudioSettings {
     engine_options: EngineOptions,
     #[serde(default)]
     assistant: AssistantConfig,
+    lyrics_sync: lyrics_sync::LyricsSyncConfig,
     configuration: StudioConfiguration,
     selected_profile_id: Option<String>,
     #[serde(default)]
@@ -381,6 +384,12 @@ pub async fn serve() -> anyhow::Result<()> {
         assistant_runtime: Arc::new(assistant_runtime::AssistantRuntime::new(
             &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
         )),
+        lyrics_sync: Arc::new(lyrics_sync::LyricsSync::new(
+            &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
+        )),
+        lyrics_sync_config: Arc::new(RwLock::new(
+            persisted.as_ref().map(|settings| settings.lyrics_sync.clone()).unwrap_or_default(),
+        )),
     };
 
     let app = Router::new()
@@ -402,6 +411,9 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/assistant/runtime/install", post(assistant_runtime_install))
         .route("/v1/assistant/runtime/start", post(assistant_runtime_start))
         .route("/v1/assistant/runtime/stop", post(assistant_runtime_stop))
+        .route("/v1/karaoke/status", get(karaoke_status).put(update_karaoke_settings))
+        .route("/v1/karaoke/install", post(karaoke_install))
+        .route("/v1/library/songs/{id}/karaoke", post(create_song_karaoke).delete(delete_song_karaoke))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
@@ -934,6 +946,7 @@ async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
     let settings = PersistedStudioSettings {
         engine_options: *state.engine_options.read().await,
         assistant: state.assistant.read().await.clone(),
+        lyrics_sync: state.lyrics_sync_config.read().await.clone(),
         configuration: state.configuration.read().await.clone(),
         selected_profile_id: state.selected_profile_id.read().await.clone(),
         selected_component_ids: state.selected_component_ids.read().await.clone(),
@@ -1156,6 +1169,155 @@ async fn assistant_runtime_start(
 async fn assistant_runtime_stop(State(state): State<AppState>) -> Json<Value> {
     state.assistant_runtime.stop().await;
     Json(serde_json::json!({ "running": false }))
+}
+
+#[derive(Debug, Deserialize)]
+struct KaraokeRequest {
+    /// Overrides the language guess for this one track.
+    #[serde(default)]
+    language: Option<String>,
+}
+
+async fn karaoke_status(State(state): State<AppState>) -> Json<lyrics_sync::SyncStatus> {
+    let config = state.lyrics_sync_config.read().await.clone();
+    Json(state.lyrics_sync.status(&config).await)
+}
+
+async fn update_karaoke_settings(
+    State(state): State<AppState>,
+    Json(request): Json<lyrics_sync::LyricsSyncConfig>,
+) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
+    *state.lyrics_sync_config.write().await = request.clone();
+    let _ = persist_studio_settings(&state).await;
+    Ok(Json(state.lyrics_sync.status(&request).await))
+}
+
+async fn karaoke_install(
+    State(state): State<AppState>,
+    Json(request): Json<AssistantAssetRequest>,
+) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
+    let asset = lyrics_sync::asset(&request.asset_id)
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, format!("unknown karaoke asset: {}", request.asset_id)))?;
+    state
+        .lyrics_sync
+        .downloader()
+        .install(asset)
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let config = state.lyrics_sync_config.read().await.clone();
+    Ok(Json(state.lyrics_sync.status(&config).await))
+}
+
+/// Times one track's own lyrics and stores the result with it.
+///
+/// Recognition is CPU or GPU bound and takes tens of seconds, so it runs on a
+/// blocking thread rather than holding an async worker hostage.
+async fn create_song_karaoke(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<KaraokeRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let config = state.lyrics_sync_config.read().await.clone();
+    if !config.available() {
+        return Err(api_error(StatusCode::CONFLICT, "Karaoke is switched off. Turn it on in Settings and pick a recogniser.".into()));
+    }
+    let song = state
+        .library
+        .get_song(&id)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "no such song".into()))?;
+    let audio = song
+        .audio_path
+        .clone()
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "this track has no audio to listen to".into()))?;
+    if song.lyrics.trim().is_empty() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "this track has no lyrics to time".into()));
+    }
+
+    let words = match config.provider {
+        lyrics_sync::AsrProvider::None => {
+            return Err(api_error(StatusCode::CONFLICT, "no recogniser is selected".into()))
+        }
+        lyrics_sync::AsrProvider::Parakeet => {
+            let sync = state.lyrics_sync.clone();
+            let path = std::path::PathBuf::from(&audio);
+            tokio::task::spawn_blocking(move || sync.parakeet_words(&path))
+                .await
+                .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        }
+        lyrics_sync::AsrProvider::Whisper => {
+            let sync = state.lyrics_sync.clone();
+            let config = config.clone();
+            let path = std::path::PathBuf::from(&audio);
+            let language = request.language.clone();
+            let lyrics = song.lyrics.clone();
+            tokio::task::spawn_blocking(move || sync.whisper_words(&config, &path, language.as_deref(), &lyrics))
+                .await
+                .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        }
+        lyrics_sync::AsrProvider::OpenRouter => {
+            karaoke_words_from_openrouter(&state, &config, &audio, request.language.as_deref()).await
+        }
+    }
+    .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+
+    let lines = lyrics_sync::align_lyrics(&words, &song.lyrics);
+    if lines.is_empty() {
+        return Err(api_error(StatusCode::BAD_GATEWAY, "the recogniser heard nothing that matches these lyrics".into()));
+    }
+    let lrc = lyrics_sync::lrc_from_segments(&lines);
+    state
+        .library
+        .set_song_lrc(&id, &lrc)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "lrc": lrc, "lines": lines.len(), "provider": config.provider })))
+}
+
+async fn delete_song_karaoke(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    state
+        .library
+        .set_song_lrc(&id, "")
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "lrc": Value::Null })))
+}
+
+/// The cloud path: base64 the audio, ask for verbose output, read the times.
+async fn karaoke_words_from_openrouter(
+    state: &AppState,
+    config: &lyrics_sync::LyricsSyncConfig,
+    audio: &str,
+    language: Option<&str>,
+) -> anyhow::Result<Vec<(f64, String)>> {
+    use base64::Engine as _;
+    let model = config.openrouter_model.clone().unwrap_or_default();
+    let catalog = state
+        .openrouter_catalog
+        .read()
+        .await
+        .catalog
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Refresh the OpenRouter catalog before using it for karaoke."))?;
+    let bytes = std::fs::read(audio)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let format = std::path::Path::new(audio)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mp3")
+        .to_ascii_lowercase();
+    let request = providers::openrouter::stt_request_for(
+        &catalog,
+        &model,
+        providers::openrouter::Base64AudioInput { timestamps: true, data: &encoded, format: &format, language },
+    )?;
+    let response = execute_openrouter_json(request).await?;
+    let segments = lyrics_sync::segments_from_verbose_json(&response.body);
+    if segments.is_empty() {
+        anyhow::bail!("{model} answered without timings; pick a model that returns them");
+    }
+    Ok(segments)
 }
 
 /// Writes lyrics and/or the structured caption. Optional by design: with no
@@ -2108,10 +2270,20 @@ mod tests {
             engine_options: EngineOptions { keep_loaded: true, max_batch: Some(2), ..EngineOptions::default() },
             assistant: AssistantConfig { provider: AssistantProvider::Local, local_base_url: Some("http://127.0.0.1:8080/v1".into()), local_model: Some("gemma".into()), openrouter_model: None, managed_model: None, managed_path: None },
             configuration: initial_configuration(),
+            // Karaoke is off by default and has to survive a restart the same
+            // way the assistant does.
+            lyrics_sync: lyrics_sync::LyricsSyncConfig {
+                enabled: true,
+                provider: lyrics_sync::AsrProvider::Parakeet,
+                whisper_model: None,
+                openrouter_model: None,
+            },
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
         };
         let restored: PersistedStudioSettings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        assert!(restored.lyrics_sync.available());
+        assert_eq!(restored.lyrics_sync.provider, lyrics_sync::AsrProvider::Parakeet);
         assert!(restored.selected_profile_id.is_none());
         assert_eq!(restored.selected_component_ids.unwrap(), vec!["lm-q8", "depth-q8", "condition-f32", "dit-q6", "vocoder-f32"]);
         // Engine flags survive a restart, and the songs-per-request ceiling is
