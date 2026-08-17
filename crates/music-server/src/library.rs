@@ -49,8 +49,22 @@ pub fn audio_duration_seconds(audio:&[u8],extension:&str,declared_bitrate_kbps:O
 
 /// A caption is a full style prompt, not a song name. Without an explicit
 /// title the library shows a readable fragment instead of the whole prompt.
+/// A caption written for this model is a labelled document, so its first line
+/// is a section heading - "Global Metadata" - which makes a useless title. Skip
+/// the headings and take the first line that actually describes the music.
+const CAPTION_HEADINGS:[&str;5]=["global metadata","vocal details","arrangement","basic attributes","instrument lifecycle description"];
+/// "bpm is 118" and "key is F# minor" describe the music but read terribly as a
+/// name, so the title skips past them to the first descriptive phrase.
+const CAPTION_ATTRIBUTES:[&str;5]=["bpm is","key is","scale is","tempo is","time signature"];
 fn generated_title(caption:&str)->String{
- let first=caption.split(['\n','.',';']).map(str::trim).find(|part|!part.is_empty()).unwrap_or("Untitled track");
+ let first=caption.split(['\n','.',';']).map(str::trim)
+  .find(|part|{
+   let lowered=part.to_ascii_lowercase();
+   !part.is_empty()
+    && !CAPTION_HEADINGS.iter().any(|heading|lowered.starts_with(heading))
+    && !CAPTION_ATTRIBUTES.iter().any(|attribute|lowered.contains(attribute))
+  })
+  .unwrap_or("Untitled track");
  let mut title=String::new();
  for word in first.split_whitespace(){
   if !title.is_empty() && title.chars().count()+1+word.chars().count()>48 {break}
@@ -137,7 +151,13 @@ impl Library {
  fn save_playlist(&self,p:&Playlist)->Result<()> {let mut c=self.connection.lock().unwrap();let tx=c.transaction()?;tx.execute("INSERT INTO playlists VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,updated_at=excluded.updated_at",params![p.id,p.name,p.description,p.created_at,p.updated_at])?;tx.execute("DELETE FROM playlist_songs WHERE playlist_id=?",[&p.id])?;for(pos,id)in p.song_ids.iter().enumerate(){tx.execute("INSERT INTO playlist_songs VALUES(?,?,?)",params![p.id,id,pos as i64])?;}tx.commit()?;Ok(())}
 }
 fn row_song(r:&rusqlite::Row)->rusqlite::Result<Song>{Ok(Song{id:r.get(0)?,title:r.get(1)?,audio_path:r.get(2)?,caption:r.get(3)?,lyrics:r.get(4)?,metadata:json(r.get::<_,String>(5)?),generation_settings:json(r.get::<_,String>(6)?),engine_id:r.get(7)?,profile_id:r.get(8)?,replay_request:r.get::<_,Option<String>>(9)?.map(json),audio_codes:r.get::<_,Option<String>>(10)?.map(json),source:r.get(11)?,created_at:r.get(12)?,updated_at:r.get(13)?})}fn json(s:String)->serde_json::Value{serde_json::from_str(&s).unwrap_or(serde_json::Value::Null)}fn playlist(c:&Connection,r:&rusqlite::Row)->rusqlite::Result<Playlist>{let id:String=r.get(0)?;let mut q=c.prepare("SELECT song_id FROM playlist_songs WHERE playlist_id=? ORDER BY position")?;let song_ids=q.query_map([&id],|x|x.get(0))?.collect::<rusqlite::Result<_>>()?;Ok(Playlist{id,name:r.get(1)?,description:r.get(2)?,song_ids,created_at:r.get(3)?,updated_at:r.get(4)?})}fn now()->String{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string()}
-#[cfg(test)]mod tests{use super::*;#[test]fn imports_audio_and_full_provenance_atomically(){let root=std::env::temp_dir().join(format!("mm3-library-test-{}",uuid::Uuid::now_v7()));let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();let result=db.import_generated_song(GeneratedSongInput{title:None,metadata:serde_json::Value::Null,caption:"c".into(),lyrics:"l".into(),generation_settings:serde_json::json!({"seed":1}),replay_request:Some(serde_json::json!({"audio_codes":"1,2,3,4,5,6,7,8","seed":1})),audio_codes:Some(serde_json::json!("1,2,3,4,5,6,7,8")),engine_id:"mm".into(),profile_id:Some("recommended-light".into()),source:"local_generation".into(),audio_extension:"mp3",audio:b"ID3".to_vec()}).unwrap();assert_eq!(db.get_song(&result.song.id).unwrap().unwrap().audio_codes,Some(serde_json::json!("1,2,3,4,5,6,7,8")));assert_eq!(fs::read(db.media_file(&result.audio_filename).unwrap()).unwrap(),b"ID3");let _=fs::remove_dir_all(root);}
+#[cfg(test)]mod tests{use super::*;#[test]fn a_structured_caption_does_not_become_a_title_of_headings(){
+  let caption="Global Metadata
+Basic Attributes: bpm is 118. key is F# minor, and scale is minor. Darkwave, Synth-pop. Global Emotional Progression: haunting.";
+  assert_eq!(generated_title(caption),"Darkwave, Synth-pop");
+  assert_eq!(generated_title("Bright uplifting synth-pop, punchy drums"),"Bright uplifting synth-pop, punchy drums");
+ }
+#[test]fn imports_audio_and_full_provenance_atomically(){let root=std::env::temp_dir().join(format!("mm3-library-test-{}",uuid::Uuid::now_v7()));let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();let result=db.import_generated_song(GeneratedSongInput{title:None,metadata:serde_json::Value::Null,caption:"c".into(),lyrics:"l".into(),generation_settings:serde_json::json!({"seed":1}),replay_request:Some(serde_json::json!({"audio_codes":"1,2,3,4,5,6,7,8","seed":1})),audio_codes:Some(serde_json::json!("1,2,3,4,5,6,7,8")),engine_id:"mm".into(),profile_id:Some("recommended-light".into()),source:"local_generation".into(),audio_extension:"mp3",audio:b"ID3".to_vec()}).unwrap();assert_eq!(db.get_song(&result.song.id).unwrap().unwrap().audio_codes,Some(serde_json::json!("1,2,3,4,5,6,7,8")));assert_eq!(fs::read(db.media_file(&result.audio_filename).unwrap()).unwrap(),b"ID3");let _=fs::remove_dir_all(root);}
 #[test]fn playlist_can_be_read_updated_and_deleted(){let root=std::env::temp_dir().join(format!("mm3-playlist-test-{}",uuid::Uuid::now_v7()));let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();let song_a=db.create_song(SongInput{title:"A".into(),audio_path:None,caption:String::new(),lyrics:String::new(),metadata:serde_json::Value::Null,generation_settings:serde_json::Value::Null,engine_id:"manual".into(),profile_id:None,replay_request:None,audio_codes:None,source:"manual".into()}).unwrap().id;let song_b=db.create_song(SongInput{title:"B".into(),audio_path:None,caption:String::new(),lyrics:String::new(),metadata:serde_json::Value::Null,generation_settings:serde_json::Value::Null,engine_id:"manual".into(),profile_id:None,replay_request:None,audio_codes:None,source:"manual".into()}).unwrap().id;let created=db.create_playlist(PlaylistInput{name:"Drafts".into(),description:None,song_ids:vec![song_a]}).unwrap();let updated=db.update_playlist(&created.id,PlaylistInput{name:"Finished".into(),description:Some("native".into()),song_ids:vec![song_b.clone()]}).unwrap().unwrap();assert_eq!(updated.name,"Finished");assert_eq!(db.get_playlist(&created.id).unwrap().unwrap().song_ids,vec![song_b]);assert!(db.delete_playlist(&created.id).unwrap());assert!(db.get_playlist(&created.id).unwrap().is_none());let _=fs::remove_dir_all(root);}
 #[test]fn measures_wav_duration_from_the_header_and_mp3_from_its_bitrate(){
  // 1 second of 44.1 kHz stereo 16-bit PCM.

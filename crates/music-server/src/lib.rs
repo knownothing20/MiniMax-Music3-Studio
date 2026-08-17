@@ -1598,8 +1598,21 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
         let caption = replay.get("caption").and_then(Value::as_str).filter(|value| !value.is_empty()).context("replay request has no caption")?.to_owned();
         let lyrics = replay.get("lyrics").and_then(Value::as_str).context("replay request has no lyrics")?.to_owned();
         let audio_codes = replay.get("audio_codes").filter(|value| value.as_str().is_some_and(|value| !value.is_empty())).context("replay request has no audio_codes")?.clone();
-        let mut generation_settings = replay.clone();
-        generation_settings.as_object_mut().context("replay request is not a JSON object")?.remove("audio_codes");
+        // The replay request upstream returns is sparse: any field still at its
+        // default is omitted, so a 60-second render carried no "duration" key
+        // at all and the stored provenance looked half empty. Start from what
+        // was actually submitted and let the per-song values - the seeds it
+        // rolled, the model files it used - win over it.
+        let mut generation_settings = job.generation_settings.clone();
+        match (generation_settings.as_object_mut(), replay.as_object()) {
+            (Some(target), Some(source)) => {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            _ => generation_settings = replay.clone(),
+        }
+        generation_settings.as_object_mut().context("generation settings are not a JSON object")?.remove("audio_codes");
         // The engine returns audio, not metadata. Duration and the identifying
         // seeds come from the replay request, so the library row can show a real
         // length instead of "unknown" and the track can be traced back.
