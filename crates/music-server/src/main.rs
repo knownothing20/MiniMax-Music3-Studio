@@ -10,9 +10,9 @@ use anyhow::Context;
 use futures_util::StreamExt;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     body::Body,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -256,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
         .route("/v1/openrouter/covers", post(create_openrouter_cover))
         .route("/v1/library/songs", get(library_songs).post(create_library_song))
+        .route("/v1/library/import", post(import_library_audio))
         .route("/v1/library/songs/{id}", get(library_song).put(update_library_song).delete(delete_library_song))
         .route("/v1/library/media/{song_id}", get(library_media))
         .route("/v1/library/playlists", get(library_playlists).post(create_library_playlist))
@@ -286,7 +287,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn library_songs(State(state): State<AppState>) -> Result<Json<Vec<library::Song>>, (StatusCode, Json<ApiError>)> { state.library.list_songs().map(Json).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string())) }
 async fn library_song(State(state): State<AppState>,Path(id):Path<String>)->Result<Json<library::Song>,(StatusCode,Json<ApiError>)>{state.library.get_song(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?.map(Json).ok_or_else(||api_error(StatusCode::NOT_FOUND,"Song not found".into()))}
-async fn library_media(State(state): State<AppState>, Path(song_id): Path<String>) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+async fn library_media(State(state): State<AppState>, Path(song_id): Path<String>, headers: HeaderMap) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let song = state.library.get_song(&song_id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?.ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
     let path = state.library.media_path_for_song(&song).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song audio is not available in the studio media library".into()))?;
     let bytes = tokio::fs::read(&path).await.map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read song audio: {error}")))?;
@@ -295,9 +296,61 @@ async fn library_media(State(state): State<AppState>, Path(song_id): Path<String
         Some("wav") => "audio/wav",
         _ => return Err(api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Stored song has an unsupported audio extension".into())),
     };
-    Ok(axum::response::Response::builder().header(header::CONTENT_TYPE, content_type).body(Body::from(bytes)).expect("valid audio response"))
+    let total = bytes.len();
+    let range = headers.get(header::RANGE).and_then(|value| value.to_str().ok()).and_then(|value| parse_single_byte_range(value, total));
+    let response = if let Some((start, end)) = range {
+        axum::response::Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+            .header(header::CONTENT_LENGTH, end - start + 1)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(bytes[start..=end].to_vec()))
+    } else if headers.contains_key(header::RANGE) {
+        axum::response::Response::builder()
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+            .body(Body::empty())
+    } else {
+        axum::response::Response::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_LENGTH, total)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .body(Body::from(bytes))
+    };
+    Ok(response.expect("valid audio response"))
+}
+
+/// Parses the one byte-range form used by HTMLAudioElement. Multiple ranges are
+/// intentionally declined; a single 206 keeps native seeking interoperable.
+fn parse_single_byte_range(value: &str, total: usize) -> Option<(usize, usize)> {
+    let value = value.strip_prefix("bytes=")?;
+    if value.contains(',') || total == 0 { return None; }
+    let (start, end) = value.split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<usize>().ok()?;
+        if suffix == 0 { return None; }
+        return Some((total.saturating_sub(suffix), total - 1));
+    }
+    let start = start.parse::<usize>().ok()?;
+    if start >= total { return None; }
+    let end = if end.is_empty() { total - 1 } else { end.parse::<usize>().ok()?.min(total - 1) };
+    (end >= start).then_some((start, end))
 }
 async fn create_library_song(State(state):State<AppState>,Json(input):Json<library::SongInput>)->Result<(StatusCode,Json<library::Song>),(StatusCode,Json<ApiError>)>{state.library.create_song(input).map(|s|(StatusCode::CREATED,Json(s))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))}
+async fn import_library_audio(State(state): State<AppState>, mut multipart: Multipart) -> Result<(StatusCode, Json<library::Song>), (StatusCode, Json<ApiError>)> {
+    let mut title = None; let mut caption = String::new(); let mut lyrics = String::new(); let mut audio = None; let mut filename = None;
+    while let Some(field) = multipart.next_field().await.map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("read import form: {e}")))? {
+        let name = field.name().unwrap_or_default().to_owned();
+        if name == "audio" { filename = field.file_name().map(str::to_owned); audio = Some(field.bytes().await.map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("read audio upload: {e}")))?.to_vec()); }
+        else { let value = field.text().await.map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("read import field: {e}")))?; match name.as_str() { "title" => title = Some(value), "caption" => caption = value, "lyrics" => lyrics = value, _ => {} } }
+    }
+    let filename = filename.ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "audio file is required".into()))?;
+    let extension = std::path::Path::new(&filename).extension().and_then(|value| value.to_str()).unwrap_or_default().to_owned();
+    let title = title.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| std::path::Path::new(&filename).file_stem().and_then(|value| value.to_str()).unwrap_or("Imported audio").to_owned());
+    let song = state.library.import_audio_song(library::AudioImportInput { title, caption, lyrics, metadata: serde_json::json!({"imported_filename": filename}), generation_settings: Value::Null, engine_id: "imported-audio".into(), profile_id: None, source: "audio_import".into(), audio_extension: extension, audio: audio.ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "audio file is required".into()))? }).map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?.song;
+    Ok((StatusCode::CREATED, Json(song)))
+}
 async fn update_library_song(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<library::SongInput>)->Result<Json<library::Song>,(StatusCode,Json<ApiError>)>{state.library.update_song(&id,input).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))?.map(Json).ok_or_else(||api_error(StatusCode::NOT_FOUND,"Song not found".into()))}
 async fn delete_library_song(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,(StatusCode,Json<ApiError>)>{if state.library.delete_song(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?{Ok(StatusCode::NO_CONTENT)}else{Err(api_error(StatusCode::NOT_FOUND,"Song not found".into()))}}
 async fn library_playlists(State(state):State<AppState>)->Result<Json<Vec<library::Playlist>>,(StatusCode,Json<ApiError>)>{state.library.list_playlists().map(Json).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))}

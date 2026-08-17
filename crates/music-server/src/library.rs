@@ -12,6 +12,8 @@ pub struct Song { pub id:String, pub title:String, pub audio_path:Option<String>
 pub struct SongInput { pub title:String, pub audio_path:Option<String>, #[serde(default)] pub caption:String, #[serde(default)] pub lyrics:String, #[serde(default)] pub metadata:serde_json::Value, #[serde(default)] pub generation_settings:serde_json::Value, pub engine_id:String, pub profile_id:Option<String>, pub replay_request:Option<serde_json::Value>, pub audio_codes:Option<serde_json::Value>, #[serde(default="manual_source")] pub source:String }
 #[derive(Debug, Clone)]
 pub struct GeneratedSongInput { pub caption:String, pub lyrics:String, pub generation_settings:serde_json::Value, pub replay_request:Option<serde_json::Value>, pub audio_codes:Option<serde_json::Value>, pub engine_id:String, pub profile_id:Option<String>, pub source:String, pub audio_extension:&'static str, pub audio:Vec<u8> }
+#[derive(Debug, Clone)]
+pub struct AudioImportInput { pub title:String, pub caption:String, pub lyrics:String, pub metadata:serde_json::Value, pub generation_settings:serde_json::Value, pub engine_id:String, pub profile_id:Option<String>, pub source:String, pub audio_extension:String, pub audio:Vec<u8> }
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportedSong { pub song: Song, pub audio_filename: String }
 #[derive(Debug, Clone, Serialize, Deserialize)] pub struct Playlist { pub id:String, pub name:String, pub description:Option<String>, pub song_ids:Vec<String>, pub created_at:String, pub updated_at:String }
@@ -32,6 +34,18 @@ impl Library {
   fs::rename(&temporary,&target).with_context(||format!("publish generated audio {}",target.display()))?;
   let now=now();let song=Song{id,title:input.caption.clone(),audio_path:Some(target.display().to_string()),caption:input.caption,lyrics:input.lyrics,metadata:serde_json::Value::Null,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,replay_request:input.replay_request,audio_codes:input.audio_codes,source:input.source,created_at:now.clone(),updated_at:now};
   if let Err(error)=self.save_song(&song){let _=fs::remove_file(&target);return Err(error.context("store generated song record"));}
+  Ok(ImportedSong{song,audio_filename:filename})
+ }
+ pub fn import_audio_song(&self,input:AudioImportInput)->Result<ImportedSong>{
+  if input.audio.is_empty(){anyhow::bail!("cannot import an empty audio file")}
+  let extension=input.audio_extension.trim().to_ascii_lowercase();
+  if !matches!(extension.as_str(), "mp3" | "wav"){anyhow::bail!("only MP3 and WAV audio can be imported")}
+  fs::create_dir_all(&self.media_dir).with_context(||format!("create media directory {}",self.media_dir.display()))?;
+  let id=uuid::Uuid::now_v7().to_string(); let filename=format!("{id}.{extension}"); let target=self.media_dir.join(&filename); let temporary=self.media_dir.join(format!("{filename}.part"));
+  {let mut file=fs::OpenOptions::new().create_new(true).write(true).open(&temporary)?;use std::io::Write;file.write_all(&input.audio)?;file.sync_all()?;}
+  fs::rename(&temporary,&target).with_context(||format!("publish imported audio {}",target.display()))?;
+  let now=now(); let song=Song{id,title:input.title,audio_path:Some(target.display().to_string()),caption:input.caption,lyrics:input.lyrics,metadata:input.metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,replay_request:None,audio_codes:None,source:input.source,created_at:now.clone(),updated_at:now};
+  if let Err(error)=self.save_song(&song){let _=fs::remove_file(&target);return Err(error.context("store imported song record"));}
   Ok(ImportedSong{song,audio_filename:filename})
  }
  pub fn media_file(&self,filename:&str)->Option<PathBuf>{if filename.is_empty()||filename.contains(['/', '\\'])||Path::new(filename).file_name().and_then(|x|x.to_str())!=Some(filename){return None}let path=self.media_dir.join(filename);path.is_file().then_some(path)}
