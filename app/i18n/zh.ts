@@ -1243,4 +1243,6 @@ export const zh = {
     assetNoteLlamaCpu: '适用于没有 NVIDIA 显卡的机器。慢，但能用。',
     assistantOwnFile: '或使用本机已有的 GGUF',
     assistantOwnFileHint: '已有文本 GGUF 的完整路径。直接使用，不下载、不复制。',
+    serviceUnavailable: '工作室服务无响应',
+    serviceUnavailableHint: '本地服务未运行。请重启 MiniMax Music3 Studio，曲库不会丢失。',
 };

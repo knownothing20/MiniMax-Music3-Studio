@@ -82,6 +82,16 @@ const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     );
   }
 
+  // With nobody answering, the model and provider lines would be guesses. Say
+  // the one thing that is actually known: the service is not responding.
+  if (unreachable) {
+    return (
+      <div className="space-y-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px]">
+        <StatusLine active={false} label={t('serviceUnavailable')} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1.5 rounded-xl border border-zinc-200/70 bg-zinc-50/80 px-3 py-2 text-[10px] dark:border-white/5 dark:bg-zinc-900/50">
       <StatusLine active={engineReady && modelReady} pending={!unreachable && !(engineReady && modelReady)} label={engineLabel} />

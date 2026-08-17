@@ -1248,4 +1248,6 @@ export const en = {
     assetNoteLlamaCpu: 'For machines without an NVIDIA card. Slow, but it works.',
     assistantOwnFile: 'Or a GGUF already on this machine',
     assistantOwnFileHint: 'Full path to a text GGUF you already have. It is used as is - nothing is downloaded, nothing is copied.',
+    serviceUnavailable: 'Studio service is not responding',
+    serviceUnavailableHint: 'The local service is not running. Restart MiniMax Music3 Studio; nothing in your library is lost.',
 };

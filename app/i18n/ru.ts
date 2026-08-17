@@ -1247,4 +1247,6 @@ export const ru = {
     assetNoteLlamaCpu: 'Для машин без видеокарты NVIDIA. Медленно, но работает.',
     assistantOwnFile: 'Или GGUF, который уже есть на этом компьютере',
     assistantOwnFileHint: 'Полный путь к текстовому GGUF, который у вас уже есть. Он берётся как есть — ничего не качается и не копируется.',
+    serviceUnavailable: 'Служба студии не отвечает',
+    serviceUnavailableHint: 'Локальная служба не запущена. Перезапустите MiniMax Music3 Studio — библиотека при этом не теряется.',
 };

@@ -164,6 +164,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [models, setModels] = useState<Record<string, string>>({});
 
   const [setup, setSetup] = useState<SetupStatus | null>(null);
+  // "Nobody answered" and "the engine says it has no models" are different
+  // problems, and telling the user to download 12 GB when the service is simply
+  // down is a lie.
+  const [serviceDown, setServiceDown] = useState(false);
   const [catalog, setCatalog] = useState<EngineCatalog | null>(null);
   const [assistantReady, setAssistantReady] = useState(false);
   const [assisting, setAssisting] = useState<'all' | 'lyrics' | 'prompt' | null>(null);
@@ -190,9 +194,15 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     const response = await fetch('/setup/status');
     if (!response.ok) throw new Error(String(response.status));
     setSetup(await response.json());
+    setServiceDown(false);
   }, []);
 
-  useEffect(() => { void refreshSetup().catch(() => setSetup(null)); }, [refreshSetup]);
+  useEffect(() => {
+    const poll = () => void refreshSetup().catch(() => { setSetup(null); setServiceDown(true); });
+    poll();
+    const timer = window.setInterval(poll, 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshSetup]);
 
   useEffect(() => {
     void fetch('/v1/local-models/music')
@@ -386,11 +396,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </div>
             <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${ready ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
               <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              {ready ? t('engineReady') : t('profileRequired')}
+              {serviceDown ? t('serviceUnavailable') : ready ? t('engineReady') : t('profileRequired')}
             </span>
           </div>
 
-          {!ready && (
+          {serviceDown ? (
+            <div className="flex gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs leading-5 text-rose-700 dark:text-rose-200">
+              <CircleAlert className="mt-0.5 shrink-0" size={15} />
+              <div><b>{t('serviceUnavailable')}</b><br />{t('serviceUnavailableHint')}</div>
+            </div>
+          ) : !ready && (
             <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
               <div><b>{t('localGenerationUnavailable')}</b><br />{t('downloadProfileFirst')}</div>

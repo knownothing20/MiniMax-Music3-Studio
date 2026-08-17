@@ -6,6 +6,7 @@ import { useResponsive } from '../context/ResponsiveContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
+import { captionSummary } from '../services/examples';
 
 interface PlayerProps {
     currentSong: Song | null;
@@ -620,7 +621,7 @@ export const Player: React.FC<PlayerProps> = ({
                         <h4 className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-white truncate">
                             {currentSong.title}
                         </h4>
-                        <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 truncate">{currentSong.style || ''}</p>
+                        <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 truncate">{captionSummary(currentSong.style || '')}</p>
                     </div>
                     <button
                         onClick={onToggleLike}

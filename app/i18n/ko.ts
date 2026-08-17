@@ -1243,4 +1243,6 @@ export const ko = {
     assetNoteLlamaCpu: 'NVIDIA 그래픽카드가 없는 컴퓨터용. 느리지만 동작합니다.',
     assistantOwnFile: '또는 이 컴퓨터에 이미 있는 GGUF',
     assistantOwnFileHint: '이미 있는 텍스트 GGUF 의 전체 경로. 그대로 사용하며 내려받거나 복사하지 않습니다.',
+    serviceUnavailable: '스튜디오 서비스가 응답하지 않습니다',
+    serviceUnavailableHint: '로컬 서비스가 실행 중이 아닙니다. MiniMax Music3 Studio 를 다시 시작하세요. 라이브러리는 사라지지 않습니다.',
 };

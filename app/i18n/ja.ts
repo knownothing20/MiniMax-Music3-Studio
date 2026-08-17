@@ -1243,4 +1243,6 @@ export const ja = {
     assetNoteLlamaCpu: 'NVIDIA GPU がない環境向け。遅いですが動きます。',
     assistantOwnFile: 'または既にこの PC にある GGUF',
     assistantOwnFileHint: '既にあるテキスト GGUF のフルパス。そのまま使い、ダウンロードもコピーもしません。',
+    serviceUnavailable: 'Studio サービスが応答しません',
+    serviceUnavailableHint: 'ローカルサービスが起動していません。MiniMax Music3 Studio を再起動してください。ライブラリは失われません。',
 };
