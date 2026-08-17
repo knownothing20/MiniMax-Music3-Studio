@@ -1034,4 +1034,9 @@ export const ja = {
     trackIdea: '曲のアイデア',
     studioTools: 'スタジオツール',
     templateHint: 'Music3 は明示的な歌詞を歌います。テンプレートは編集可能な説明と歌詞を入力し、通信は行いません。',
+    importAudioTab: 'インポート',
+    importAudioTitle: 'ライブラリに音声をインポート',
+    importAudioHint: 'MP3 または WAV。ファイルをドロップするか選択してください。',
+    chooseFiles: 'ファイルを選択',
+    allSongs: 'すべての曲',
 };

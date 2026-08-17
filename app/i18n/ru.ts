@@ -1038,4 +1038,9 @@ export const ru = {
     trackIdea: 'Идея трека',
     studioTools: 'Инструменты',
     templateHint: 'Music3 поёт по явному тексту. Шаблон подставляет редактируемое описание и слова, ничего не отправляя в сеть.',
+    importAudioTab: 'Импорт',
+    importAudioTitle: 'Импорт аудио в библиотеку',
+    importAudioHint: 'MP3 или WAV. Перетащите файлы сюда или выберите.',
+    chooseFiles: 'Выбрать файлы',
+    allSongs: 'Все песни',
 };

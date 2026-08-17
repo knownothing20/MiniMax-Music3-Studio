@@ -1034,4 +1034,9 @@ export const zh = {
     trackIdea: '创作灵感',
     studioTools: '工作室工具',
     templateHint: 'Music3 按照给定歌词演唱。模板会填入可编辑的描述与歌词，不会联网。',
+    importAudioTab: '导入',
+    importAudioTitle: '导入音频到曲库',
+    importAudioHint: 'MP3 或 WAV。拖放文件到此处或选择文件。',
+    chooseFiles: '选择文件',
+    allSongs: '全部歌曲',
 };

@@ -1039,4 +1039,9 @@ export const en = {
     trackIdea: 'Track idea',
     studioTools: 'Studio tools',
     templateHint: 'Music3 sings explicit lyrics. A template fills an editable caption and lyric sheet without contacting any service.',
+    importAudioTab: 'Import',
+    importAudioTitle: 'Import audio into the library',
+    importAudioHint: 'MP3 or WAV. Drop files here, or choose them.',
+    chooseFiles: 'Choose files',
+    allSongs: 'All songs',
 };

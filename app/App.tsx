@@ -1206,6 +1206,7 @@ function AppContent() {
             onReusePrompt={handleReuse}
             onDeleteSong={handleDeleteSong}
             isNativeLibrary
+            onImported={() => { void refreshNativeLibrary(); }}
           />
         );
       }

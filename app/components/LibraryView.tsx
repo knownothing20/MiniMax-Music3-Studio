@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Song, Playlist } from '../types';
-import { Heart, Plus, Music, Play, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Heart, Plus, Music, Play, MoreHorizontal, Trash2, Upload, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
@@ -10,46 +10,61 @@ interface LibraryViewProps {
   allSongs: Song[];
   likedSongs: Song[];
   playlists: Playlist[];
-  referenceTracks: ReferenceTrack[];
   onPlaySong: (song: Song, list?: Song[]) => void;
   onCreatePlaylist: () => void;
   onSelectPlaylist: (playlist: Playlist) => void;
   onAddToPlaylist: (song: Song) => void;
   onReusePrompt?: (song: Song) => void;
   onDeleteSong?: (song: Song) => void;
-  onDeleteReferenceTrack?: (trackId: string) => void;
+  onImported?: () => void;
   isNativeLibrary?: boolean;
-}
-
-interface ReferenceTrack {
-    id: string;
-    filename: string;
-    storage_key: string;
-    duration: number | null;
-    file_size_bytes: number | null;
-    tags: string[] | null;
-    created_at: string;
-    audio_url: string;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({ 
     allSongs,
     likedSongs, 
     playlists, 
-    referenceTracks,
     onPlaySong, 
     onCreatePlaylist,
     onSelectPlaylist,
     onAddToPlaylist,
     onReusePrompt,
     onDeleteSong,
-    onDeleteReferenceTrack,
+    onImported,
     isNativeLibrary = false,
 }) => {
     const { t } = useI18n();
     const { user } = useAuth();
     const [openMenuSong, setOpenMenuSong] = useState<Song | null>(null);
-    const [activeTab, setActiveTab] = useState<'all' | 'playlists' | 'liked' | 'uploads'>('all');
+    const [activeTab, setActiveTab] = useState<'all' | 'playlists' | 'liked' | 'import'>('all');
+    const [importing, setImporting] = useState(false);
+    const [importError, setImportError] = useState<string | null>(null);
+    const importInput = useRef<HTMLInputElement | null>(null);
+
+    /// Imports an existing MP3 or WAV into the local library. The service
+    /// stores the media and the row atomically, rolling both back on failure.
+    const importAudio = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        setImporting(true);
+        setImportError(null);
+        try {
+            for (const file of Array.from(files)) {
+                const form = new FormData();
+                form.append('audio', file, file.name);
+                form.append('title', file.name.replace(/\.[^.]+$/, ''));
+                const response = await fetch('/v1/library/import', { method: 'POST', body: form });
+                if (!response.ok) {
+                    const body = await response.json().catch(() => null);
+                    throw new Error(body?.error || `${file.name}: import failed (${response.status})`);
+                }
+            }
+            onImported?.();
+        } catch (reason) {
+            setImportError(reason instanceof Error ? reason.message : 'Import failed.');
+        } finally {
+            setImporting(false);
+        }
+    };
 
     const formatBytes = (bytes?: number | null) => {
         if (!bytes || bytes <= 0) return '0 B';
@@ -83,7 +98,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     onClick={() => setActiveTab('all')}
                     className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'all' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
                  >
-                    All Songs
+                    {t('allSongs')}
                     {activeTab === 'all' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
                  </button>
                  <button 
@@ -101,11 +116,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     {activeTab === 'playlists' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
                  </button>
                  <button 
-                    onClick={() => setActiveTab('uploads')}
-                    className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'uploads' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
+                    onClick={() => setActiveTab('import')}
+                    className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'import' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
                  >
-                    Uploads
-                    {activeTab === 'uploads' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
+                    {t('importAudioTab')}
+                    {activeTab === 'import' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
                  </button>
              </div>
 
@@ -238,32 +253,33 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                      ))}
                  </div>
              )}
-             {activeTab === 'uploads' && (
-                 <div className="space-y-2">
-                    {referenceTracks.length === 0 ? (
-                        <div className="text-sm text-zinc-500 dark:text-zinc-400">No uploads yet.</div>
-                    ) : (
-                        referenceTracks.map((track) => (
-                            <div key={track.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-zinc-200 bg-white p-3 dark:border-white/5 dark:bg-zinc-900/40 sm:gap-4">
-                                <div className="w-10 h-10 rounded bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
-                                    <Music size={18} className="text-zinc-500 dark:text-zinc-400" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-sm font-medium text-zinc-900 dark:text-white truncate">{track.filename}</div>
-                                    <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                                        {formatBytes(track.file_size_bytes)} • {new Date(track.created_at).toLocaleDateString()}
-                                    </div>
-                                </div>
-                                <button
-                                    className="p-2 rounded-full hover:bg-zinc-200 dark:hover:bg-white/5 text-zinc-500 hover:text-red-600 transition-colors"
-                                    onClick={() => onDeleteReferenceTrack?.(track.id)}
-                                    title={t('deleteUpload')}
-                                >
-                                    <Trash2 size={16} />
-                                </button>
-                            </div>
-                        ))
-                    )}
+             {activeTab === 'import' && (
+                 <div
+                     onDragOver={(event) => event.preventDefault()}
+                     onDrop={(event) => { event.preventDefault(); void importAudio(event.dataTransfer.files); }}
+                     className="rounded-2xl border-2 border-dashed border-zinc-300 p-10 text-center dark:border-white/15"
+                 >
+                     <Upload size={26} className="mx-auto text-zinc-400" />
+                     <p className="mt-3 text-sm font-medium text-zinc-700 dark:text-zinc-200">{t('importAudioTitle')}</p>
+                     <p className="mt-1 text-xs text-zinc-500">{t('importAudioHint')}</p>
+                     <button
+                         type="button"
+                         onClick={() => importInput.current?.click()}
+                         disabled={importing}
+                         className="mt-4 inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+                     >
+                         {importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+                         {t('chooseFiles')}
+                     </button>
+                     <input
+                         ref={importInput}
+                         type="file"
+                         accept="audio/mpeg,audio/wav,.mp3,.wav"
+                         multiple
+                         className="hidden"
+                         onChange={(event) => { void importAudio(event.target.files); event.target.value = ''; }}
+                     />
+                     {importError && <p role="alert" className="mt-3 text-xs text-rose-600 dark:text-rose-300">{importError}</p>}
                  </div>
              )}
         </div>

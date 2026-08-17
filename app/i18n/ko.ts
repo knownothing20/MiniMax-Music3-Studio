@@ -1034,4 +1034,9 @@ export const ko = {
     trackIdea: '트랙 아이디어',
     studioTools: '스튜디오 도구',
     templateHint: 'Music3 는 명시적인 가사를 노래합니다. 템플릿은 편집 가능한 설명과 가사를 채우며 네트워크를 사용하지 않습니다.',
+    importAudioTab: '가져오기',
+    importAudioTitle: '라이브러리로 오디오 가져오기',
+    importAudioHint: 'MP3 또는 WAV. 파일을 끌어다 놓거나 선택하세요.',
+    chooseFiles: '파일 선택',
+    allSongs: '모든 곡',
 };
