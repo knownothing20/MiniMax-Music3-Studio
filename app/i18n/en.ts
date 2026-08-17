@@ -1261,4 +1261,6 @@ export const en = {
     karaokeMaking: 'Timing…',
     karaokeReady: 'Karaoke ready',
     karaokeOff: 'Turn karaoke on in Settings first.',
+    willDownload: 'needs a download of',
+    presetSwitchesProfile: 'Applying a preset switches the model set. If its components are not on disk yet, generation waits until they are downloaded.',
 };

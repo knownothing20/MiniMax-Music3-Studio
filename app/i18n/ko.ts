@@ -1256,4 +1256,6 @@ export const ko = {
     karaokeMaking: '타이밍 맞추는 중…',
     karaokeReady: '노래방 준비됨',
     karaokeOff: '먼저 설정에서 노래방을 켜세요.',
+    willDownload: '다운로드 필요',
+    presetSwitchesProfile: '프리셋을 적용하면 모델 구성이 바뀝니다. 구성 요소가 아직 없으면 생성은 내려받을 때까지 기다립니다.',
 };

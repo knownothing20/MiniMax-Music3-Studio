@@ -1256,4 +1256,6 @@ export const ja = {
     karaokeMaking: 'タイミング調整中…',
     karaokeReady: 'カラオケができました',
     karaokeOff: '先に設定でカラオケを有効にしてください。',
+    willDownload: 'ダウンロードが必要',
+    presetSwitchesProfile: 'プリセットを適用するとモデル構成が切り替わります。コンポーネントが未取得なら、生成はダウンロード完了を待ちます。',
 };

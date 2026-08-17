@@ -714,7 +714,16 @@ fn engine_location(options: EngineOptions) -> music_engine::mm_server::MmServerL
     music_engine::mm_server::MmServerLocation {
         bundle_root,
         configured_executable,
-        configured_models_root: env::var_os("MINIMAX_MUSIC_MODELS_ROOT").map(PathBuf::from),
+        // The GGUFs live where the model manager put them, which is not
+        // inside the engine bundle: pointing the service at a developer build
+        // of mm-server used to leave it looking for models next to the binary
+        // and failing with "models root is not a directory".
+        configured_models_root: env::var_os("MINIMAX_MUSIC_MODELS_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let managed = studio_data_root()?.join("models").join(model_manager::ENGINE_ID);
+                managed.is_dir().then_some(managed)
+            }),
         host: env::var("MINIMAX_MM_SERVER_HOST").ok(),
         port: env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse().ok()),
         options: options.to_engine(),

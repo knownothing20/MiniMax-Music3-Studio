@@ -1256,4 +1256,6 @@ export const zh = {
     karaokeMaking: '正在对齐…',
     karaokeReady: '卡拉OK 已就绪',
     karaokeOff: '请先在设置中启用卡拉OK。',
+    willDownload: '需要下载',
+    presetSwitchesProfile: '应用预设会切换模型组合。若其组件尚未下载，生成将等待下载完成。',
 };
