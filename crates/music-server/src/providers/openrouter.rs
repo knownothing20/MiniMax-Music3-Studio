@@ -13,6 +13,9 @@ use serde_json::{json, Value};
 
 pub const API_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const MODELS_PATH: &str = "/models";
+/// The recognisers are published only under this filter; the plain listing
+/// omits every one of them.
+pub const TRANSCRIPTION_MODELS_PATH: &str = "/models?output_modalities=transcription";
 pub const CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const TRANSCRIPTIONS_PATH: &str = "/audio/transcriptions";
 pub const IMAGES_PATH: &str = "/images";
@@ -161,6 +164,23 @@ impl CapabilityCatalog {
         Ok(Self::from_models_response(response))
     }
 
+    /// Merges the transcription listing into the general one. OpenRouter
+    /// publishes recognisers only behind `output_modalities=transcription`, so
+    /// a catalog built from the plain listing alone knows of no model that can
+    /// return timings.
+    pub fn parse_merged(general: &str, transcription: &str) -> Result<Self> {
+        let mut catalog = Self::parse(general)?;
+        let extra: ModelsResponse = serde_json::from_str(transcription).context("invalid OpenRouter transcription models response")?;
+        let known: std::collections::BTreeSet<String> = catalog.models.iter().map(|model| model.id.clone()).collect();
+        for model in Self::from_models_response(extra).models {
+            if !known.contains(&model.id) {
+                catalog.models.push(model);
+            }
+        }
+        catalog.models.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(catalog)
+    }
+
     pub fn models_for(&self, capability: Capability) -> impl Iterator<Item = &CatalogModel> {
         self.models.iter().filter(move |model| model.supports(capability))
     }
@@ -182,6 +202,15 @@ pub fn models_request() -> OpenRouterRequest {
     OpenRouterRequest {
         method: HttpMethod::Get,
         path: MODELS_PATH,
+        body: Value::Null,
+    }
+}
+
+/// The second listing the catalog needs: dedicated transcription models.
+pub fn transcription_models_request() -> OpenRouterRequest {
+    OpenRouterRequest {
+        method: HttpMethod::Get,
+        path: TRANSCRIPTION_MODELS_PATH,
         body: Value::Null,
     }
 }
@@ -266,7 +295,21 @@ pub fn stt_request_for(
     model_id: &str,
     audio: Base64AudioInput<'_>,
 ) -> Result<OpenRouterRequest> {
-    catalog.selected(Capability::SpeechToText, model_id)?;
+    // The catalog is a convenience for the picker, not the authority on what
+    // the endpoint accepts: OpenRouter's transcription models - the Whisper
+    // family, the only ones that return timings - are documented but are not
+    // published in /models at all. A typed model id is therefore allowed
+    // through, and OpenRouter itself rejects a wrong one.
+    if model_id.trim().is_empty() {
+        bail!("OpenRouter transcription needs a model id");
+    }
+    // A model the catalog knows must actually declare the capability; one it
+    // has never heard of is allowed through, because OpenRouter publishes its
+    // recognisers only behind a separate filter and a stale catalog should not
+    // block a valid model. A wrong id is then rejected by OpenRouter itself.
+    if catalog.models.iter().any(|model| model.id == model_id) {
+        catalog.selected(Capability::SpeechToText, model_id)?;
+    }
     if audio.data.trim().is_empty() || audio.format.trim().is_empty() {
         bail!("OpenRouter transcription requires base64 audio data and an audio format");
     }
@@ -299,7 +342,10 @@ fn infer_capabilities(model: &RemoteModel) -> Vec<Capability> {
     if input.contains("text") && output.contains("text") {
         capabilities.push(Capability::PromptEnhancement);
     }
-    if input.contains("audio") && output.contains("text") {
+    // A dedicated recogniser declares "transcription", not "text": OpenRouter
+    // lists those models only under output_modalities=transcription, and they
+    // are the ones that return timings at all.
+    if input.contains("audio") && (output.contains("text") || output.contains("transcription")) {
         capabilities.push(Capability::SpeechToText);
     }
     if input.contains("text") && output.contains("image") {

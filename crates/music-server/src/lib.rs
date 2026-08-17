@@ -781,16 +781,31 @@ async fn openrouter_catalog(State(state): State<AppState>) -> Json<Value> {
 }
 
 async fn refresh_openrouter_catalog(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
-    let body = reqwest::Client::new()
-        .get(format!("{}{}", providers::openrouter::API_BASE_URL, providers::openrouter::MODELS_PATH))
-        .send().await
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog request failed: {error}")))?
-        .error_for_status()
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog request failed: {error}")))?
-        .text().await
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog response failed: {error}")))?;
-    let parsed = providers::openrouter::CapabilityCatalog::parse(&body)
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog parse failed: {error}")))?;
+    let client = reqwest::Client::new();
+    let fetch = |path: &'static str| {
+        let client = client.clone();
+        async move {
+            client
+                .get(format!("{}{}", providers::openrouter::API_BASE_URL, path))
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await
+        }
+    };
+    let general = fetch(providers::openrouter::MODELS_PATH)
+        .await
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog request failed: {error}")))?;
+    // The recognisers live behind their own filter; without this second call
+    // the catalog contains no model that can return timings.
+    let transcription = fetch(providers::openrouter::TRANSCRIPTION_MODELS_PATH).await.unwrap_or_default();
+    let parsed = if transcription.trim().is_empty() {
+        providers::openrouter::CapabilityCatalog::parse(&general)
+    } else {
+        providers::openrouter::CapabilityCatalog::parse_merged(&general, &transcription)
+    }
+    .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog parse failed: {error}")))?;
     let refreshed_at = chrono_like_timestamp();
     let models = parsed.models.clone();
     let mut cached = state.openrouter_catalog.write().await;
