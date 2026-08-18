@@ -155,7 +155,13 @@ I build open-source software and do AI research. Most of what I create is free a
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=timoncool/MiniMax-Music3-Studio&type=Date)](https://star-history.com/#timoncool/MiniMax-Music3-Studio&Date)
+<a href="https://github.com/timoncool/MiniMax-Music3-Studio/stargazers">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="docs/stars-dark.svg" />
+   <source media="(prefers-color-scheme: light)" srcset="docs/stars-light.svg" />
+   <img alt="Star history chart" src="docs/stars-light.svg" />
+ </picture>
+</a>
 
 ## Licensing
 
