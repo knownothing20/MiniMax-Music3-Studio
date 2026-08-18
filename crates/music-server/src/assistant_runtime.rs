@@ -347,7 +347,7 @@ impl AssistantRuntime {
     /// Starts the sidecar on a GGUF that is already on this machine. Models
     /// downloaded by other tools are perfectly good here, so there is no reason
     /// to fetch a second copy of one.
-    pub async fn start_path(&self, model_path: &Path, context_size: u32) -> Result<String> {
+    pub async fn start_path(&self, model_path: &Path, context_size: u32, reasoning: Option<&str>) -> Result<String> {
         if !model_path.is_file() {
             bail!("{} is not a file", model_path.display());
         }
@@ -364,11 +364,11 @@ impl AssistantRuntime {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| model_path.display().to_string());
-        self.spawn(model_path.to_path_buf(), label, context_size).await
+        self.spawn(model_path.to_path_buf(), label, context_size, reasoning).await
     }
 
     /// Starts the sidecar for one installed model and returns its base URL.
-    pub async fn start(&self, model_id: &str, context_size: u32) -> Result<String> {
+    pub async fn start(&self, model_id: &str, context_size: u32, reasoning: Option<&str>) -> Result<String> {
         let asset = asset(model_id).ok_or_else(|| anyhow!("unknown assistant model: {model_id}"))?;
         if asset.kind != AssetKind::Model {
             bail!("{model_id} is not a model");
@@ -376,10 +376,10 @@ impl AssistantRuntime {
         if !self.is_installed(asset) {
             bail!("{} is not downloaded yet", asset.label);
         }
-        self.spawn(self.path_of(asset), model_id.to_string(), context_size).await
+        self.spawn(self.path_of(asset), model_id.to_string(), context_size, reasoning).await
     }
 
-    async fn spawn(&self, model_path: PathBuf, model_id: String, context_size: u32) -> Result<String> {
+    async fn spawn(&self, model_path: PathBuf, model_id: String, context_size: u32, reasoning: Option<&str>) -> Result<String> {
         let binary = self
             .server_binary()
             .ok_or_else(|| anyhow!("the llama.cpp runtime is not installed yet"))?;
@@ -409,6 +409,10 @@ impl AssistantRuntime {
             // empty message for Gemma, which reads as "the assistant returned
             // nothing" downstream.
             .arg("--jinja")
+            // Thinking lands in `reasoning_content`, which is where the reader
+            // looks; without this some templates inline it into the answer.
+            .arg("--reasoning-format")
+            .arg("deepseek")
             .stdin(Stdio::null())
             .stdout(Stdio::null());
         // llama-server explains its own failures - a model it cannot load, a
@@ -416,6 +420,24 @@ impl AssistantRuntime {
         match fs::File::create(self.log_path()) {
             Ok(log) => { command.stderr(Stdio::from(log)); }
             Err(_) => { command.stderr(Stdio::null()); }
+        }
+        // The same setting the cloud path sends as `reasoning.effort`, in the
+        // terms this server understands: whether to think at all, and for how
+        // many tokens.
+        match reasoning.map(str::trim).unwrap_or("") {
+            "" | "off" | "none" => {
+                command.arg("--reasoning").arg("off");
+            }
+            effort => {
+                let budget = match effort {
+                    "minimal" => "256",
+                    "low" => "512",
+                    "medium" => "1024",
+                    "high" => "4096",
+                    _ => "-1",
+                };
+                command.arg("--reasoning").arg("on").arg("--reasoning-budget").arg(budget);
+            }
         }
         hide_console(&mut command);
 

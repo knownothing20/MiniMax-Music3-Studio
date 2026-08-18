@@ -1,3 +1,5 @@
+mod auto_title;
+mod cover_prompt;
 mod providers;
 mod assistant;
 mod assistant_runtime;
@@ -52,6 +54,8 @@ struct AppState {
     assistant_runtime: Arc<assistant_runtime::AssistantRuntime>,
     lyrics_sync: Arc<lyrics_sync::LyricsSync>,
     lyrics_sync_config: Arc<RwLock<lyrics_sync::LyricsSyncConfig>>,
+    /// Saved cover looks, filled in from whichever track a cover is for.
+    cover_templates: Arc<RwLock<Vec<cover_prompt::CoverTemplate>>>,
 }
 
 #[derive(Clone)]
@@ -80,6 +84,18 @@ struct CreateMusicJobRequest {
     /// Library title only. It is never sent to mm-server, which has no title
     /// field, so it must not become part of the replayable request.
     title: Option<String>,
+}
+
+/// The name this request goes into the library under: the user's, or one taken
+/// from the song when they left the field empty.
+fn titled(request: &CreateMusicJobRequest) -> String {
+    request
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| auto_title::auto_title(&request.caption, &request.lyrics, request.lyrics.trim().is_empty()))
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -179,6 +195,14 @@ struct MmServerResultResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct SetupSelectRequest {
+    #[serde(default)]
+    profile_id: Option<String>,
+    #[serde(default)]
+    component_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SetupDownloadRequest {
     #[serde(default)]
     ids: Vec<String>,
@@ -212,6 +236,8 @@ struct PersistedStudioSettings {
     selected_profile_id: Option<String>,
     #[serde(default)]
     selected_component_ids: Option<Vec<String>>,
+    #[serde(default)]
+    cover_templates: Option<Vec<cover_prompt::CoverTemplate>>,
 }
 
 #[derive(Default)]
@@ -377,6 +403,13 @@ pub async fn serve() -> anyhow::Result<()> {
         jobs: Arc::new(RwLock::new(HashMap::new())),
         music_server: MmServerClient::from_environment(),
         model_manager,
+        cover_templates: Arc::new(RwLock::new(
+            persisted
+                .as_ref()
+                .and_then(|settings| settings.cover_templates.clone())
+                .filter(|templates| !templates.is_empty())
+                .unwrap_or_else(cover_prompt::default_templates),
+        )),
         selected_profile_id: Arc::new(RwLock::new(selected_profile_id)),
         selected_component_ids: Arc::new(RwLock::new(selected_component_ids)),
         settings_path,
@@ -422,6 +455,8 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
         .route("/v1/openrouter/covers", post(create_openrouter_cover))
+        .route("/v1/cover-templates", get(read_cover_templates).put(write_cover_templates))
+        .route("/v1/cover-templates/render", post(render_cover_template))
         .route("/v1/openrouter/completions", post(create_openrouter_completion))
         .route("/v1/library/songs", get(library_songs).post(create_library_song))
         .route("/v1/library/import", post(import_library_audio))
@@ -433,6 +468,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/setup/status", get(setup_status))
         .route("/setup/catalog", get(setup_catalog))
         .route("/setup/download", post(setup_download))
+        .route("/setup/select", post(setup_select))
         .route("/setup/cancel", post(setup_cancel))
         .route("/v1/local-models/music", get(local_music_model_catalog))
         .route("/v1/music/jobs", post(create_music_job))
@@ -535,6 +571,73 @@ struct StoreCoverRequest {
 /// Cover art is Studio-side metadata: a track keeps working without one, so a
 /// missing cover is a 404 the UI answers with its generated placeholder art
 /// rather than an error state.
+#[derive(Debug, Deserialize)]
+struct CoverTemplatesRequest {
+    templates: Vec<cover_prompt::CoverTemplate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RenderCoverPromptRequest {
+    template: String,
+    /// The track the prompt is for. Without it the placeholders have nothing
+    /// to stand in for, which is only useful for previewing the wording.
+    song_id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    style: Option<String>,
+    #[serde(default)]
+    lyrics: Option<String>,
+}
+
+async fn read_cover_templates(State(state): State<AppState>) -> Json<Value> {
+    Json(serde_json::json!({
+        "templates": state.cover_templates.read().await.clone(),
+        "placeholders": ["title", "style", "lyrics", "excerpt", "duration"],
+    }))
+}
+
+async fn write_cover_templates(
+    State(state): State<AppState>,
+    Json(request): Json<CoverTemplatesRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let templates = if request.templates.is_empty() { cover_prompt::default_templates() } else { request.templates };
+    *state.cover_templates.write().await = templates.clone();
+    persist_studio_settings(&state)
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "templates": templates })))
+}
+
+/// The prompt a template turns into for one track, exactly as it would be sent.
+async fn render_cover_template(
+    State(state): State<AppState>,
+    Json(request): Json<RenderCoverPromptRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let mut facts = cover_prompt::TrackFacts {
+        title: request.title.unwrap_or_default(),
+        style: request.style.unwrap_or_default(),
+        lyrics: request.lyrics.unwrap_or_default(),
+        duration_seconds: 0.0,
+    };
+    if let Some(song_id) = request.song_id.as_deref().filter(|value| !value.trim().is_empty()) {
+        let song = state
+            .library
+            .get_song(song_id)
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
+        facts.title = song.title.clone();
+        facts.style = song.caption.clone();
+        facts.lyrics = song.lyrics.clone();
+        facts.duration_seconds = song
+            .metadata
+            .get("duration_seconds")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+    }
+    Ok(Json(serde_json::json!({ "prompt": cover_prompt::render(&request.template, &facts) })))
+}
+
 async fn library_cover(State(state): State<AppState>, Path(id): Path<String>) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let song = state.library.get_song(&id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
@@ -802,9 +905,24 @@ async fn openrouter_catalog(State(state): State<AppState>) -> Json<Value> {
     // Fetch it if this process has not yet: an empty answer here made every
     // capability read "no model in the refreshed catalog", which is a lie -
     // the catalog had simply never been read.
-    let models = catalog_for(&state).await.ok().map(|catalog| catalog.models);
+    let catalog = catalog_for(&state).await.ok();
     let refreshed_at = state.openrouter_catalog.read().await.refreshed_at.clone();
-    Json(serde_json::json!({ "models": models, "refreshed_at": refreshed_at }))
+    // What the studio would pick for each capability if the user picks
+    // nothing. The panel shows these as the selection, so adding a key is
+    // enough to start rather than the beginning of a shopping trip.
+    let suggested = catalog.as_ref().map(|catalog| {
+        serde_json::json!({
+            "speech_to_text": providers::openrouter::suggested_model(catalog, Capability::SpeechToText),
+            "prompt_enhancement": providers::openrouter::suggested_model(catalog, Capability::PromptEnhancement),
+            "cover_art": providers::openrouter::suggested_model(catalog, Capability::CoverArt),
+            "music_generation": providers::openrouter::suggested_model(catalog, Capability::MusicGeneration),
+        })
+    });
+    Json(serde_json::json!({
+        "models": catalog.map(|catalog| catalog.models),
+        "refreshed_at": refreshed_at,
+        "suggested": suggested,
+    }))
 }
 
 
@@ -1056,6 +1174,7 @@ async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
         configuration: state.configuration.read().await.clone(),
         selected_profile_id: state.selected_profile_id.read().await.clone(),
         selected_component_ids: state.selected_component_ids.read().await.clone(),
+        cover_templates: Some(state.cover_templates.read().await.clone()),
     };
     if let Some(parent) = state.settings_path.parent() { fs::create_dir_all(parent)?; }
     let temporary = state.settings_path.with_extension("json.part");
@@ -1271,10 +1390,11 @@ async fn assistant_runtime_start(
     Json(request): Json<AssistantModelRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let own_file = request.model_path.clone().unwrap_or_default();
+    let reasoning = state.assistant.read().await.reasoning_effort.clone();
     let base_url = if own_file.trim().is_empty() {
-        state.assistant_runtime.start(&request.model_id, 8192).await
+        state.assistant_runtime.start(&request.model_id, 8192, reasoning.as_deref()).await
     } else {
-        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192).await
+        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192, reasoning.as_deref()).await
     }
     .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(Json(serde_json::json!({ "base_url": base_url, "model_id": request.model_id, "model_path": own_file })))
@@ -1461,10 +1581,11 @@ async fn assistant_write(
                 AssistantProvider::Managed => {
                     let own_file = config.managed_path.clone().unwrap_or_default();
                     let id = config.managed_model.clone().unwrap_or_default();
+                    let reasoning = config.reasoning_effort.as_deref();
                     let base = if own_file.trim().is_empty() {
-                        state.assistant_runtime.start(&id, 8192).await
+                        state.assistant_runtime.start(&id, 8192, reasoning).await
                     } else {
-                        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192).await
+                        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192, reasoning).await
                     }
                     .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
                     (base, if own_file.trim().is_empty() { id } else { own_file })
@@ -1627,6 +1748,41 @@ async fn persist_completed_download_profile(state: AppState, job_id: String) {
     }
 }
 
+/// Uses a set that is already on disk.
+///
+/// Downloading was the only way to change which quantisation the studio runs,
+/// so a machine with two sets installed was stuck on whichever arrived last.
+/// This switches between what is already there, and refuses a set with a
+/// missing file rather than failing at generation time.
+async fn setup_select(
+    State(state): State<AppState>,
+    Json(request): Json<SetupSelectRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if let Some(profile_id) = request.profile_id.clone().filter(|value| !value.trim().is_empty()) {
+        let known = state.model_manager.catalog().profiles.iter().any(|profile| profile.id == profile_id);
+        if !known {
+            return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown profile {profile_id}")));
+        }
+        *state.selected_profile_id.write().await = Some(profile_id);
+        *state.selected_component_ids.write().await = None;
+    } else {
+        let ids = request.component_ids.unwrap_or_default();
+        if ids.is_empty() {
+            return Err(api_error(StatusCode::BAD_REQUEST, "nothing selected".to_string()));
+        }
+        state
+            .model_manager
+            .installed_component_files(&ids)
+            .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+        *state.selected_profile_id.write().await = None;
+        *state.selected_component_ids.write().await = Some(ids);
+    }
+    let _ = persist_studio_settings(&state).await;
+    let target = effective_install_target(&state).await;
+    let manager_status = state.model_manager.status(target).await;
+    Ok(Json(serde_json::to_value(compose_setup_status(&state, manager_status).await).unwrap_or(Value::Null)))
+}
+
 async fn setup_cancel(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let target = effective_install_target(&state).await;
     let manager_status = state
@@ -1707,7 +1863,7 @@ async fn create_music_job(
             let job = MusicJob {
                 id: remote.id,
                 engine_id,
-                title: request.title.clone(),
+                title: Some(titled(&request)),
                 status: MusicJobStatus::Queued,
                 dispatch: MusicJobDispatch::Local,
                 phase: MusicJobPhase::Queued,
@@ -1806,7 +1962,7 @@ async fn create_openrouter_music_job(state: AppState, request: CreateMusicJobReq
         Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
     let job = MusicJob {
-        id: format!("openrouter-{}", uuid_suffix()), engine_id: engine_id.clone(), title: request.title.clone(), status: MusicJobStatus::Running,
+        id: format!("openrouter-{}", uuid_suffix()), engine_id: engine_id.clone(), title: Some(titled(&request)), status: MusicJobStatus::Running,
         dispatch: MusicJobDispatch::OpenRouter, phase: MusicJobPhase::Running, caption: request.caption, lyrics: request.lyrics,
         duration_seconds: request.duration_seconds, generation_settings: stream_request.request.body.clone(), song: None, songs: vec![],
         message: "OpenRouter music stream started; the completed audio will be imported into the studio library.".into(),
@@ -2427,6 +2583,7 @@ mod tests {
             },
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
+            cover_templates: Some(cover_prompt::default_templates()),
         };
         let restored: PersistedStudioSettings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert!(restored.lyrics_sync.available());

@@ -65,6 +65,7 @@ import { NewsPage } from './components/NewsPage';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { SetupGate } from './components/SetupGate';
 import { EngineStarting } from './components/EngineStarting';
+import { StudioOffline } from './components/StudioOffline';
 import { StudioToolsPanel } from './components/StudioToolsPanel';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
 
@@ -112,7 +113,7 @@ function AppContent() {
   // unknown must not look like "nothing is installed": showing the download
   // page for a second on every launch is how a ready studio was made to look
   // like a bill.
-  const [nativeModels, setNativeModels] = useState<'unknown' | 'missing' | 'installed'>('unknown');
+  const [nativeModels, setNativeModels] = useState<'unknown' | 'missing' | 'installed' | 'offline'>('unknown');
   useEffect(() => {
     const read = () => void fetch('/setup/status')
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
@@ -120,7 +121,13 @@ function AppContent() {
         setNativeModels(status.ready === true ? 'installed' : 'missing');
         if (status.ready && status.engine_ready) setNativeSetupReady(true);
       })
-      .catch(() => undefined);
+      // A service that does not answer is not an engine that is still coming
+      // up: the application has been closed, and saying "starting" at a dead
+      // process is the one thing the window must not do.
+      .catch(() => {
+        setNativeModels('offline');
+        setNativeSetupReady(false);
+      });
     read();
     const timer = window.setInterval(read, 2000);
     return () => window.clearInterval(timer);
@@ -1225,6 +1232,7 @@ function AppContent() {
         // is a decision to make, and an engine coming up is a wait to sit
         // through. They used to be the same page, which made a running studio
         // look like it owed 26 GB.
+        if (nativeModels === 'offline') return <StudioOffline />;
         if (!nativeSetupReady) {
           // Until the studio has answered, and while the engine is coming up,
           // this is a wait - not a decision. The download page appears only

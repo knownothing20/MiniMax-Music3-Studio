@@ -128,7 +128,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
 
             {/* The same chooser as the first run, because it is the same
                 decision - only now nothing is waiting on it. */}
-            {section === 'models' && <div className="-m-6"><SetupGate /></div>}
+            {section === 'models' && <div className="-m-6"><SetupGate mode="settings" /></div>}
             {section === 'engine' && <EngineSettings />}
             {section === 'cloud' && <ProviderSettings />}
             {section === 'assistant' && <AssistantSettings />}

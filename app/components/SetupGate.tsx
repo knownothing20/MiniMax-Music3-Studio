@@ -157,7 +157,12 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
   );
 };
 
-export const SetupGate: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
+/**
+ * Same catalogue, two situations: the first run, where nothing is installed and
+ * the studio cannot work yet, and the settings page, where the models are there
+ * and the question is only which of them to use.
+ */
+export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 'settings' }> = ({ onReady, mode = 'first-run' }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -223,6 +228,29 @@ export const SetupGate: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
   const installedIds = status?.installed_components ?? [];
   const missing = chosenValues.filter((id) => !installedIds.includes(id));
 
+  // What the studio is set to right now, so "use this set" only appears when
+  // the selection on screen is something else.
+  const persisted = useMemo(() => {
+    const ids = status?.selected_component_ids;
+    if (ids?.length) return [...ids].sort().join('|');
+    const profile = catalog?.profiles.find((entry) => entry.id === status?.selected_profile_id);
+    return profile ? [...profile.components].sort().join('|') : '';
+  }, [status, catalog]);
+  const chosenKey = useMemo(() => (chosenIds ? [...chosenIds].sort().join('|') : ''), [chosenIds]);
+  const canApply = Boolean(chosenIds) && missing.length === 0 && chosenKey !== persisted;
+
+  const apply = async () => {
+    if (!chosenIds) return;
+    setError(null);
+    const response = await fetch('/setup/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ component_ids: chosenIds }),
+    });
+    if (!response.ok) setError(await errorMessage(response));
+    else await refresh().catch(() => undefined);
+  };
+
   const download = async () => {
     if (!chosenIds) return;
     setError(null);
@@ -243,12 +271,18 @@ export const SetupGate: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
   return (
     <div className="flex h-full w-full justify-center overflow-y-auto bg-white px-5 py-10 dark:bg-suno">
       <div className="w-full max-w-2xl">
-        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-pink-500">
-          <span className="h-2 w-2 rounded-full bg-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.75)]" />
-          {t('firstRun')}
-        </div>
-        <h1 className="mt-4 text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-white">{t('setupTitle')}</h1>
-        <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">{t('setupSubtitle')}</p>
+        {mode === 'first-run' && (
+          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-pink-500">
+            <span className="h-2 w-2 rounded-full bg-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.75)]" />
+            {t('firstRun')}
+          </div>
+        )}
+        <h1 className={`${mode === 'first-run' ? 'mt-4 text-3xl' : 'text-2xl'} font-extrabold tracking-tight text-zinc-900 dark:text-white`}>
+          {mode === 'first-run' ? t('setupTitle') : t('resourcesTitle')}
+        </h1>
+        <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+          {mode === 'first-run' ? t('setupSubtitle') : t('resourcesSubtitle')}
+        </p>
 
         {error && (
           <div className="mt-5 flex gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
@@ -256,10 +290,10 @@ export const SetupGate: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
           </div>
         )}
 
-        <div className="mt-5 rounded-xl border border-pink-300/50 bg-pink-50 px-4 py-3 text-sm text-zinc-700 dark:border-pink-500/25 dark:bg-pink-500/10 dark:text-zinc-200">
+        {mode === 'first-run' && <div className="mt-5 rounded-xl border border-pink-300/50 bg-pink-50 px-4 py-3 text-sm text-zinc-700 dark:border-pink-500/25 dark:bg-pink-500/10 dark:text-zinc-200">
           <span className="font-semibold text-pink-600 dark:text-pink-400">{t('recommendedForMachine')}</span>{' '}
           {status?.hardware?.reason || t('recommendedFallback')}. {t('setupResumable')}
-        </div>
+        </div>}
 
 
 
@@ -340,8 +374,19 @@ export const SetupGate: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
               {missing.length === 0 ? t('everythingInstalled') : `${t('downloadSelectedProfile')} · ${bytes(selectedComponentBytes(catalog?.components || [], missing))}`}
             </button>
           )}
-          {missing.length === 0 && chosenIds && (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-300"><Check size={14} />{t('setComplete')}</span>
+          {canApply && (
+            <button
+              type="button"
+              onClick={() => void apply()}
+              className="inline-flex items-center gap-2 rounded-xl border border-pink-400 px-4 py-2.5 text-sm font-semibold text-pink-600 hover:bg-pink-500/10 dark:border-pink-500/40 dark:text-pink-300"
+            >
+              <Check size={15} />{t('applySelection')}
+            </button>
+          )}
+          {missing.length === 0 && chosenIds && !canApply && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-300">
+              <Check size={14} />{chosenKey === persisted ? t('selectionApplied') : t('setComplete')}
+            </span>
           )}
         </div>
 

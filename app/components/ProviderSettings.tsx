@@ -61,6 +61,9 @@ export const ProviderSettings: React.FC = () => {
   const [engines, setEngines] = useState<EngineDescriptor[]>([]);
   const [selections, setSelections] = useState<ProviderSelection[]>([]);
   const [models, setModels] = useState<CatalogModel[]>([]);
+  // What the studio would use for a capability the user has not chosen for.
+  // The select shows it as the value, so a key is enough to start.
+  const [suggested, setSuggested] = useState<Partial<Record<CapabilityId, string>>>({});
   const [settings, setSettings] = useState<OpenRouterSettings | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
@@ -94,6 +97,7 @@ export const ProviderSettings: React.FC = () => {
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || `OpenRouter catalog request failed (${response.status})`);
       setModels(body?.models ?? []);
+      setSuggested(body?.suggested ?? {});
       if (refresh) setNotice(`${t('refreshCatalog')}: ${(body?.models ?? []).length}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not read the OpenRouter catalog.');
@@ -300,7 +304,7 @@ export const ProviderSettings: React.FC = () => {
                   )
                 ) : cloud.length > 0 ? (
                   <select
-                    value={selection.cloud_model ?? ''}
+                    value={selection.cloud_model ?? suggested[selection.capability] ?? ''}
                     disabled={busy === 'configuration'}
                     onChange={event => update(selection.capability, { cloud_model: event.target.value || null })}
                     className={CONTROL}
