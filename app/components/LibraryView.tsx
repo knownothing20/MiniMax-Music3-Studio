@@ -3,6 +3,7 @@ import { Song, Playlist } from '../types';
 import { Heart, Plus, Music, Play, MoreHorizontal, Trash2, Upload, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
+import { StemsModal } from './StemsModal';
 import { AlbumCover } from './AlbumCover';
 import { useI18n } from '../context/I18nContext';
 import { captionSummary } from '../services/examples';
@@ -37,6 +38,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     const { t } = useI18n();
     const { user } = useAuth();
     const [openMenuSong, setOpenMenuSong] = useState<Song | null>(null);
+    // The track whose stems are on screen, if any.
+    const [stemsSong, setStemsSong] = useState<Song | null>(null);
     const [activeTab, setActiveTab] = useState<'all' | 'playlists' | 'liked' | 'import'>('all');
     const [importing, setImporting] = useState(false);
     const [importError, setImportError] = useState<string | null>(null);
@@ -164,6 +167,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                         onClose={() => setOpenMenuSong(null)}
                                         isOwner={isNativeLibrary || (user ? song.userId === user.id : false)}
                                         onReusePrompt={() => onReusePrompt?.(song)}
+                                        onSeparateStems={() => setStemsSong(song)}
                                         onAddToPlaylist={() => onAddToPlaylist(song)}
                                         onDelete={() => onDeleteSong?.(song)}
                                     />
@@ -228,6 +232,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                         onClose={() => setOpenMenuSong(null)}
                                         isOwner={isNativeLibrary || (user ? song.userId === user.id : false)}
                                         onReusePrompt={() => onReusePrompt?.(song)}
+                                        onSeparateStems={() => setStemsSong(song)}
                                         onAddToPlaylist={() => onAddToPlaylist(song)}
                                         onDelete={() => onDeleteSong?.(song)}
                                     />
@@ -284,6 +289,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                  </div>
              )}
         </div>
+        {stemsSong && <StemsModal song={stemsSong} onClose={() => setStemsSong(null)} />}
         </>
     );
 };

@@ -11,6 +11,7 @@ mod credentials;
 mod model_manager;
 mod presets;
 mod resources;
+mod separation;
 mod skill;
 mod library;
 mod mm_result;
@@ -59,6 +60,10 @@ struct AppState {
     cover_templates: Arc<RwLock<Vec<cover_prompt::CoverTemplate>>>,
     /// The look a new cover starts from, chosen in Settings.
     cover_template_default: Arc<RwLock<Option<String>>>,
+    separator: Arc<separation::Separator>,
+    /// The separation run in progress, if any. One at a time: the model wants
+    /// the whole machine for a minute, and two runs would only make both slow.
+    separation_run: Arc<RwLock<Option<SeparationRun>>>,
 }
 
 #[derive(Clone)]
@@ -418,6 +423,10 @@ pub async fn serve() -> anyhow::Result<()> {
         cover_template_default: Arc::new(RwLock::new(
             persisted.as_ref().and_then(|settings| settings.cover_template_default.clone()),
         )),
+        separator: Arc::new(separation::Separator::new(
+            &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
+        )),
+        separation_run: Arc::new(RwLock::new(None)),
         selected_profile_id: Arc::new(RwLock::new(selected_profile_id)),
         selected_component_ids: Arc::new(RwLock::new(selected_component_ids)),
         settings_path,
@@ -463,6 +472,10 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
         .route("/v1/openrouter/covers", post(create_openrouter_cover))
+        .route("/v1/separation/status", get(separation_status))
+        .route("/v1/separation/install", post(install_separation_model))
+        .route("/v1/library/songs/{id}/stems", get(read_stems).post(start_separation))
+        .route("/v1/library/songs/{id}/stems/{stem}", get(read_stem_audio))
         .route("/v1/cover-templates", get(read_cover_templates).put(write_cover_templates))
         .route("/v1/cover-templates/render", post(render_cover_template))
         .route("/v1/openrouter/completions", post(create_openrouter_completion))
@@ -603,6 +616,166 @@ struct RenderCoverPromptRequest {
     style: Option<String>,
     #[serde(default)]
     lyrics: Option<String>,
+}
+
+
+/// One separation in progress, as the interface sees it.
+#[derive(Debug, Clone, Serialize)]
+struct SeparationRun {
+    song_id: String,
+    /// Between 0 and 1.
+    progress: f64,
+    done: bool,
+    error: Option<String>,
+    stems: Vec<String>,
+}
+
+/// Where a song's stems live: beside the track, named after it.
+fn stem_path(state: &AppState, song_id: &str, stem: &str) -> PathBuf {
+    state.library.media_dir().join(format!("{song_id}-{stem}.wav"))
+}
+
+fn stems_on_disk(state: &AppState, song_id: &str) -> Vec<String> {
+    separation::STEMS
+        .iter()
+        .filter(|stem| stem_path(state, song_id, stem).is_file())
+        .map(|stem| (*stem).to_string())
+        .collect()
+}
+
+async fn separation_status(State(state): State<AppState>) -> Json<Value> {
+    let runtime = state.lyrics_sync.onnxruntime_library();
+    Json(serde_json::json!({
+        "model": {
+            "id": separation::MODEL.id,
+            "label": separation::MODEL.label,
+            "bytes": separation::MODEL.bytes,
+            "note": separation::MODEL.note,
+            "installed": state.separator.is_installed(),
+        },
+        "runtime_installed": runtime.is_some(),
+        "ready": state.separator.ready(runtime.as_deref()),
+        "stems": separation::STEMS,
+        "download": state.separator.downloader().active().await,
+        "run": state.separation_run.read().await.clone(),
+    }))
+}
+
+/// Fetches the separation model. Nothing here downloads on its own; this is the
+/// button, and it also brings the runtime if karaoke has not already.
+async fn install_separation_model(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let separator = state.separator.clone();
+    let sync = state.lyrics_sync.clone();
+    tokio::spawn(async move {
+        if sync.onnxruntime_library().is_none() {
+            if let Some(runtime) = lyrics_sync::asset("onnxruntime") {
+                let _ = sync.downloader().install(runtime).await;
+            }
+        }
+        let _ = separator.downloader().install(&separation::MODEL).await;
+    });
+    Ok(Json(serde_json::json!({ "started": true })))
+}
+
+async fn read_stems(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+    Json(serde_json::json!({
+        "song_id": id,
+        "stems": stems_on_disk(&state, &id),
+        "run": state.separation_run.read().await.clone(),
+    }))
+}
+
+async fn read_stem_audio(
+    State(state): State<AppState>,
+    Path((id, stem)): Path<(String, String)>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    if !separation::STEMS.contains(&stem.as_str()) {
+        return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown stem {stem}")));
+    }
+    let path = stem_path(&state, &id, &stem);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| api_error(StatusCode::NOT_FOUND, "this track has no such stem yet".into()))?;
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes))
+        .expect("valid stem response"))
+}
+
+/// Separates one track into stems, in the background, reporting progress.
+async fn start_separation(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if state.separation_run.read().await.as_ref().is_some_and(|run| !run.done) {
+        return Err(api_error(StatusCode::CONFLICT, "a track is already being separated".into()));
+    }
+    let runtime = state
+        .lyrics_sync
+        .onnxruntime_library()
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "the ONNX Runtime is not installed yet".into()))?;
+    if !state.separator.is_installed() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "the separation model is not installed yet".into()));
+    }
+    let song = state
+        .library
+        .get_song(&id)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
+    let audio_path = state
+        .library
+        .media_path_for_song(&song)
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "this track has no stored audio".into()))?;
+
+    *state.separation_run.write().await =
+        Some(SeparationRun { song_id: id.clone(), progress: 0.0, done: false, error: None, stems: vec![] });
+
+    let model = state.separator.model_path();
+    let background = state.clone();
+    let song_id = id.clone();
+    tokio::task::spawn_blocking(move || {
+        // Must be set before anything touches `ort`, or it binds to whatever
+        // onnxruntime.dll the system happens to have.
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| unsafe { std::env::set_var("ORT_DYLIB_PATH", &runtime) });
+
+        let outcome = (|| -> anyhow::Result<Vec<String>> {
+            let audio = audio_pcm::decode_stereo_44k(&audio_path)?;
+            let handle = tokio::runtime::Handle::current();
+            let stems = separation::separate(&model, &audio, separation::STEMS.len(), |fraction| {
+                let state = background.clone();
+                handle.spawn(async move {
+                    if let Some(run) = state.separation_run.write().await.as_mut() {
+                        run.progress = fraction;
+                    }
+                });
+            })?;
+            let mut written = Vec::new();
+            for stem in stems {
+                let path = stem_path(&background, &song_id, stem.name);
+                separation::write_wav_stereo(&path, &stem.samples)?;
+                written.push(stem.name.to_string());
+            }
+            Ok(written)
+        })();
+
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
+            if let Some(run) = background.separation_run.write().await.as_mut() {
+                run.done = true;
+                match outcome {
+                    Ok(stems) => {
+                        run.progress = 1.0;
+                        run.stems = stems;
+                    }
+                    Err(error) => run.error = Some(error.to_string()),
+                }
+            }
+        });
+    });
+
+    Ok(Json(serde_json::json!({ "started": true, "song_id": id })))
 }
 
 async fn read_cover_templates(State(state): State<AppState>) -> Json<Value> {

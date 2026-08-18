@@ -33,6 +33,92 @@ pub fn write_wav16k_mono(input: &Path, output: &Path) -> Result<()> {
     write_wav(output, &decode_mono_16k(input)?)
 }
 
+/// Decodes `input` to interleaved 44.1 kHz stereo, which is what the separation
+/// model was trained on. Mono sources are doubled rather than refused: a mono
+/// track still separates, it simply has the same signal in both channels.
+pub fn decode_stereo_44k(input: &Path) -> Result<Vec<f32>> {
+    let (channels, rate) = decode_channels(input)?;
+    if channels.is_empty() || channels[0].is_empty() {
+        bail!("{} decoded to no audio", input.display());
+    }
+    let left = resample(&channels[0], rate, 44_100);
+    let right = match channels.get(1) {
+        Some(samples) => resample(samples, rate, 44_100),
+        None => left.clone(),
+    };
+    let frames = left.len().min(right.len());
+    let mut interleaved = Vec::with_capacity(frames * 2);
+    for frame in 0..frames {
+        interleaved.push(left[frame]);
+        interleaved.push(right[frame]);
+    }
+    Ok(interleaved)
+}
+
+/// Every channel kept apart, at the file's own sample rate.
+fn decode_channels(path: &Path) -> Result<(Vec<Vec<f32>>, u32)> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        hint.with_extension(extension);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, stream, &FormatOptions::default(), &MetadataOptions::default())
+        .with_context(|| format!("recognise the format of {}", path.display()))?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .context("the file carries no decodable audio track")?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .context("no decoder for this audio")?;
+
+    let mut planes: Vec<Vec<f32>> = Vec::new();
+    let mut rate = track.codec_params.sample_rate.unwrap_or(44_100);
+    let mut buffer: Option<SampleBuffer<f32>> = None;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(symphonia::core::errors::Error::IoError(error))
+                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break
+            }
+            Err(error) => return Err(error).context("read audio packet"),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+            Err(error) => return Err(error).context("decode audio packet"),
+        };
+        let spec = *decoded.spec();
+        rate = spec.rate;
+        let channels = spec.channels.count().max(1);
+        if planes.len() < channels {
+            planes.resize(channels, Vec::new());
+        }
+        let target = buffer.get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, spec));
+        target.copy_interleaved_ref(decoded);
+        for frame in target.samples().chunks(channels) {
+            for (channel, sample) in frame.iter().enumerate() {
+                planes[channel].push(*sample);
+            }
+        }
+    }
+
+    Ok((planes, rate))
+}
+
 /// Every channel averaged into one, at the file's own sample rate.
 fn decode_mono(path: &Path) -> Result<(Vec<f32>, u32)> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;

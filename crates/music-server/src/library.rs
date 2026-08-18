@@ -138,6 +138,9 @@ impl Library {
   let media_type=song.metadata.get("cover_media_type").and_then(|v|v.as_str()).unwrap_or("image/png").to_owned();
   self.media_file(filename).map(|path|(path,media_type))
  }
+ /// Where media for this library lives. Stems are written here so they
+ /// sit beside the track they came from.
+ pub fn media_dir(&self)->&Path{&self.media_dir}
  pub fn media_file(&self,filename:&str)->Option<PathBuf>{if filename.is_empty()||filename.contains(['/', '\\'])||Path::new(filename).file_name().and_then(|x|x.to_str())!=Some(filename){return None}let path=self.media_dir.join(filename);path.is_file().then_some(path)}
  pub fn media_path_for_song(&self,song:&Song)->Option<PathBuf>{let candidate=PathBuf::from(song.audio_path.as_ref()?);let root=self.media_dir.canonicalize().ok()?;let resolved=candidate.canonicalize().ok()?;resolved.starts_with(root).then_some(resolved)}
  /// Stores karaoke timings with the track. They live in the metadata rather
