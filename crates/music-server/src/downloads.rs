@@ -97,11 +97,21 @@ impl Downloader {
         self.root.join("runtime").join(flavour)
     }
 
+    /// Where an asset's picked files land. Without a flavour they land in the
+    /// root itself, which is how the engine's CUDA libraries end up beside
+    /// `mm-server.exe` - the only place Windows looks without being told.
+    pub fn picked_into(&self, asset: &Asset) -> PathBuf {
+        match asset.unzip_into {
+            Some(flavour) => self.runtime_dir(flavour),
+            None => self.root.clone(),
+        }
+    }
+
     /// A model is installed when its size matches exactly; a runtime when its
     /// own marker file is present in the directory it unpacks into.
     pub fn is_installed(&self, asset: &Asset) -> bool {
         if !asset.pick.is_empty() {
-            let destination = self.root.join("runtime").join(asset.unzip_into.unwrap_or("."));
+            let destination = self.picked_into(asset);
             return asset.pick.iter().all(|name| destination.join(name).is_file());
         }
         if let Some(flavour) = asset.unzip_into {
@@ -217,7 +227,10 @@ impl Downloader {
             // An asset that names its files never downloads the archive: the
             // wanted entries are read straight out of it over range requests.
             if !asset.pick.is_empty() {
-                let destination = root.join("runtime").join(asset.unzip_into.unwrap_or("."));
+                let destination = match asset.unzip_into {
+                    Some(flavour) => root.join("runtime").join(flavour),
+                    None => root.clone(),
+                };
                 let reporter = progress.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
                     crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |written| {

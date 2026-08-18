@@ -241,10 +241,12 @@ function AppContent() {
   }, []);
 
   // Theme State
+  // Dark is the studio's own look, not a preference inherited from the desktop:
+  // the interface was drawn for it, and a light Windows was turning a music
+  // studio into a spreadsheet on first launch. A user who picks light keeps it.
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const stored = localStorage.getItem('theme');
-    if (stored === 'dark' || stored === 'light') return stored;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return stored === 'light' ? 'light' : 'dark';
   });
 
   // Navigation State - default to create view

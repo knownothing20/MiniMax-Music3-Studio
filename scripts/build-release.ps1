@@ -67,10 +67,15 @@ try {
     # every cargo warning into a terminating error. Exit codes are the truth
     # here, so they are checked directly.
     $ErrorActionPreference = 'Continue'
-    cargo test --workspace
-    if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
     & (Join-Path $PSScriptRoot 'build-minimax-runtime.ps1') -OutputDirectory $engineResourceRoot -RuntimeBackend $RuntimeBackend -CudaArchitecture universal
     if ($LASTEXITCODE -ne 0) { throw "the engine runtime build failed with exit code $LASTEXITCODE" }
+    # The engine is built first on purpose: one of these tests reads the staged
+    # bundle's import tables and fails if it names a library that is neither
+    # beside it nor downloaded on first start. Run the other way round it would
+    # only ever inspect the previous build - which is how a release shipped
+    # without cuBLAS and could not start on a machine without the CUDA Toolkit.
+    cargo test --workspace
+    if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
 
     $config = Get-Content -Raw $templatePath
     $config = $config.Replace('__TAURI_UPDATER_PUBKEY__', $env:TAURI_UPDATER_PUBKEY)

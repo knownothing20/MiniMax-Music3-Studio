@@ -77,6 +77,9 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
   const { t } = useI18n();
   const [status, setStatus] = useState<OptionalStatus | null>(null);
   const [open, setOpen] = useState(false);
+  // A refused download used to be silent: the request failed, the reply was
+  // thrown away, and the button simply did nothing twice in a row.
+  const [failed, setFailed] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const response = await fetch(statusUrl);
@@ -130,11 +133,19 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
                         {removeUrl && (
                           <button
                             type="button"
-                            onClick={() => void fetch(removeUrl, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ asset_id: asset.id }),
-                            }).then(() => load())}
+                            onClick={() => {
+                              setFailed(null);
+                              void fetch(removeUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ asset_id: asset.id }),
+                              })
+                                .then(async (response) => {
+                                  if (!response.ok) setFailed(await errorMessage(response));
+                                  return load();
+                                })
+                                .catch((error: Error) => setFailed(error.message));
+                            }}
                             disabled={Boolean(status?.active_download && !status.active_download.done)}
                             title={t('removeDownloaded')}
                             className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-500 hover:border-rose-400 hover:text-rose-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-400"
@@ -147,11 +158,19 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
                     ) : (
                       <button
                         type="button"
-                        onClick={() => void fetch(installUrl, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ asset_id: asset.id }),
-                        }).then(() => load())}
+                        onClick={() => {
+                          setFailed(null);
+                          void fetch(installUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ asset_id: asset.id }),
+                          })
+                            .then(async (response) => {
+                              if (!response.ok) setFailed(await errorMessage(response));
+                              return load();
+                            })
+                            .catch((error: Error) => setFailed(error.message));
+                        }}
                         disabled={Boolean(status?.active_download && !status.active_download.done)}
                         className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-300"
                       >
@@ -170,6 +189,7 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
               </div>
             );
           })}
+          {failed && <p className="text-xs text-rose-600 dark:text-rose-300">{failed}</p>}
           {status?.active_download?.error && <p className="text-xs text-rose-600 dark:text-rose-300">{status.active_download.error}</p>}
         </div>
       )}

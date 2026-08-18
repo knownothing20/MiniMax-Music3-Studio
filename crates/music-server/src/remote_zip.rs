@@ -299,6 +299,35 @@ mod tests {
         assert_eq!(&tail[..4], b"PK", "the end of central directory should be here");
     }
 
+    /// The real thing, end to end, on the archive the engine depends on:
+    /// `cargo test -p music-server -- --ignored the_engines_libraries`.
+    /// Half a gigabyte over range requests is not something to guess about.
+    #[test]
+    #[ignore]
+    fn the_engines_libraries_come_out_of_nvidias_archive() {
+        let destination = std::env::temp_dir().join("mm3-cublas-extract-check");
+        std::fs::remove_dir_all(&destination).ok();
+        let asset = crate::engine_runtime::ASSETS.first().expect("one asset");
+        let names = extract_named(asset.url, asset.pick, &destination, |written| {
+            if written % (64 * 1024 * 1024) < 4 * 1024 * 1024 {
+                println!("{} MB", written / (1024 * 1024));
+            }
+        })
+        .expect("extract the engine's CUDA libraries");
+        for name in asset.pick {
+            let file = destination.join(name);
+            let size = std::fs::metadata(&file).map(|meta| meta.len()).unwrap_or(0);
+            println!("{name}: {size} bytes");
+            assert!(size > 1_000_000, "{name} came out empty or truncated");
+            // A DLL that unpacked wrong is still a file; the header is what the
+            // loader actually reads.
+            let head = std::fs::read(&file).expect("read the library");
+            assert_eq!(&head[..2], b"MZ", "{name} is not a Windows binary");
+        }
+        assert_eq!(names.len(), asset.pick.len());
+        std::fs::remove_dir_all(&destination).ok();
+    }
+
     #[test]
     fn a_range_reader_seeks_the_way_a_zip_expects() {
         // No network here: the arithmetic is what breaks a zip reader, and it

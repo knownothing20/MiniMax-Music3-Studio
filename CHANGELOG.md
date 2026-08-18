@@ -3,6 +3,46 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## 2026-08-19 — 1.3.2
+
+### Fixed
+
+- **The engine could not start on a machine without the CUDA Toolkit.**
+  `mm-server.exe` loads `ggml.dll`, which loads `ggml-cuda.dll`, which imports
+  `cublas64_13.dll` and through it `cublasLt64_13.dll` — all static imports,
+  resolved by Windows before the engine's own code runs. Neither library was
+  shipped, so the process died in the loader with "cublas64_13.dll was not
+  found" and no fallback to the processor was possible. The studio now installs
+  them itself, from NVIDIA's own redistributable archive, beside the engine
+  binary where the loader looks first. A machine that already has them — a CUDA
+  Toolkit on PATH — downloads nothing.
+- **The Visual C++ runtime was missing the same way.** The engine and ggml
+  import `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` and
+  `VCOMP140.DLL`. When they are absent the studio downloads Microsoft's own
+  redistributable and runs it, once, and only then.
+- A refused optional download said nothing at all: the reply was discarded
+  unread, so pressing the button twice looked identical to a button that does
+  nothing. The reason now appears under the list.
+- Two of the five interface languages carried `karaokeOff` twice, and the
+  second silently replaced the first.
+
+### Added
+
+- The starting screen reports the library download with real percentages and
+  gigabytes, and the "this is taking too long" warning no longer fires while
+  half a gigabyte is on its way.
+- A release now checks itself: a test walks the import tables of the built
+  engine bundle and fails if it names a library that is neither beside it nor
+  installed on first start. It found the Visual C++ runtime immediately.
+
+### Changed
+
+- The studio opens in its dark theme unless the user has chosen otherwise.
+- The CUDA build carries PTX for the newest architecture as well
+  (`120-virtual`), so a card released after Blackwell has something to compile
+  from instead of failing at the first kernel launch — NVIDIA's own
+  "Building for Maximum Compatibility" rule.
+
 ## 2026-08-19 — 1.3.1
 
 ### Added

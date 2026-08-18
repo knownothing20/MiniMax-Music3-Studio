@@ -36,7 +36,23 @@ arrangement: the song as a section-by-section timeline: "Instrument Lifecycle De
 
 /// The lyric rules, likewise transcribed: the tag vocabulary and the structure
 /// sizing are what keep the sung result aligned with the requested length.
-const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, use [instrumental] sections with no words. Write the lyrics in the language the user wrote their request in: a Russian idea gets Russian lyrics, a Japanese one Japanese. The caption fields stay English - that is what the engine reads - but nobody asked for an English song."#;
+const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag - the engine keeps the tag and throws that line's words away. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds, and keep neighbouring lines close in length: a line much denser than the one before it gets sung rushed. The engine does not budget time - it sings until the clock runs out and stops there, mid-phrase if it has to - so write slightly less than the duration allows and never leave the song's payoff line for the outro. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, use [instrumental] sections with no words. Write the lyrics in the language the user wrote their request in: a Russian idea gets Russian lyrics, a Japanese one Japanese. The caption fields stay English - that is what the engine reads - but nobody asked for an English song."#;
+
+/// Pronunciation, which the caption cannot reach: the engine reads the lyrics
+/// as characters, so the only place to correct a mis-sung word is the word.
+const DICTION_RULE: &str = r#"
+Diction: the model sings the letters it is given. In Russian write ё as ё rather than е, and mark the stressed vowel with a combining acute - за́мок, замо́к - only where the word would otherwise be read wrong: homographs, rare words, proper names, and a word whose natural stress fights the beat. Never accent every word; a page of accents reads as noise. In other languages do the same locally - respell or transcribe only the individual words that come out wrong, and leave the rest alone."#;
+
+/// Two voices, from a community experiment on the released weights: ~30
+/// generations with pinned seeds, one variable at a time. Describing both
+/// singers in the caption alone never worked; short tags in the lyrics did.
+const DUET_RULE: &str = r#"
+Two voices: name both singers in vocal_details ("Singer A (Male), <timbre>. Singer B (Female), <timbre>."), say plainly which one is heard first, and state each assignment in full - "Singer B sings the second verse alone; the male voice is absent there, not even as harmony". When exactly two voices are wanted, say so as an exclusion: no doubling, no stacked harmonies, no backing choir, never more than two human voices at once - otherwise the second voice arrives as a group. Mark the switches in the lyrics with a tag of one or two words alone on its own line - [male vocal], [female vocal], [duet] - and never longer, because a tag of several words gets sung aloud as if it were a line. Switch at section or couplet level, never line by line. Let the male voice open when both are needed, and bring the second voice in early rather than after a long stretch of the first. Describe each voice once, plainly and confidently: repeating a description or hedging it ("small, quiet, never doubled") makes that voice disappear instead."#;
+
+/// The failure mode of an instrumental request: vocals creep back in. Naming
+/// what carries the melody instead leaves the model something to sing with.
+const INSTRUMENTAL_RULE: &str = r#"
+Instrumental: state in vocal_details that the piece is instrumental with no sung words, no wordless or sampled vocals and no choir, and name the instrument carrying the lead melodic line in every section that would otherwise have carried a vocal."#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,12 +116,13 @@ pub struct AssistDraft {
 /// The system prompt and the JSON keys the answer must carry.
 pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]) {
     let references = references_for(request);
+    let notes = craft_notes(request);
     match request.target {
         AssistTarget::Lyrics => (
             format!(
                 "You write lyrics for MiniMax Music 3, a lyrics+description music generation model.\n\
                  Given a lyrics instruction, the current structured prompt (global metadata, vocal details, arrangement) and a target duration, write lyrics coherent with that structured prompt.\n\
-                 {LYRICS_RULES}\n\
+                 {LYRICS_RULES}{notes}\n\
                  Answer with ONLY a JSON object with key: lyrics."
             ),
             &["lyrics"],
@@ -113,7 +130,7 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
         AssistTarget::Prompt => (
             format!(
                 "You write the structured caption for MiniMax Music 3, a lyrics+description music generation model.\n\
-                 Given a sound instruction and/or lyrics, produce global_metadata, vocal_details and arrangement. Build the arrangement timeline around the lyric section tags when lyrics are provided. {CAPTION_CONTRACT}\n\
+                 Given a sound instruction and/or lyrics, produce global_metadata, vocal_details and arrangement. Build the arrangement timeline around the lyric section tags when lyrics are provided. {CAPTION_CONTRACT}{notes}\n\
                  Also write {EXTRA}\n\
                  Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds."
             ),
@@ -124,7 +141,7 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
                 "You write inputs for MiniMax Music 3, a lyrics+description music generation model.\n\
                  Given a song description and a target duration, produce:\n\
                  1. {LYRICS_RULES}\n\
-                 2-4. global_metadata, vocal_details, arrangement — a structured caption. {CAPTION_CONTRACT}\n\
+                 2-4. global_metadata, vocal_details, arrangement — a structured caption. {CAPTION_CONTRACT}{notes}\n\
                  5-6. {EXTRA}\n\
                  Answer with ONLY a JSON object with keys: lyrics, global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds.
                  {VALIDATION}{references}"
@@ -132,6 +149,50 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
             &["lyrics", "global_metadata", "vocal_details", "arrangement"],
         ),
     }
+}
+
+/// The rules that only apply to some songs.
+///
+/// Everything here costs prompt room and, on a small local model, attention.
+/// A diction rule matters whenever words are being written; the duet rule
+/// matters for the few songs that have two singers, and stating it for a solo
+/// vocal would only invite one. So each arrives when the request calls for it.
+fn craft_notes(request: &AssistRequest) -> String {
+    let mut notes = String::new();
+    if request.target != AssistTarget::Prompt && !request.instrumental {
+        notes.push_str(DICTION_RULE);
+    }
+    if request.instrumental {
+        notes.push_str(INSTRUMENTAL_RULE);
+    } else if wants_two_voices(request) {
+        notes.push_str(DUET_RULE);
+    }
+    notes
+}
+
+/// Whether the song has two singers, read from whatever the user wrote.
+fn wants_two_voices(request: &AssistRequest) -> bool {
+    const CUES: &[&str] = &[
+        "duet",
+        "дуэт",
+        "two voices",
+        "два голоса",
+        "male and female",
+        "female and male",
+        "мужской и женский",
+        "женский и мужской",
+        "singer b",
+        "call and response",
+        "перекличк",
+        "вдвоём",
+        "вдвоем",
+    ];
+    let brief = format!(
+        "{} {} {} {}",
+        request.description, request.instruction, request.vocal_details, request.lyrics
+    )
+    .to_lowercase();
+    CUES.iter().any(|cue| brief.contains(cue))
 }
 
 /// The user message, carrying whichever side of the song already exists so the
@@ -565,6 +626,55 @@ neon on the wet road"));
         };
         let (system, _) = super::instructions(&request);
         assert!(system.contains("language the user wrote their request in"));
+    }
+
+    /// A stress mark is the only lever there is on pronunciation: the caption
+    /// never reaches the singing, the letters do.
+    #[test]
+    fn a_sung_request_carries_the_diction_rule() {
+        let request = super::AssistRequest {
+            target: super::AssistTarget::All,
+            description: "песня про замок на горе".into(),
+            instruction: String::new(),
+            lyrics: String::new(),
+            global_metadata: String::new(),
+            vocal_details: String::new(),
+            arrangement: String::new(),
+            duration_seconds: 90.0,
+            instrumental: false,
+        };
+        let (system, _) = super::instructions(&request);
+        assert!(system.contains("combining acute"), "nothing tells the model how to fix a stress");
+        assert!(system.contains("ё"), "the ё rule is missing");
+    }
+
+    /// Two singers need rules a solo song must not see: told to a one-voice
+    /// song, they would invite a second voice that nobody asked for.
+    #[test]
+    fn the_duet_rules_arrive_only_for_two_voices() {
+        let mut solo = request(AssistTarget::All);
+        solo.description = "a night drive synth pop song".into();
+        solo.vocal_details = String::new();
+        solo.lyrics = String::new();
+        let (system, _) = instructions(&solo);
+        assert!(!system.contains("[male vocal]"), "a solo song was given duet rules");
+
+        let mut duet = solo.clone();
+        duet.description = "дуэт мужского и женского голоса, поп-баллада".into();
+        let (system, _) = instructions(&duet);
+        assert!(system.contains("[male vocal]"), "the duet has no voice tags to use");
+        assert!(system.contains("no backing choir"), "the anti-choir clause is missing");
+    }
+
+    /// An instrumental gets the opposite instruction, and no diction rule:
+    /// there is nothing to pronounce.
+    #[test]
+    fn an_instrumental_is_told_what_carries_the_melody() {
+        let mut instrumental = request(AssistTarget::All);
+        instrumental.instrumental = true;
+        let (system, _) = instructions(&instrumental);
+        assert!(system.contains("lead melodic line"), "nothing replaces the missing vocal");
+        assert!(!system.contains("combining acute"), "an instrumental was given a diction rule");
     }
 
     /// "required" alone let the model answer with an empty string and still

@@ -18,6 +18,10 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
   const [seconds, setSeconds] = useState(0);
   const [failed, setFailed] = useState<string | null>(null);
   const [foreign, setForeign] = useState<string | null>(null);
+  // The engine binary is linked against CUDA libraries that are downloaded
+  // rather than shipped - half a gigabyte of them. While they arrive the
+  // engine cannot start, and this screen has to say so with a number.
+  const [runtime, setRuntime] = useState<{ downloading: boolean; downloaded: number; total: number; error?: string | null } | null>(null);
 
   useEffect(() => {
     const started = Date.now();
@@ -41,6 +45,22 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
           setForeign(body.engine_bundle_present === false ? body.service_executable ?? '' : null);
         })
         .catch(() => undefined);
+      await fetch('/setup/status')
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
+        .then((body: { engine_runtime?: { ready?: boolean; downloading?: boolean; downloaded_bytes?: number; total_bytes?: number; error?: string | null } }) => {
+          const state = body.engine_runtime;
+          setRuntime(
+            state && state.ready === false
+              ? {
+                  downloading: state.downloading === true,
+                  downloaded: state.downloaded_bytes ?? 0,
+                  total: state.total_bytes ?? 0,
+                  error: state.error,
+                }
+              : null,
+          );
+        })
+        .catch(() => undefined);
     };
     void read();
     const timer = window.setInterval(() => void read(), 1000);
@@ -48,17 +68,25 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
   }, [onReady]);
 
   // Starting takes about three seconds here. Much longer than that means
-  // something is wrong, and silence would be the worst answer.
+  // something is wrong, and silence would be the worst answer - unless half a
+  // gigabyte of libraries is on its way, which legitimately takes minutes.
   useEffect(() => {
-    if (seconds < 45) return;
+    if (seconds < 45 || runtime) return;
     setFailed(t('engineSlowToStart'));
-  }, [seconds, t]);
+  }, [seconds, t, runtime]);
 
-  const steps = [
-    { label: t('stepModels'), done: true, active: false },
-    { label: t('stepEngine'), done: false, active: true },
-    { label: t('stepReady'), done: false, active: false },
-  ];
+  const percent = runtime && runtime.total > 0 ? Math.min(100, Math.round((runtime.downloaded / runtime.total) * 100)) : 0;
+  const steps = runtime
+    ? [
+        { label: `${t('stepEngineLibraries')} — ${percent}%`, done: false, active: true },
+        { label: t('stepEngine'), done: false, active: false },
+        { label: t('stepReady'), done: false, active: false },
+      ]
+    : [
+        { label: t('stepModels'), done: true, active: false },
+        { label: t('stepEngine'), done: false, active: true },
+        { label: t('stepReady'), done: false, active: false },
+      ];
 
   return (
     <div className="flex h-full w-full items-center justify-center bg-white px-5 py-10 dark:bg-suno">
@@ -83,8 +111,23 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
         </div>
 
         <div className="mt-5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-black/30">
-          <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-orange-500 to-pink-500" />
+          <div
+            className={`h-full rounded-full bg-gradient-to-r from-orange-500 to-pink-500 ${runtime ? 'transition-[width]' : 'w-1/3 animate-pulse'}`}
+            style={runtime ? { width: `${Math.max(2, percent)}%` } : undefined}
+          />
         </div>
+
+        {runtime && (
+          <p className="mt-3 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+            {t('engineLibrariesHint')}
+            {runtime.total > 0 && (
+              <span className="ml-1 tabular-nums">
+                {(runtime.downloaded / 1e9).toFixed(2)} / {(runtime.total / 1e9).toFixed(2)} GB
+              </span>
+            )}
+          </p>
+        )}
+        {runtime?.error && <p className="mt-2 text-xs leading-5 text-amber-600 dark:text-amber-300">{runtime.error}</p>}
 
         {foreign !== null && (
           <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-200">

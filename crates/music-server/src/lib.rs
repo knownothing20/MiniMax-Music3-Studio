@@ -6,6 +6,7 @@ mod assistant;
 mod assistant_runtime;
 mod audio_pcm;
 mod downloads;
+mod engine_runtime;
 mod lyrics_sync;
 mod credentials;
 mod model_manager;
@@ -52,6 +53,9 @@ struct AppState {
     /// Owned local engine process, when this service started one.
     engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
     engine_options: Arc<RwLock<EngineOptions>>,
+    /// The CUDA libraries the engine binary imports. They are downloaded, not
+    /// installed, so the engine cannot start until they are on disk.
+    engine_runtime: Arc<engine_runtime::EngineRuntime>,
     assistant: Arc<RwLock<AssistantConfig>>,
     assistant_runtime: Arc<assistant_runtime::AssistantRuntime>,
     lyrics_sync: Arc<lyrics_sync::LyricsSync>,
@@ -462,6 +466,7 @@ pub async fn serve() -> anyhow::Result<()> {
         library: library::Library::open_default()?,
         engine: Arc::new(tokio::sync::Mutex::new(None)),
         engine_options: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.engine_options).unwrap_or_default())),
+        engine_runtime: Arc::new(engine_runtime::EngineRuntime::new(&engine_bundle_root())),
         assistant: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.assistant.clone()).unwrap_or_default())),
         assistant_runtime: Arc::new(assistant_runtime::AssistantRuntime::new(
             &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
@@ -1615,7 +1620,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     // copy has no bundle for. Saying whose service this is turns a hang into
     // a sentence.
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string());
-    let engine_available = engine_location(*state.engine_options.read().await).bundle_root.is_dir();
+    let engine_available = engine_location(*state.engine_options.read().await, Vec::new()).bundle_root.is_dir();
     Json(serde_json::json!({
         "status": "ok",
         "runtime": "native",
@@ -1713,9 +1718,17 @@ async fn start_local_engine(State(state): State<AppState>) -> Result<Json<Value>
         return Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "started": false, "reachable": true })));
     }
 
+    // The engine binary imports CUDA libraries that are downloaded rather than
+    // shipped. Without them Windows refuses to start the process at all, so
+    // this is not an optional extra to offer later: selecting the local engine
+    // is the instruction to fetch them.
+    if let Some(preparing) = prepare_engine_runtime(&state).await {
+        return Ok(Json(preparing));
+    }
+
     let mut supervisor = state.engine.lock().await;
     if supervisor.is_none() {
-        let location = engine_location(*state.engine_options.read().await);
+        let location = engine_location(*state.engine_options.read().await, Vec::new());
         let config = location
             .resolve()
             .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("The local engine runtime was not found: {error}")))?;
@@ -1797,8 +1810,20 @@ async fn restart_engine(state: &AppState) -> Result<(), String> {
                 .into(),
         );
     }
+    // Nothing can start until the libraries the engine binary imports are on
+    // disk: Windows resolves them before the process runs, so a missing cuBLAS
+    // is not a slow start, it is no start at all. This is the path the studio
+    // actually takes on launch, so the fetch belongs here rather than only in
+    // the endpoint nothing calls.
+    if !state.engine_runtime.is_ready() {
+        state
+            .engine_runtime
+            .install_missing()
+            .await
+            .map_err(|error| format!("the engine's CUDA libraries could not be downloaded: {error}"))?;
+    }
     let options = *state.engine_options.read().await;
-    let config = engine_location(options)
+    let config = engine_location(options, Vec::new())
         .resolve()
         .map_err(|error| format!("the local engine runtime was not found: {error}"))?;
     let mut engine = music_engine::mm_server::MmServerSupervisor::new(config).map_err(|error| error.to_string())?;
@@ -1810,13 +1835,51 @@ async fn restart_engine(state: &AppState) -> Result<(), String> {
 
 /// Where the packaged or developer-built `mm-server` lives. Every value is an
 /// explicit override or a documented default; nothing is downloaded here.
-fn engine_location(options: EngineOptions) -> music_engine::mm_server::MmServerLocation {
-    let configured_executable = env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from);
-    let bundle_root = env::var_os("MINIMAX_MM_SERVER_ROOT")
+/// Makes sure the libraries the engine is linked against are on disk.
+///
+/// Returns `Some(status)` while they are still being fetched, so the caller
+/// answers with a real percentage instead of starting a process Windows will
+/// refuse to load. The download runs in the background and survives the
+/// request: the window asks again, and each answer carries the progress.
+async fn prepare_engine_runtime(state: &AppState) -> Option<Value> {
+    if state.engine_runtime.is_ready() {
+        return None;
+    }
+    let active = state.engine_runtime.downloader().active().await;
+    if active.is_none() {
+        let runtime = state.engine_runtime.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime.install_missing().await {
+                eprintln!("could not fetch the engine's CUDA libraries: {error}");
+            }
+        });
+    }
+    let total = state.engine_runtime.missing_bytes().max(1);
+    let downloaded = active.as_ref().map(|progress| progress.downloaded_bytes).unwrap_or(0);
+    Some(serde_json::json!({
+        "engine_id": PRIMARY_MUSIC_ENGINE_ID,
+        "started": false,
+        "reachable": false,
+        "preparing": "engine.runtime",
+        "downloaded_bytes": downloaded,
+        "total_bytes": total,
+        "percent": (downloaded.min(total) * 100 / total) as u32,
+        "error": active.and_then(|progress| progress.error),
+    }))
+}
+
+/// The directory holding `mm-server.exe` and everything it loads.
+fn engine_bundle_root() -> PathBuf {
+    env::var_os("MINIMAX_MM_SERVER_ROOT")
         .map(PathBuf::from)
-        .or_else(|| configured_executable.as_ref().and_then(|path| path.parent().map(std::path::Path::to_path_buf)))
+        .or_else(|| env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from).and_then(|path| path.parent().map(std::path::Path::to_path_buf)))
         .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().map(|parent| parent.join("resources").join("minimaxmusic-cpp"))))
-        .unwrap_or_else(|| PathBuf::from("resources/minimaxmusic-cpp"));
+        .unwrap_or_else(|| PathBuf::from("resources/minimaxmusic-cpp"))
+}
+
+fn engine_location(options: EngineOptions, library_dirs: Vec<PathBuf>) -> music_engine::mm_server::MmServerLocation {
+    let configured_executable = env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from);
+    let bundle_root = engine_bundle_root();
     music_engine::mm_server::MmServerLocation {
         bundle_root,
         configured_executable,
@@ -1833,6 +1896,7 @@ fn engine_location(options: EngineOptions) -> music_engine::mm_server::MmServerL
         host: env::var("MINIMAX_MM_SERVER_HOST").ok(),
         port: env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse().ok()),
         options: options.to_engine(),
+        library_dirs,
     }
 }
 
@@ -2210,6 +2274,22 @@ async fn compose_setup_status(state: &AppState, manager_status: model_manager::M
             studio_data_root().map(|root| Value::String(root.display().to_string())).unwrap_or(Value::Null),
         );
         fields.insert("portable".into(), Value::Bool(is_portable_installation()));
+        // Half a gigabyte of CUDA libraries arriving is the difference between
+        // an engine that starts in three seconds and one that starts in ten
+        // minutes. A spinner that says nothing for ten minutes is the same
+        // screen as a spinner that is stuck.
+        let runtime_total = engine_runtime::ASSETS.iter().map(|asset| asset.bytes).sum::<u64>();
+        let runtime_active = state.engine_runtime.downloader().active().await;
+        fields.insert(
+            "engine_runtime".into(),
+            serde_json::json!({
+                "ready": state.engine_runtime.is_ready(),
+                "downloading": runtime_active.is_some(),
+                "downloaded_bytes": runtime_active.as_ref().map(|progress| progress.downloaded_bytes).unwrap_or(0),
+                "total_bytes": runtime_total,
+                "error": runtime_active.and_then(|progress| progress.error),
+            }),
+        );
         fields.insert("ready".into(), Value::Bool(selected_set_ready));
         fields.insert("first_run".into(), Value::Bool(!selected_set_ready));
         if selected_set_ready { fields.insert("download_pending".into(), Value::from(0_u64)); }

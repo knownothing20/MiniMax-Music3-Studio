@@ -113,7 +113,12 @@ function Invoke-CustomCudaBuild {
         # cards - PTX for Turing and Ampere, device code for the RTX 30, 40 and
         # 50 series. Upstream's own script leaves both at "whatever this machine
         # is", which produces a binary only this machine can run.
-        'universal' { '-DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real' }
+        # The trailing 120-virtual is NVIDIA's own "Building for Maximum
+        # Compatibility" rule: without PTX for the newest architecture, a card
+        # newer than the ones listed has nothing to JIT from and the kernel
+        # launch fails outright. 120a-real is device code for Blackwell as it
+        # exists today; 120-virtual is what a card released after it uses.
+        'universal' { '-DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;120-virtual' }
         'native' { '-DCMAKE_CUDA_ARCHITECTURES=native' }
         'sm_89' { '-DCMAKE_CUDA_ARCHITECTURES=89' }
         default { throw "No custom CMake architecture is defined for '$CudaArchitecture'." }
@@ -167,6 +172,11 @@ New-Item -ItemType Directory -Force -Path $resolvedOutputDirectory | Out-Null
 Copy-Item $runtime (Join-Path $resolvedOutputDirectory 'mm-server.exe') -Force
 Get-ChildItem -Path (Split-Path -Parent $runtime) -Filter '*.dll' -File | Copy-Item -Destination $resolvedOutputDirectory -Force
 if (-not (Test-Path (Join-Path $resolvedOutputDirectory 'mm-server.exe'))) { throw 'mm-server.exe was not staged into the requested output directory.' }
+
+# The Visual C++ runtime the engine imports is not staged here: the studio
+# checks for it on the user's machine and runs Microsoft's own redistributable
+# installer when it is genuinely missing, which is how every other application
+# that links against it behaves.
 
 [pscustomobject]@{
     backend = Resolve-RuntimeBackend
