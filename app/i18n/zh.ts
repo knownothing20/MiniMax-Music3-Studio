@@ -1045,7 +1045,7 @@ export const zh = {
     profileDefault: '配置档案默认',
     useProfileComponents: '使用配置档案组件',
     componentOverridePartial: '请选择全部五个角色——引擎会拒绝不完整的组件集。',
-    replayTitle: '重新渲染此曲目',
+    replayTitle: '重新渲染（同一旋律）',
     replayHint: '复用已保存的音频编码，因此跳过自回归阶段，旋律保持不变。步数、种子、DiT CFG 与输出格式可更改。',
     replayStart: '重新渲染',
     replayQueued: '重新渲染已加入队列。',

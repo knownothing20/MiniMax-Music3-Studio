@@ -1045,7 +1045,7 @@ export const ja = {
     profileDefault: 'プロファイル既定',
     useProfileComponents: 'プロファイルの構成を使用',
     componentOverridePartial: '5 つの役割すべてを選択してください。エンジンは不完全な構成を拒否します。',
-    replayTitle: 'このトラックを再レンダリング',
+    replayTitle: '再レンダリング（同じメロディ）',
     replayHint: '保存済みのオーディオコードを再利用するため自己回帰段階は省略され、メロディは変わりません。ステップ、シード、DiT CFG、出力形式は変更できます。',
     replayStart: '再レンダリング',
     replayQueued: '再レンダリングをキューに追加しました。',

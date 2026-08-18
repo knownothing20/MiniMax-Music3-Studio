@@ -1045,7 +1045,7 @@ export const ko = {
     profileDefault: '프로필 기본값',
     useProfileComponents: '프로필 구성 사용',
     componentOverridePartial: '다섯 역할을 모두 선택하세요 - 엔진은 불완전한 세트를 거부합니다.',
-    replayTitle: '이 트랙 다시 렌더링',
+    replayTitle: '다시 렌더링(같은 멜로디)',
     replayHint: '저장된 오디오 코드를 재사용하므로 자기회귀 단계를 건너뛰고 멜로디는 그대로 유지됩니다. 스텝, 시드, DiT CFG, 출력 형식은 변경할 수 있습니다.',
     replayStart: '다시 렌더링',
     replayQueued: '다시 렌더링이 대기열에 추가되었습니다.',
