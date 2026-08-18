@@ -17,3 +17,7 @@ desktop/src-tauri/resources/
 
 # Built installers and portable archives belong to a GitHub release, not here.
 release/
+
+# Local engineering notes: they never belong to the published repository.
+HANDOFF.md
+NEXT_SESSION_PROMPT.md

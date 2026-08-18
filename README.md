@@ -188,5 +188,4 @@ the ACE sources live in their own repository. MiniMax Music3 weights are governe
 own community license — commercial use must display the MiniMax-Music3 name and implement
 the safeguards that license requires.
 
-What changed and when is in [CHANGELOG.md](CHANGELOG.md). Engineering detail, verified
-behaviour and the current gap list live in [HANDOFF.md](HANDOFF.md).
+What changed and when is in [CHANGELOG.md](CHANGELOG.md).
