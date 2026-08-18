@@ -106,7 +106,10 @@ try {
     # Tauri signs updater artifacts, but intentionally does not invent a
     # hosting-specific latest.json.  Build it from the actual NSIS artifact so
     # the in-app updater always receives a real URL and signature.
-    $nsisInstaller = Get-ChildItem -Recurse -File (Join-Path $bundleRoot 'nsis') -Filter '*-setup.exe' |
+    # The bundle directory keeps every installer ever built here, so "the first
+    # one" was whichever sorted first - and 1.3.0 sorts before 1.3.1. The
+    # manifest then pointed the updater at the previous release.
+    $nsisInstaller = Get-ChildItem -Recurse -File (Join-Path $bundleRoot 'nsis') -Filter "*$Version*-setup.exe" |
         Select-Object -First 1
     if (-not $nsisInstaller) {
         throw 'NSIS setup executable is missing. Build with -BundleTarget nsis or all; updater releases require NSIS.'
