@@ -14,3 +14,6 @@ desktop/src-tauri/resources/
 *.db
 *.db-shm
 *.db-wal
+
+# Built installers and portable archives belong to a GitHub release, not here.
+release/

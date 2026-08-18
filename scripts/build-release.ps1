@@ -111,7 +111,13 @@ try {
             }
         }
     }
-    $latest | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $releaseDir 'latest.json') -Encoding utf8NoBOM
+    # Windows PowerShell has no utf8NoBOM encoding, and a byte-order mark in
+    # front of the JSON is enough for the updater to reject the manifest.
+    [System.IO.File]::WriteAllText(
+        (Join-Path $releaseDir 'latest.json'),
+        ($latest | ConvertTo-Json -Depth 8),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 }
 finally {
     Remove-Item -LiteralPath $releaseConfigPath -Force -ErrorAction SilentlyContinue

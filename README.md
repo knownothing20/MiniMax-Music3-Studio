@@ -80,6 +80,13 @@ The same six screens are in the interface language you read: [Русский](ht
 [한국어](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ko) — on the project page, or in
 [docs/screenshots](docs/screenshots).
 
+## What it needs
+
+Windows 10/11 x64 and an NVIDIA card of the **GTX 16 / RTX 20 generation or newer** —
+Turing, Ampere, Ada and Blackwell. The engine ships compiled for those architectures;
+Pascal and older (GTX 10 series and down) are not supported, because the CUDA 13 toolkit
+that builds it dropped them.
+
 ## Models
 
 A runnable Music3 installation is always five components: language model, RVQ depth

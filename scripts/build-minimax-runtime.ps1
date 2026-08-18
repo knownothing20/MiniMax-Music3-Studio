@@ -100,17 +100,27 @@ function Sync-PinnedSource {
 }
 
 function Invoke-CustomCudaBuild {
-    $architecture = switch ($CudaArchitecture) {
-        'native' { 'native' }
-        'sm_89' { '89' }
+    # The engine's own buildcuda.cmd leaves GGML_NATIVE on, and ggml then sets
+    # CMAKE_CUDA_ARCHITECTURES to "native" - a binary that only runs on the card
+    # it was compiled on. A release must run on other people's cards, so the
+    # universal build turns GGML_NATIVE off and lets ggml apply its documented
+    # spread: virtual 50/61/70/75/80, real 86/89, virtual 90, and Blackwell on
+    # CUDA 12.8 and above.
+    $settings = switch ($CudaArchitecture) {
+        'universal' { '-DGGML_NATIVE=OFF' }
+        'native' { '-DCMAKE_CUDA_ARCHITECTURES=native' }
+        'sm_89' { '-DCMAKE_CUDA_ARCHITECTURES=89' }
         default { throw "No custom CMake architecture is defined for '$CudaArchitecture'." }
     }
     $vcvars = Get-VcVars64
     $buildDirectoryName = "build-cuda-$CudaArchitecture"
     $parallelism = [Math]::Max(1, [Environment]::ProcessorCount)
-    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$architecture && cmake --build `"$buildDirectoryName`" --config Release --parallel $parallelism"
+    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $settings && cmake --build `"$buildDirectoryName`" --config Release --parallel $parallelism"
     Push-Location $engineWorktree
-    try { & cmd.exe /d /s /c $command } finally { Pop-Location }
+    # The compiler's own output must not become this function's return value:
+    # PowerShell returns everything a function writes, and the build directory
+    # name came back with several thousand lines of cmake in front of it.
+    try { & cmd.exe /d /s /c $command | Out-Host } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "minimaxmusic.cpp CUDA build for $CudaArchitecture failed." }
     return $buildDirectoryName
 }
@@ -120,7 +130,7 @@ function Invoke-RuntimeBuild {
     if ($CudaArchitecture -ne 'universal' -and $resolvedBackend -ne 'cuda') {
         throw "-CudaArchitecture $CudaArchitecture is only supported with the CUDA backend; resolved backend is '$resolvedBackend'."
     }
-    if ($resolvedBackend -eq 'cuda' -and $CudaArchitecture -ne 'universal') {
+    if ($resolvedBackend -eq 'cuda') {
         return Invoke-CustomCudaBuild
     }
 
@@ -132,7 +142,7 @@ function Invoke-RuntimeBuild {
     $buildScript = Join-Path $engineWorktree $buildScriptName
     if (-not (Test-Path $buildScript)) { throw "Pinned minimaxmusic.cpp build script is missing: $buildScript" }
     Push-Location $engineWorktree
-    try { & $buildScript } finally { Pop-Location }
+    try { & $buildScript | Out-Host } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "minimaxmusic.cpp $resolvedBackend build failed." }
     return 'build'
 }
