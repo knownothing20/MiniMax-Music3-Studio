@@ -1128,7 +1128,7 @@ export const ko = {
     engineLogsUnavailable: '엔진 로그를 사용할 수 없습니다.',
     localEngine: '로컬 엔진',
     keepLoadedLabel: '작업 사이에 모델을 VRAM 에 유지',
-    keepLoadedHint: '--keep-loaded. 연속 생성 시 모듈을 다시 불러오지 않지만 VRAM 사용량이 계속 높아집니다.',
+    keepLoadedHint: '모든 구성 요소를 메모리에 유지합니다: 작업 사이의 엔진 모듈과, 답변을 마친 로컬 작사 어시스턴트입니다. 연속 생성은 빨라지지만 그래픽 카드가 계속 가득 찹니다. 기본값은 꺼짐이며, 이때는 아무것도 남지 않아 Music3 가 쓸 공간이 생깁니다.',
     maxBatchLabel: '요청당 트랙 수 (--max-batch)',
     maxBatchFieldHint: '이 값을 초과하는 요청은 엔진이 거부합니다.',
     maxSeqLabel: 'LM KV 캐시 (--max-seq)',

@@ -1128,7 +1128,7 @@ export const zh = {
     engineLogsUnavailable: '引擎日志不可用。',
     localEngine: '本地引擎',
     keepLoadedLabel: '任务之间将模型保留在显存中',
-    keepLoadedHint: '--keep-loaded。连续生成时不再重新加载各模块，代价是显存占用持续更高。',
+    keepLoadedHint: '让所有组件常驻显存：任务之间的引擎模块，以及回答之后的本地写作助手。连续生成更快，但显卡会一直被占满。默认关闭——此时任何组件都不会常驻，Music3 才有足够空间。',
     maxBatchLabel: '每次请求的曲目数 (--max-batch)',
     maxBatchFieldHint: '超过该值的请求会被引擎拒绝。',
     maxSeqLabel: 'LM KV 缓存 (--max-seq)',

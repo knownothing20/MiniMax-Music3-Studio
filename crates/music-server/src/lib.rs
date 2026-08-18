@@ -1837,6 +1837,9 @@ async fn restart_engine(state: &AppState) -> Result<(), String> {
             .await
             .map_err(|error| format!("the engine's CUDA libraries could not be downloaded: {error}"))?;
     }
+    // The engine loads eleven gigabytes of weights the moment it starts. If
+    // the writing assistant is still holding the card, it does not finish.
+    free_the_card_for_the_engine(state).await;
     let options = *state.engine_options.read().await;
     let config = engine_location(options, Vec::new())
         .resolve()
@@ -2870,6 +2873,9 @@ async fn assistant_write_stream(
         }
 
         emit(sender.clone(), serde_json::json!({ "stage": "done", "text": whole })).await;
+        // The card belongs to whatever runs next unless the user asked for
+        // everything to stay resident.
+        release_assistant_unless_kept(&state).await;
     });
 
     // A channel of chunks becomes the response body; the receiver is turned into
@@ -2986,9 +2992,26 @@ async fn assistant_write(
         AssistantProvider::None => unreachable!("availability was checked above"),
     };
 
+    release_assistant_unless_kept(&state).await;
     let content = assistant::content_of(&response).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
     let draft = assistant::parse_draft(&content, required).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(Json(serde_json::to_value(draft).unwrap_or(Value::Null)))
+}
+
+/// Frees the assistant's five gigabytes as soon as it has answered.
+///
+/// "Keep models in VRAM between jobs" is off by default, and it means what it
+/// says: nothing stays loaded. The assistant was the exception nobody chose -
+/// it wrote a caption, kept the card, and Music3 then died trying to load its
+/// own weights. With the setting on, it stays, because that is what the
+/// setting is for. Either way the next request starts it again.
+async fn release_assistant_unless_kept(state: &AppState) {
+    if state.engine_options.read().await.keep_loaded {
+        return;
+    }
+    if state.assistant_runtime.base_url().await.is_some() {
+        state.assistant_runtime.stop().await;
+    }
 }
 
 async fn openrouter_settings() -> Json<Value> {
@@ -3238,6 +3261,67 @@ fn capability_engines_with(
     ]
 }
 
+/// Gets the writing assistant off the graphics card before the engine needs it.
+///
+/// There is one card, and both models want all of it: Gemma holds five
+/// gigabytes from the moment it writes a caption, and Music3 then asks for
+/// eleven more and dies. The assistant starts itself on the next request it
+/// receives, so stopping it here costs a reload later and nothing else.
+async fn free_the_card_for_the_engine(state: &AppState) {
+    if state.assistant_runtime.base_url().await.is_some() {
+        state.assistant_runtime.stop().await;
+    }
+}
+
+/// What the engine's own log says about why it is not there any more.
+///
+/// A card that ran out of memory says so in the log and then the process is
+/// gone; the studio saw only a refused connection, and told the user to
+/// download models that were already on disk.
+fn engine_failure_reason() -> Option<String> {
+    let tail = music_engine::mm_server::startup_log_tail(80).join("\n").to_lowercase();
+    describes_exhausted_memory(&tail)
+        .then(|| "The graphics card ran out of memory while the engine was loading the models. Choose a smaller quantisation in the model manager, or close whatever else is using the card - the writing assistant holds several gigabytes of its own.".to_string())
+}
+
+/// Whether a lowercased log says the card ran out of room.
+fn describes_exhausted_memory(log: &str) -> bool {
+    [
+        "out of memory",
+        "cudamalloc",
+        "failed to allocate",
+        "insufficient memory",
+        "cudaerrormemoryallocation",
+        "bad_alloc",
+    ]
+    .iter()
+    .any(|marker| log.contains(marker))
+}
+
+/// Sends a job to the engine, restarting it once if it is no longer there.
+///
+/// A crashed engine used to end the request: the studio reported "mm-server is
+/// unavailable" and waited for a human to restart it. The supervisor already
+/// knows how to bring it back, so it does, and the job goes through.
+async fn submit_with_recovery(state: &AppState, request: Value) -> anyhow::Result<MmServerSubmitResponse> {
+    match state.music_server.submit(request.clone()).await {
+        Ok(response) => Ok(response),
+        Err(first) => {
+            if let Some(reason) = engine_failure_reason() {
+                anyhow::bail!("{reason}");
+            }
+            if let Err(error) = restart_engine(state).await {
+                anyhow::bail!("the engine had stopped and could not be restarted: {error} (first failure: {first})");
+            }
+            state
+                .music_server
+                .submit(request)
+                .await
+                .map_err(|second| anyhow::anyhow!("the engine was restarted and still refused the job: {second}"))
+        }
+    }
+}
+
 async fn create_music_job(
     State(state): State<AppState>,
     Json(request): Json<CreateMusicJobRequest>,
@@ -3260,7 +3344,8 @@ async fn create_music_job(
         Ok(value) => value,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error))),
     };
-    match state.music_server.submit(mm_request.clone()).await {
+    free_the_card_for_the_engine(&state).await;
+    match submit_with_recovery(&state, mm_request.clone()).await {
         Ok(remote) => {
             let job = MusicJob {
                 id: remote.id,
@@ -3285,7 +3370,7 @@ async fn create_music_job(
             let job = queued_not_configured_job(request, engine_id);
             let job = MusicJob {
                 cover_prompt: None,
-                message: format!("mm-server is unavailable; no inference started: {error}"),
+                message: error.to_string(),
                 ..job
             };
             state.jobs.write().await.insert(job.id.clone(), job.clone());
@@ -3316,7 +3401,10 @@ async fn replay_music_job(
     let synth_request = prepare_replay_synthesis(replay, &request).map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
     let caption = synth_request.get("caption").and_then(Value::as_str).unwrap_or_default().to_owned();
     let lyrics = synth_request.get("lyrics").and_then(Value::as_str).unwrap_or_default().to_owned();
-    let remote = state.music_server.submit(synth_request.clone()).await.map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("mm-server replay synthesis is unavailable: {error}")))?;
+    free_the_card_for_the_engine(&state).await;
+    let remote = submit_with_recovery(&state, synth_request.clone())
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
     let job = MusicJob {
         cover_prompt: None,
         id: remote.id, engine_id: PRIMARY_MUSIC_ENGINE_ID.into(), title: source_title, status: MusicJobStatus::Queued,
@@ -3912,6 +4000,31 @@ fn api_error(status: StatusCode, error: String) -> (StatusCode, Json<ApiError>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nothing stays in VRAM unless the user asked for it. This is the setting
+    /// the assistant's unload is tied to, and it is off to begin with.
+    #[test]
+    fn nothing_is_kept_in_memory_by_default() {
+        assert!(!EngineOptions::default().keep_loaded);
+        assert!(!EngineOptions::default().to_engine().keep_loaded);
+    }
+
+    /// A card that ran out of memory has to say so. The studio used to answer
+    /// with "download the five components", pointing at models already on disk.
+    #[test]
+    fn an_out_of_memory_engine_is_named_as_one() {
+        for line in [
+            "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 4096 MB on device 0: cudaMalloc failed: out of memory",
+            "CUDA error: out of memory",
+            "std::bad_alloc",
+        ] {
+            assert!(
+                describes_exhausted_memory(&line.to_lowercase()),
+                "this is what running out of memory looks like and it was not recognised: {line}"
+            );
+        }
+        assert!(!describes_exhausted_memory("loading model from disk"));
+    }
 
     #[test]
     fn primary_engine_is_selected_by_default() {

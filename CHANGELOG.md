@@ -29,6 +29,20 @@ Windows build.
 - Two of the five interface languages carried `karaokeOff` twice, and the
   second silently replaced the first.
 
+- **The writing assistant kept the graphics card after it had answered.** Gemma
+  holds around five gigabytes; the engine then asked for eleven more and died
+  on a 24 GB card, and the studio reported a queued job that never ran. The
+  assistant is now unloaded as soon as it answers, and again before the engine
+  starts — unless "keep models in VRAM between jobs" is on, which is exactly
+  what that setting is for. It starts itself again on the next request.
+- **A crashed engine is restarted instead of ending the request.** A job that
+  found no engine used to come back as "mm-server is unavailable"; the
+  supervisor now brings it back and sends the job again.
+- **Running out of video memory says so.** The engine's own log is read when a
+  job cannot be submitted, and a card that ran out of room is reported as
+  that — instead of "download the five components", which pointed at models
+  already on disk.
+
 ### Added
 
 - The starting screen reports the library download with real percentages and

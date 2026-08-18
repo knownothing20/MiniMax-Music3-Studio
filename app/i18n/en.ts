@@ -1133,7 +1133,7 @@ export const en = {
     engineLogsUnavailable: 'Engine logs are unavailable.',
     localEngine: 'Local engine',
     keepLoadedLabel: 'Keep models in VRAM between jobs',
-    keepLoadedHint: '--keep-loaded. Back-to-back generation stops reloading each module, at the cost of a permanently higher VRAM footprint.',
+    keepLoadedHint: 'Keeps every component resident: the engine modules between jobs, and the writing assistant after it has answered. Faster back to back, at the cost of a permanently full card. With it off - the default - nothing stays loaded, which is what leaves room for Music3.',
     maxBatchLabel: 'Songs per request (--max-batch)',
     maxBatchFieldHint: 'The engine rejects a request whose song count exceeds this.',
     maxSeqLabel: 'LM KV cache (--max-seq)',

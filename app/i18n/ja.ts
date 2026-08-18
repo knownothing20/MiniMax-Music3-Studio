@@ -1128,7 +1128,7 @@ export const ja = {
     engineLogsUnavailable: 'エンジンログを取得できません。',
     localEngine: 'ローカルエンジン',
     keepLoadedLabel: 'ジョブ間もモデルを VRAM に保持',
-    keepLoadedHint: '--keep-loaded。連続生成でモジュールの再読み込みがなくなりますが、VRAM 使用量は常に高くなります。',
+    keepLoadedHint: 'すべてのコンポーネントを常駐させます。ジョブ間のエンジンのモジュールと、応答後のローカル作詞アシスタントです。連続生成は速くなりますが、カードは常に埋まったままです。既定はオフで、その場合は何も常駐せず、Music3 の空きが確保されます。',
     maxBatchLabel: '1 リクエストの曲数 (--max-batch)',
     maxBatchFieldHint: 'この値を超えるリクエストはエンジンに拒否されます。',
     maxSeqLabel: 'LM KV キャッシュ (--max-seq)',
