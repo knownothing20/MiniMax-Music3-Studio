@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MiniMax Music3 Studio — full-length AI music on your own GPU</title>
+<meta name="description" content="A Windows desktop studio for MiniMax Music3. One executable, no Python, no launcher: write a caption and lyrics, generate a full track on your own GPU, keep everything in a local library." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ec4899'/><rect x='8' y='12' width='3' height='8' rx='1.5' fill='white'/><rect x='14' y='8' width='3' height='16' rx='1.5' fill='white'/><rect x='20' y='14' width='3' height='4' rx='1.5' fill='white'/></svg>" />
+<meta property="og:title" content="MiniMax Music3 Studio" />
+<meta property="og:description" content="Full-length AI music on your own GPU. One executable — no Python, no Node.js, no launcher." />
+<meta property="og:type" content="website" />
+<style>
+  :root {
+    --bg: #0a0a0c;
+    --panel: #141418;
+    --line: rgba(255,255,255,.08);
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --pink: #ec4899;
+    --orange: #f97316;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,10,12,.82); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .bar { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+  .mark {
+    width: 30px; height: 30px; border-radius: 9px; flex: none;
+    background: linear-gradient(135deg, var(--orange), var(--pink));
+  }
+  .name { font-weight: 800; letter-spacing: -.01em; }
+  .langs { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px; }
+  .langs button {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+  }
+  .langs button[aria-pressed="true"] { color: #fff; border-color: var(--pink); background: rgba(236,72,153,.14); }
+  h1 { font-size: clamp(30px, 6vw, 52px); line-height: 1.08; letter-spacing: -.02em; margin: 40px 0 0; }
+  .lead { color: var(--muted); font-size: clamp(16px, 2.4vw, 19px); margin: 16px 0 0; max-width: 46em; }
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; margin: 28px 0 8px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+    border-radius: 12px; padding: 12px 18px; font-weight: 700; font-size: 15px;
+    border: 1px solid var(--line); color: var(--text);
+  }
+  .btn.primary { background: linear-gradient(90deg, var(--orange), var(--pink)); border-color: transparent; color: #fff; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  section { padding: 48px 0 0; }
+  h2 { font-size: clamp(21px, 3.4vw, 28px); letter-spacing: -.01em; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .scroll { overflow-x: auto; }
+  .shots { display: grid; gap: 18px; }
+  .shots figure { margin: 0; }
+  .shots img {
+    display: block; width: 100%; height: auto; border-radius: 14px;
+    border: 1px solid var(--line); background: var(--panel);
+  }
+  .shots figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 460px; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px; overflow-x: auto; font-size: 13px; color: #e4e4e7;
+  }
+  ol.steps { padding-left: 20px; color: var(--muted); }
+  ol.steps li { margin-bottom: 8px; }
+  ol.steps b { color: var(--text); }
+  footer { margin-top: 56px; padding: 28px 0 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  footer a { color: var(--text); }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 13px; text-decoration: none; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #ffffff; --panel: #f7f7f8; --line: rgba(0,0,0,.10); --text: #18181b; --muted: #52525b; }
+    header { background: rgba(255,255,255,.85); }
+    pre { color: #27272a; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap bar">
+    <div class="mark"></div>
+    <div class="name">MiniMax Music3 Studio</div>
+    <nav class="langs" id="langs" aria-label="Language"></nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1 data-i18n="heroTitle"></h1>
+  <p class="lead" data-i18n="heroLead"></p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/timoncool/MiniMax-Music3-Studio/releases/latest" data-i18n="ctaDownload"></a>
+    <a class="btn" href="https://github.com/timoncool/MiniMax-Music3-Studio" data-i18n="ctaSource"></a>
+    <a class="btn" href="https://github.com/timoncool/MiniMax-Music3-Studio/blob/main/DONATE.md" data-i18n="ctaDonate"></a>
+  </div>
+  <p class="note" data-i18n="ctaNote"></p>
+
+  <section>
+    <h2 data-i18n="featuresTitle"></h2>
+    <p class="sub" data-i18n="featuresSub"></p>
+    <div class="grid" id="features"></div>
+  </section>
+
+  <section>
+    <h2 data-i18n="shotsTitle"></h2>
+    <p class="sub" data-i18n="shotsSub"></p>
+    <div class="shots" id="shots"></div>
+  </section>
+
+  <section>
+    <h2 data-i18n="modelsTitle"></h2>
+    <p class="sub" data-i18n="modelsSub"></p>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th data-i18n="modelsGpu"></th>
+          <th data-i18n="modelsProfile"></th>
+          <th data-i18n="modelsSize"></th>
+        </tr></thead>
+        <tbody>
+          <tr><td>20 GB VRAM+</td><td data-i18n="profileFull"></td><td>28.6 GB</td></tr>
+          <tr><td>10 GB VRAM+</td><td data-i18n="profileQuality"></td><td>12.8 GB</td></tr>
+          <tr><td>9 GB VRAM</td><td data-i18n="profileLight"></td><td>8.8 GB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" data-i18n="modelsNote"></p>
+  </section>
+
+  <section>
+    <h2 data-i18n="startTitle"></h2>
+    <ol class="steps" id="steps"></ol>
+  </section>
+
+  <section>
+    <h2 data-i18n="archTitle"></h2>
+    <p class="sub" data-i18n="archSub"></p>
+<pre>React UI ─┐
+          ├─ MiniMax Music3 Studio.exe   (window + native service)
+Rust axum ┘        │
+                   └─ minimaxmusic.cpp `mm-server`  (C++/CUDA, GGUF)</pre>
+  </section>
+
+  <section>
+    <h2 data-i18n="privacyTitle"></h2>
+    <p class="sub" data-i18n="privacySub"></p>
+    <div class="grid" id="privacy"></div>
+  </section>
+
+  <section>
+    <h2 data-i18n="authorTitle"></h2>
+    <p class="sub" data-i18n="authorSub"></p>
+    <div class="pills">
+      <a class="pill" href="https://github.com/timoncool">GitHub · @timoncool</a>
+      <a class="pill" href="https://t.me/nerual_dreming">Telegram · @nerual_dreming</a>
+      <a class="pill" href="https://t.me/neuroport">Telegram · @neuroport</a>
+      <a class="pill" href="https://artgeneration.me">ArtGeneration.me</a>
+      <a class="pill" href="https://boosty.to/neuro_art">Boosty</a>
+      <a class="pill" href="https://dalink.to/nerual_dreming">Card / PayPal</a>
+    </div>
+  </section>
+
+  <footer>
+    <p data-i18n="footerLicense"></p>
+    <p><a href="https://github.com/timoncool/MiniMax-Music3-Studio/blob/main/HANDOFF.md" data-i18n="footerHandoff"></a> ·
+       <a href="https://github.com/timoncool/MiniMax-Music3-Studio/issues" data-i18n="footerIssues"></a></p>
+  </footer>
+</main>
+
+<script>
+// One page, five languages. The text lives here rather than in five files so a
+// wording fix cannot land in one language and be forgotten in the others.
+const STRINGS = {
+  en: {
+    shotsTitle: 'Screenshots',
+    shotsSub: 'The studio itself, in this language.',
+    shots: [
+      ['01-create', 'Writing a track: the structured caption, lyrics and every generation parameter as a slider.'],
+      ['02-library', 'The library — every track with its settings, playable, searchable, exportable.'],
+      ['03-tools', 'Studio tools: engine state, installed packages, transcription and the engine log.'],
+    ],
+    label: 'English',
+    heroTitle: 'Full-length AI music on your own GPU',
+    heroLead: 'A Windows desktop studio for MiniMax Music3. Write a caption and lyrics, generate a complete track locally, and keep the audio, the settings and the exact request that produced it in a library on your disk. One executable — no Python, no Node.js, no launcher script.',
+    ctaDownload: 'Download for Windows',
+    ctaSource: 'Source on GitHub',
+    ctaDonate: 'Support the project',
+    ctaNote: 'Windows 10/11 x64 and an NVIDIA card. The model files are downloaded from inside the studio, when you decide to — nothing downloads on its own.',
+    featuresTitle: 'What it does',
+    featuresSub: 'Everything below runs on your machine unless you connect a cloud key yourself.',
+    features: [
+      ['Generate locally', 'The complete Music3 component set, up to six minutes per track: caption, lyrics, duration, DiT steps, CFG, top-k, separate seeds, several songs per prompt.'],
+      ['Reproduce exactly', 'Every track stores its request and its audio codes, so it can be re-rendered exactly, or re-rendered with different steps, seed or format.'],
+      ['Word-level karaoke', 'Enhanced LRC with per-word timings, aligned by Parakeet, Whisper or a cloud model — your lyrics, only the timing is borrowed.'],
+      ['Video export', 'Karaoke video written with the bundled ffmpeg, hardware-encoded when the machine can, software when it cannot.'],
+      ['A writing assistant', 'Captions and lyrics from a local GGUF model or from OpenRouter, following MiniMax’s own published prompting skill.'],
+      ['Cover art', 'Prompt templates with {title}, {style} and {excerpt}, saved once and filled in from the track the cover is for.'],
+      ['Your library', 'Search, playlists, favourites, import your own audio, export, edit — all in plain files on your disk.'],
+      ['What it costs you', 'Live GPU load, VRAM, temperature, power draw and engine memory while it generates.']
+    ],
+    modelsTitle: 'Models',
+    modelsSub: 'A runnable Music3 installation is always five components: language model, RVQ depth decoder, condition encoder, DiT and vocoder.',
+    modelsGpu: 'Your GPU',
+    modelsProfile: 'Profile',
+    modelsSize: 'Download',
+    profileFull: 'Full Native — BF16 / BF16 / F32',
+    profileQuality: 'Q8 Quality',
+    profileLight: 'Light — for speed and low VRAM',
+    modelsNote: 'The studio detects your card and preselects the profile it can actually run, but the download is always your decision. Every file is checksum-verified against a pinned Hugging Face revision, and an interrupted download resumes where it stopped.',
+    startTitle: 'Getting started',
+    steps: [
+      ['Install', 'run the installer or unpack the portable archive.'],
+      ['Choose a set', 'the first screen preselects what your card can run; press download and it fetches only what is missing.'],
+      ['Write', 'a caption is the style, the lyrics are optional — an instrumental is one switch.'],
+      ['Generate', 'the engine starts by itself and the track lands in your library, with its settings attached.'],
+      ['Optional: connect OpenRouter', 'one key adds the writing assistant, cover art and cloud transcription. Local stays the default.']
+    ],
+    archTitle: 'How it is built',
+    archSub: 'The service is compiled into the desktop binary and supervises the C++ engine. When the application closes, everything it started closes with it.',
+    privacyTitle: 'Privacy',
+    privacySub: 'The short version: your music is yours, and it stays on your disk.',
+    privacy: [
+      ['No account', 'There is nothing to sign up for and nothing to sign in to.'],
+      ['No telemetry', 'The studio does not report what you generate, or that you generated anything.'],
+      ['Cloud is opt-in', 'Nothing leaves the machine until you add a key, and then only for the capability you assigned it to.']
+    ],
+    authorTitle: 'Who made this',
+    authorSub: 'Nerual Dreming — artist, founder of ArtGeneration.me and of the Neuro-Cartel community, author of ACE-Step Studio, which this studio grew out of.',
+    footerLicense: 'The studio is open source. MiniMax Music3 weights are governed by their own community license — commercial use must display the MiniMax-Music3 name and implement the safeguards that license requires.',
+    footerHandoff: 'Engineering notes',
+    footerIssues: 'Report an issue'
+  },
+  ru: {
+    shotsTitle: 'Скриншоты',
+    shotsSub: 'Сама студия — на этом языке.',
+    shots: [
+      ['01-create', 'Создание трека: структурированное описание, текст и все параметры генерации ползунками.'],
+      ['02-library', 'Библиотека — каждый трек со своими настройками: слушать, искать, экспортировать.'],
+      ['03-tools', 'Инструменты: состояние движка, установленные пакеты, распознавание и лог движка.'],
+    ],
+    label: 'Русский',
+    heroTitle: 'Полноценные треки нейросетью — на своей видеокарте',
+    heroLead: 'Десктопная студия для MiniMax Music3 под Windows. Пишете описание стиля и текст, получаете целый трек локально, а аудио, настройки и точный запрос, который его породил, остаются в библиотеке на вашем диске. Один exe — без Python, без Node.js, без лаунчеров.',
+    ctaDownload: 'Скачать для Windows',
+    ctaSource: 'Исходники на GitHub',
+    ctaDonate: 'Поддержать проект',
+    ctaNote: 'Windows 10/11 x64 и видеокарта NVIDIA. Модели скачиваются из самой студии и только по вашей команде — сама она ничего не тянет.',
+    featuresTitle: 'Что умеет',
+    featuresSub: 'Всё перечисленное работает на вашей машине, пока вы сами не подключите облачный ключ.',
+    features: [
+      ['Генерация локально', 'Полный набор компонентов Music3, до шести минут на трек: описание, текст, длительность, шаги DiT, CFG, top-k, отдельные сиды, несколько песен за раз.'],
+      ['Точное повторение', 'Каждый трек хранит свой запрос и аудио-коды, поэтому его можно перерендерить один в один — или с другими шагами, сидом и форматом.'],
+      ['Караоке по словам', 'Enhanced LRC с таймингом на каждое слово: выравнивание через Parakeet, Whisper или облако — текст ваш, из распознавания берётся только время.'],
+      ['Экспорт видео', 'Караоке-видео собирается встроенным ffmpeg: аппаратное кодирование, если машина умеет, программное — если нет.'],
+      ['Ассистент-автор', 'Описания и тексты от локальной GGUF-модели или через OpenRouter, по официальному скиллу промптинга от MiniMax.'],
+      ['Обложки', 'Шаблоны промптов с {title}, {style} и {excerpt}: стиль пишется один раз, данные подставляются из трека.'],
+      ['Библиотека', 'Поиск, плейлисты, избранное, импорт своего аудио, экспорт, редактор — обычные файлы на вашем диске.'],
+      ['Сколько это стоит железу', 'Живая нагрузка GPU, VRAM, температура, потребление и память движка прямо во время генерации.']
+    ],
+    modelsTitle: 'Модели',
+    modelsSub: 'Рабочая установка Music3 — это всегда пять компонентов: языковая модель, RVQ depth-декодер, condition-энкодер, DiT и вокодер.',
+    modelsGpu: 'Видеокарта',
+    modelsProfile: 'Профиль',
+    modelsSize: 'Загрузка',
+    profileFull: 'Full Native — BF16 / BF16 / F32',
+    profileQuality: 'Q8 Quality',
+    profileLight: 'Light — ради скорости и малой VRAM',
+    modelsNote: 'Студия определяет карту и заранее выбирает профиль, который на ней реально пойдёт, но скачивание — всегда ваше решение. Каждый файл сверяется по контрольной сумме с зафиксированной ревизией на Hugging Face, а прерванная загрузка продолжается с места остановки.',
+    startTitle: 'С чего начать',
+    steps: [
+      ['Установите', 'инсталлятор или портативный архив.'],
+      ['Выберите набор', 'на первом экране уже отмечено то, что тянет ваша карта; по кнопке докачивается только недостающее.'],
+      ['Напишите', 'описание — это стиль, текст необязателен: инструментал включается одним переключателем.'],
+      ['Сгенерируйте', 'движок поднимается сам, трек попадает в библиотеку вместе со своими настройками.'],
+      ['По желанию — OpenRouter', 'один ключ добавляет ассистента, обложки и облачное распознавание. Локальное остаётся по умолчанию.']
+    ],
+    archTitle: 'Как устроено',
+    archSub: 'Служба вкомпилирована в десктопный бинарник и присматривает за C++-движком. Закрыли приложение — умерло всё, что оно запускало.',
+    privacyTitle: 'Приватность',
+    privacySub: 'Коротко: ваша музыка — ваша и остаётся на вашем диске.',
+    privacy: [
+      ['Без аккаунта', 'Регистрироваться негде и входить некуда.'],
+      ['Без телеметрии', 'Студия не сообщает, что вы сгенерировали, и что вы вообще что-то генерировали.'],
+      ['Облако — по желанию', 'Ничего не уходит с машины, пока вы не добавите ключ, и уходит только по той возможности, которой вы его назначили.']
+    ],
+    authorTitle: 'Кто сделал',
+    authorSub: 'Nerual Dreming — художник, основатель ArtGeneration.me и сообщества Neuro-Cartel, автор ACE-Step Studio, из которой выросла эта студия.',
+    footerLicense: 'Студия с открытым исходным кодом. Веса MiniMax Music3 распространяются по собственной community-лицензии: коммерческое использование обязано указывать имя MiniMax-Music3 и выполнять требования этой лицензии.',
+    footerHandoff: 'Инженерные заметки',
+    footerIssues: 'Сообщить о проблеме'
+  },
+  zh: {
+    shotsTitle: '截图',
+    shotsSub: '就是这个语言下的工作室本身。',
+    shots: [
+      ['01-create', '创作曲目：结构化描述、歌词，以及全部以滑块呈现的生成参数。'],
+      ['02-library', '曲库——每首曲子连同参数：可播放、可搜索、可导出。'],
+      ['03-tools', '工作室工具：引擎状态、已安装的组件包、转写与引擎日志。'],
+    ],
+    label: '中文',
+    heroTitle: '在自己的显卡上生成完整的 AI 音乐',
+    heroLead: '面向 MiniMax Music3 的 Windows 桌面工作室。写下风格描述与歌词，在本地生成一首完整的曲子；音频、参数以及生成它的确切请求都保存在你磁盘上的曲库里。只有一个可执行文件——无需 Python、Node.js 或启动脚本。',
+    ctaDownload: '下载 Windows 版',
+    ctaSource: 'GitHub 源码',
+    ctaDonate: '支持项目',
+    ctaNote: '需要 Windows 10/11 x64 与 NVIDIA 显卡。模型在工作室内按你的指令下载——程序不会自行下载任何东西。',
+    featuresTitle: '功能',
+    featuresSub: '除非你自己连接云端密钥，以下一切都在本机运行。',
+    features: [
+      ['本地生成', '完整的 Music3 组件组合，单曲最长六分钟：描述、歌词、时长、DiT 步数、CFG、top-k、独立随机种子、一次多首。'],
+      ['精确复现', '每首曲子都保存自己的请求与音频编码，可以逐比特复现，也可以换步数、种子或格式重新渲染。'],
+      ['逐词卡拉OK', '带逐词时间戳的增强 LRC，由 Parakeet、Whisper 或云端模型对齐——歌词是你的，只借用时间轴。'],
+      ['视频导出', '卡拉OK 视频由内置 ffmpeg 生成：机器支持就用硬件编码，不支持则回落到软件编码。'],
+      ['写作助手', '由本地 GGUF 模型或 OpenRouter 生成描述与歌词，遵循 MiniMax 官方发布的提示词技能。'],
+      ['封面', '带 {title}、{style}、{excerpt} 占位符的提示词模板：风格只写一次，数据自动取自当前曲目。'],
+      ['你的曲库', '搜索、歌单、收藏、导入自有音频、导出、编辑——全部是磁盘上的普通文件。'],
+      ['硬件开销一目了然', '生成过程中实时显示 GPU 占用、显存、温度、功耗与引擎内存。']
+    ],
+    modelsTitle: '模型',
+    modelsSub: '可运行的 Music3 安装始终由五个组件构成：语言模型、RVQ 深度解码器、条件编码器、DiT 与声码器。',
+    modelsGpu: '显卡',
+    modelsProfile: '配置',
+    modelsSize: '下载量',
+    profileFull: 'Full Native — BF16 / BF16 / F32',
+    profileQuality: 'Q8 Quality',
+    profileLight: 'Light — 追求速度与低显存',
+    modelsNote: '工作室会识别你的显卡并预选它真正跑得动的配置，但是否下载始终由你决定。每个文件都按固定的 Hugging Face 版本校验哈希，中断的下载会从断点继续。',
+    startTitle: '快速开始',
+    steps: [
+      ['安装', '运行安装程序或解压便携版。'],
+      ['选择组合', '首屏已按你的显卡预选；点击下载只会补齐缺失的文件。'],
+      ['编写', '描述即风格，歌词可选——纯音乐只需一个开关。'],
+      ['生成', '引擎自动启动，曲子连同参数一起进入曲库。'],
+      ['可选：连接 OpenRouter', '一个密钥即可启用写作助手、封面与云端转写。默认仍然是本地。']
+    ],
+    archTitle: '架构',
+    archSub: '服务被编译进桌面程序并托管 C++ 引擎。应用关闭时，它启动的一切都会随之退出。',
+    privacyTitle: '隐私',
+    privacySub: '一句话：你的音乐属于你，并留在你的磁盘上。',
+    privacy: [
+      ['无需账号', '没有注册，也没有登录。'],
+      ['无遥测', '工作室不会上报你生成了什么，也不会上报你生成过。'],
+      ['云端可选', '在你添加密钥之前，没有任何东西离开这台机器；添加之后也只用于你指定的那项能力。']
+    ],
+    authorTitle: '作者',
+    authorSub: 'Nerual Dreming——艺术家，ArtGeneration.me 与 Neuro-Cartel 社区创始人，ACE-Step Studio 作者，本工作室由此发展而来。',
+    footerLicense: '本工作室开源。MiniMax Music3 权重遵循其自身的社区许可：商业使用必须标明 MiniMax-Music3 名称并落实该许可要求的安全措施。',
+    footerHandoff: '工程说明',
+    footerIssues: '反馈问题'
+  },
+  ja: {
+    shotsTitle: 'スクリーンショット',
+    shotsSub: 'この言語で表示したスタジオそのもの。',
+    shots: [
+      ['01-create', '曲を書く画面：構造化された説明、歌詞、そしてすべての生成パラメータをスライダーで。'],
+      ['02-library', 'ライブラリ——各トラックが設定ごと。再生も検索も書き出しも。'],
+      ['03-tools', 'スタジオツール：エンジンの状態、導入済みパッケージ、文字起こし、エンジンログ。'],
+    ],
+    label: '日本語',
+    heroTitle: '自分の GPU でフルサイズの AI 音楽を',
+    heroLead: 'MiniMax Music3 のための Windows デスクトップスタジオ。スタイルの説明と歌詞を書けば、ローカルで一曲まるごと生成できます。音声も設定も、それを生んだリクエストそのものも、ディスク上のライブラリに残ります。実行ファイルは一つだけ——Python も Node.js も起動スクリプトも不要です。',
+    ctaDownload: 'Windows 版をダウンロード',
+    ctaSource: 'GitHub のソース',
+    ctaDonate: 'プロジェクトを支援',
+    ctaNote: 'Windows 10/11 x64 と NVIDIA のカードが必要です。モデルはスタジオ内から、あなたが決めたときにだけダウンロードされます。',
+    featuresTitle: 'できること',
+    featuresSub: 'クラウドのキーを自分でつなぐまで、以下はすべて手元のマシンで動きます。',
+    features: [
+      ['ローカル生成', 'Music3 の全コンポーネント、一曲あたり最長 6 分：説明、歌詞、長さ、DiT ステップ、CFG、top-k、独立したシード、一度に複数曲。'],
+      ['同じものを再現', '各トラックがリクエストとオーディオコードを保持するので、そのまま再レンダリングも、ステップやシード、形式を変えての再生成もできます。'],
+      ['単語単位のカラオケ', '単語ごとのタイムスタンプを持つ Enhanced LRC。Parakeet、Whisper、クラウドのいずれかで整列——歌詞はあなたのもので、借りるのは時間だけです。'],
+      ['動画の書き出し', 'カラオケ動画は同梱の ffmpeg で作成。可能ならハードウェアエンコード、無理ならソフトウェアに切り替えます。'],
+      ['作詞アシスタント', 'ローカルの GGUF モデルまたは OpenRouter で説明と歌詞を生成。MiniMax 公式のプロンプトスキルに従います。'],
+      ['ジャケット', '{title}、{style}、{excerpt} を使うプロンプトのテンプレート。スタイルは一度書けば、あとは曲のデータが入ります。'],
+      ['ライブラリ', '検索、プレイリスト、お気に入り、自分の音源の取り込み、書き出し、編集——すべてディスク上の普通のファイルです。'],
+      ['負荷が見える', '生成中の GPU 使用率、VRAM、温度、消費電力、エンジンのメモリをその場で表示。']
+    ],
+    modelsTitle: 'モデル',
+    modelsSub: '動作する Music3 の構成は常に五つ：言語モデル、RVQ デプスデコーダ、コンディションエンコーダ、DiT、ボコーダ。',
+    modelsGpu: 'GPU',
+    modelsProfile: 'プロファイル',
+    modelsSize: 'ダウンロード',
+    profileFull: 'Full Native — BF16 / BF16 / F32',
+    profileQuality: 'Q8 Quality',
+    profileLight: 'Light — 速度と省 VRAM 重視',
+    modelsNote: 'スタジオはカードを検出し、実際に動くプロファイルをあらかじめ選びますが、ダウンロードするかどうかは常にあなたの判断です。各ファイルは固定した Hugging Face のリビジョンとハッシュ照合され、中断したダウンロードは途中から再開します。',
+    startTitle: 'はじめかた',
+    steps: [
+      ['インストール', 'インストーラを実行するか、ポータブル版を展開します。'],
+      ['セットを選ぶ', '最初の画面でカードに合うものが選ばれています。押せば足りない分だけ取得します。'],
+      ['書く', '説明がスタイル、歌詞は任意——インストゥルメンタルはスイッチ一つ。'],
+      ['生成する', 'エンジンは自動で起動し、曲は設定ごとライブラリに入ります。'],
+      ['任意：OpenRouter を接続', 'キーが一つあればアシスタント、ジャケット、クラウド文字起こしが使えます。既定はローカルのままです。']
+    ],
+    archTitle: '構成',
+    archSub: 'サービスはデスクトップのバイナリに組み込まれ、C++ エンジンを監督します。アプリを閉じれば、起動したものはすべて一緒に終了します。',
+    privacyTitle: 'プライバシー',
+    privacySub: '要するに、あなたの音楽はあなたのもので、ディスクから出ていきません。',
+    privacy: [
+      ['アカウント不要', '登録するものも、サインインするものもありません。'],
+      ['テレメトリなし', '何を作ったかも、作ったこと自体も送信しません。'],
+      ['クラウドは任意', 'キーを追加するまで何も外に出ず、追加後も割り当てた機能にしか使われません。']
+    ],
+    authorTitle: '作者',
+    authorSub: 'Nerual Dreming——アーティスト、ArtGeneration.me と Neuro-Cartel コミュニティの創設者、本スタジオの原型である ACE-Step Studio の作者。',
+    footerLicense: 'このスタジオはオープンソースです。MiniMax Music3 の重みは独自のコミュニティライセンスに従い、商用利用では MiniMax-Music3 の名称表示とライセンスが求める安全対策が必要です。',
+    footerHandoff: '技術ノート',
+    footerIssues: '問題を報告'
+  },
+  ko: {
+    shotsTitle: '스크린샷',
+    shotsSub: '이 언어로 표시한 스튜디오 그대로.',
+    shots: [
+      ['01-create', '곡을 쓰는 화면: 구조화된 설명, 가사, 그리고 모든 생성 파라미터를 슬라이더로.'],
+      ['02-library', '라이브러리 — 각 트랙이 설정과 함께. 재생, 검색, 내보내기.'],
+      ['03-tools', '스튜디오 도구: 엔진 상태, 설치된 패키지, 전사, 엔진 로그.'],
+    ],
+    label: '한국어',
+    heroTitle: '내 GPU에서 만드는 완성형 AI 음악',
+    heroLead: 'MiniMax Music3를 위한 Windows 데스크톱 스튜디오. 스타일 설명과 가사를 쓰면 로컬에서 한 곡을 통째로 만들고, 오디오와 설정, 그리고 그것을 만든 요청까지 내 디스크의 라이브러리에 남습니다. 실행 파일 하나면 됩니다 — Python도, Node.js도, 실행 스크립트도 필요 없습니다.',
+    ctaDownload: 'Windows용 내려받기',
+    ctaSource: 'GitHub 소스',
+    ctaDonate: '프로젝트 후원',
+    ctaNote: 'Windows 10/11 x64와 NVIDIA 그래픽 카드가 필요합니다. 모델은 스튜디오 안에서, 사용자가 결정할 때만 내려받습니다.',
+    featuresTitle: '기능',
+    featuresSub: '클라우드 키를 직접 연결하기 전까지는 아래 모든 것이 이 컴퓨터에서 동작합니다.',
+    features: [
+      ['로컬 생성', 'Music3의 전체 구성 요소, 한 곡 최대 6분: 설명, 가사, 길이, DiT 스텝, CFG, top-k, 개별 시드, 한 번에 여러 곡.'],
+      ['그대로 재현', '모든 트랙이 자신의 요청과 오디오 코드를 저장하므로 똑같이 다시 렌더링하거나, 스텝·시드·포맷만 바꿔 다시 만들 수 있습니다.'],
+      ['단어 단위 노래방', '단어마다 타임스탬프가 있는 Enhanced LRC. Parakeet, Whisper 또는 클라우드로 정렬하며 가사는 그대로 두고 타이밍만 가져옵니다.'],
+      ['영상 내보내기', '노래방 영상은 함께 들어 있는 ffmpeg로 만듭니다. 가능하면 하드웨어 인코딩, 안 되면 소프트웨어로 내려갑니다.'],
+      ['작사 도우미', '로컬 GGUF 모델이나 OpenRouter로 설명과 가사를 만들며, MiniMax가 공개한 프롬프트 스킬을 따릅니다.'],
+      ['커버 아트', '{title}, {style}, {excerpt}를 쓰는 프롬프트 템플릿. 스타일은 한 번만 쓰고 나머지는 곡에서 채웁니다.'],
+      ['내 라이브러리', '검색, 재생목록, 즐겨찾기, 내 오디오 가져오기, 내보내기, 편집 — 전부 디스크의 평범한 파일입니다.'],
+      ['부하가 보인다', '생성 중 GPU 사용률, VRAM, 온도, 전력, 엔진 메모리를 실시간으로 표시합니다.']
+    ],
+    modelsTitle: '모델',
+    modelsSub: '동작하는 Music3 설치는 언제나 다섯 구성 요소입니다: 언어 모델, RVQ 깊이 디코더, 조건 인코더, DiT, 보코더.',
+    modelsGpu: '그래픽 카드',
+    modelsProfile: '프로필',
+    modelsSize: '내려받기',
+    profileFull: 'Full Native — BF16 / BF16 / F32',
+    profileQuality: 'Q8 Quality',
+    profileLight: 'Light — 속도와 낮은 VRAM',
+    modelsNote: '스튜디오가 카드를 확인해 실제로 돌아가는 프로필을 미리 골라 주지만, 내려받을지는 언제나 사용자가 정합니다. 모든 파일은 고정된 Hugging Face 리비전과 체크섬으로 대조되고, 끊긴 다운로드는 멈춘 지점부터 이어집니다.',
+    startTitle: '시작하기',
+    steps: [
+      ['설치', '설치 프로그램을 실행하거나 포터블 버전을 풉니다.'],
+      ['세트 선택', '첫 화면에 카드에 맞는 구성이 미리 선택되어 있고, 누르면 없는 것만 받습니다.'],
+      ['쓰기', '설명이 곧 스타일이고 가사는 선택 사항 — 연주곡은 스위치 하나입니다.'],
+      ['생성', '엔진은 알아서 켜지고, 곡은 설정과 함께 라이브러리에 들어갑니다.'],
+      ['선택: OpenRouter 연결', '키 하나로 작사 도우미, 커버 아트, 클라우드 전사가 켜집니다. 기본값은 여전히 로컬입니다.']
+    ],
+    archTitle: '구조',
+    archSub: '서비스는 데스크톱 바이너리에 함께 컴파일되어 C++ 엔진을 관리합니다. 앱을 닫으면 앱이 띄운 모든 것이 함께 종료됩니다.',
+    privacyTitle: '개인정보',
+    privacySub: '요약하면, 당신의 음악은 당신 것이고 디스크를 떠나지 않습니다.',
+    privacy: [
+      ['계정 없음', '가입할 곳도, 로그인할 곳도 없습니다.'],
+      ['텔레메트리 없음', '무엇을 만들었는지도, 만들었다는 사실도 보내지 않습니다.'],
+      ['클라우드는 선택', '키를 추가하기 전에는 아무것도 나가지 않고, 추가한 뒤에도 지정한 기능에만 쓰입니다.']
+    ],
+    authorTitle: '만든 사람',
+    authorSub: 'Nerual Dreming — 아티스트, ArtGeneration.me와 Neuro-Cartel 커뮤니티 설립자, 이 스튜디오의 뿌리가 된 ACE-Step Studio의 저자.',
+    footerLicense: '이 스튜디오는 오픈 소스입니다. MiniMax Music3 가중치는 자체 커뮤니티 라이선스를 따르며, 상업적 사용 시 MiniMax-Music3 이름을 표시하고 해당 라이선스가 요구하는 안전 조치를 구현해야 합니다.',
+    footerHandoff: '엔지니어링 노트',
+    footerIssues: '문제 신고'
+  }
+};
+
+const ORDER = ['en', 'ru', 'zh', 'ja', 'ko'];
+
+function pick() {
+  const asked = new URLSearchParams(location.search).get('lang');
+  if (asked && STRINGS[asked]) return asked;
+  const saved = localStorage.getItem('mm3-lang');
+  if (saved && STRINGS[saved]) return saved;
+  for (const tag of navigator.languages || [navigator.language || 'en']) {
+    const code = String(tag).slice(0, 2).toLowerCase();
+    if (STRINGS[code]) return code;
+  }
+  return 'en';
+}
+
+function apply(lang) {
+  const strings = STRINGS[lang];
+  document.documentElement.lang = lang;
+  for (const node of document.querySelectorAll('[data-i18n]')) {
+    const value = strings[node.dataset.i18n];
+    if (typeof value === 'string') node.textContent = value;
+  }
+  const cards = (list) => list.map(([title, body]) =>
+    `<div class="card"><h3></h3><p></p></div>`).join('');
+  const fill = (id, list) => {
+    const host = document.getElementById(id);
+    host.innerHTML = cards(list);
+    [...host.children].forEach((card, index) => {
+      card.querySelector('h3').textContent = list[index][0];
+      card.querySelector('p').textContent = list[index][1];
+    });
+  };
+  const shots = document.getElementById('shots');
+  shots.innerHTML = strings.shots.map(() => '<figure><img alt="" loading="lazy"><figcaption></figcaption></figure>').join('');
+  [...shots.children].forEach((figure, index) => {
+    const [file, caption] = strings.shots[index];
+    const image = figure.querySelector('img');
+    image.src = 'screenshots/' + lang + '-' + file + '.png';
+    image.alt = caption;
+    figure.querySelector('figcaption').textContent = caption;
+  });
+  fill('features', strings.features);
+  fill('privacy', strings.privacy);
+  const steps = document.getElementById('steps');
+  steps.innerHTML = strings.steps.map(() => '<li><b></b> <span></span></li>').join('');
+  [...steps.children].forEach((item, index) => {
+    item.querySelector('b').textContent = strings.steps[index][0] + ' —';
+    item.querySelector('span').textContent = strings.steps[index][1];
+  });
+  for (const button of document.querySelectorAll('#langs button')) {
+    button.setAttribute('aria-pressed', String(button.dataset.lang === lang));
+  }
+  localStorage.setItem('mm3-lang', lang);
+}
+
+const nav = document.getElementById('langs');
+for (const code of ORDER) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.lang = code;
+  button.textContent = STRINGS[code].label;
+  button.addEventListener('click', () => apply(code));
+  nav.appendChild(button);
+}
+apply(pick());
+</script>
+</body>
+</html>

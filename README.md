@@ -1,4 +1,28 @@
+<div align="center">
+
 # MiniMax Music3 Studio
+
+**Full-length AI music on your own GPU. One executable — no Python, no Node.js, no launcher.**
+
+[![Project page](https://img.shields.io/badge/🌐_Project_page-timoncool.github.io-7c3aed?style=for-the-badge)](https://timoncool.github.io/MiniMax-Music3-Studio/)
+[![Download](https://img.shields.io/badge/⬇_Download-Windows_x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/timoncool/MiniMax-Music3-Studio/releases/latest)
+[![Donate](https://img.shields.io/badge/💖_Support-Donate-ff69b4?style=for-the-badge)](DONATE.md)
+
+[![Stars](https://img.shields.io/github/stars/timoncool/MiniMax-Music3-Studio?style=flat-square&logo=github)](https://github.com/timoncool/MiniMax-Music3-Studio/stargazers)
+[![License](https://img.shields.io/github/license/timoncool/MiniMax-Music3-Studio?style=flat-square)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/timoncool/MiniMax-Music3-Studio?style=flat-square)](https://github.com/timoncool/MiniMax-Music3-Studio/commits/main)
+[![Issues](https://img.shields.io/github/issues/timoncool/MiniMax-Music3-Studio?style=flat-square)](https://github.com/timoncool/MiniMax-Music3-Studio/issues)
+
+[![Rust](https://img.shields.io/badge/Rust-native_service-000000?style=flat-square&logo=rust&logoColor=white)](#architecture)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](#architecture)
+[![C%2B%2B](https://img.shields.io/badge/minimaxmusic.cpp-CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white)](#architecture)
+[![Windows](https://img.shields.io/badge/Windows-10%2F11_x64-0078D6?style=flat-square&logo=windows&logoColor=white)](#models)
+
+**English** · [Русский](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ru) · [中文](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=zh) · [日本語](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ja) · [한국어](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ko)
+
+![MiniMax Music3 Studio](docs/screenshots/en-01-create.png)
+
+</div>
 
 A Windows desktop studio for **MiniMax Music3**. Write a caption and lyrics, generate a
 full-length track on your own GPU, and keep everything — audio, settings and the exact
@@ -15,6 +39,14 @@ ask it to.
 - **Reproduce any track exactly.** Every generation stores its request and its audio codes,
   so a track can be re-rendered deterministically, or re-rendered with different steps,
   seed or output format.
+- **Word-level karaoke** — enhanced LRC with a timestamp on every word, aligned by
+  Parakeet, Whisper or a cloud model. Your lyrics are kept; only the timing is borrowed.
+- **Karaoke video** written with the bundled ffmpeg, hardware-encoded when the machine can
+  and software-encoded when it cannot.
+- **A writing assistant** for captions and lyrics, from a local GGUF model or OpenRouter,
+  following MiniMax's own published prompting skill.
+- **Cover art from templates** — write the look once with `{title}`, `{style}` and
+  `{excerpt}`, and the track fills the rest in.
 - **Manage your library** — search, playlists, favourites, rename, import your own audio,
   export tracks, edit audio in the built-in editor.
 - **Watch what generation costs** — live GPU load, VRAM, temperature, power draw, RAM and
@@ -24,6 +56,18 @@ ask it to.
   the live model catalog. Local stays the default.
 - **Choose your own quality/VRAM trade-off** in the model manager. Nothing downloads by
   itself.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Library](docs/screenshots/en-02-library.png) | ![Studio tools](docs/screenshots/en-03-tools.png) |
+| Your library — every track with the settings that made it | Studio tools — engine state, packages, transcription, log |
+| ![Settings](docs/screenshots/en-04-settings.png) | ![Models](docs/screenshots/en-05-models.png) |
+| Settings, by subject rather than by one long list | Models — one quantisation per role, switchable once installed |
+
+The same screens in [Русский](docs/screenshots), [中文](docs/screenshots), [日本語](docs/screenshots) and [한국어](docs/screenshots)
+are on the [project page](https://timoncool.github.io/MiniMax-Music3-Studio/).
 
 ## Models
 
@@ -89,6 +133,29 @@ archive and a signed `latest.json` for the in-app updater. It requires
 `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
 `TAURI_UPDATER_PUBKEY`, and refuses to run without them. Model weights are never included
 in an installer.
+
+## Other Projects by [@timoncool](https://github.com/timoncool)
+
+| Project | Description |
+|---------|-------------|
+| [ACE-Step Studio](https://github.com/timoncool/ACE-Step-Studio) | Local AI music generation on ACE-Step — the studio this one grew out of |
+| [ACE-Step Studio · Pinokio](https://github.com/timoncool/ACE-Step-Studio-pinokio) | One-click cross-platform launcher for ACE-Step Studio |
+| [telegram-api-mcp](https://github.com/timoncool/telegram-api-mcp) | Full Telegram Bot API as an MCP server |
+| [civitai-mcp-ultimate](https://github.com/timoncool/civitai-mcp-ultimate) | Civitai search, downloads and trend analysis over MCP |
+
+## Support the Author
+
+I build open-source software and do AI research. Most of what I create is free and available to everyone. Your donations help me keep creating without worrying about where the next meal comes from =)
+
+**[All donation methods](DONATE.md)** | **[dalink.to/nerual_dreming](https://dalink.to/nerual_dreming)** | **[boosty.to/neuro_art](https://boosty.to/neuro_art)**
+
+- **BTC:** `1E7dHL22RpyhJGVpcvKdbyZgksSYkYeEBC`
+- **ETH (ERC20):** `0xb5db65adf478983186d4897ba92fe2c25c594a0c`
+- **USDT (TRC20):** `TQST9Lp2TjK6FiVkn4fwfGUee7NmkxEE7C`
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=timoncool/MiniMax-Music3-Studio&type=Date)](https://star-history.com/#timoncool/MiniMax-Music3-Studio&Date)
 
 ## Licensing
 

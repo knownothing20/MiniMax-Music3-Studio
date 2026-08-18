@@ -14,7 +14,7 @@ import { useI18n } from '../context/I18nContext';
 export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) => {
   const { t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [seconds, setSeconds] = useState(0);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -60,7 +60,7 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
       <div className="w-full max-w-md">
         <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-pink-500">
           <span className="h-2 w-2 animate-pulse rounded-full bg-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.75)]" />
-          {t('stepEngine')}
+          {t('engineStartingBadge')}
         </div>
         <h1 className="mt-3 text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">{t('engineStartingTitle')}</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{t('engineStartingHint')}</p>
