@@ -4,7 +4,10 @@ import { Heart, Share2, Play, Pause, MoreHorizontal, X, Copy, Wand2, MoreVertica
 import { updateNativeSong } from '../services/nativeLibrary';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
+import { openExternal } from '../services/externalLinks';
+import { apiUrl } from '../services/apiBase';
 import { SongDropdownMenu } from './SongDropdownMenu';
+import { StemsModal } from './StemsModal';
 import { AlbumCover } from './AlbumCover';
 
 interface RightSidebarProps {
@@ -80,6 +83,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
     const { user } = useAuth();
     const { t } = useI18n();
     const [showMenu, setShowMenu] = useState(false);
+    // Stems open over the sidebar, on the track it is showing.
+    const [stemsOpen, setStemsOpen] = useState(false);
     const [isOwner, setIsOwner] = useState(false);
     const [tagsExpanded, setTagsExpanded] = useState(false);
     const [copiedStyle, setCopiedStyle] = useState(false);
@@ -309,10 +314,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                     onClose={() => setShowMenu(false)}
                                     isOwner={isOwner}
                                     onReusePrompt={() => onReuse?.(song)}
+                                    onSeparateStems={() => setStemsOpen(true)}
                                     onReplayMusic={song.nativeReplayAvailable ? () => onReplayMusic?.(song) : undefined}
                                     onDelete={() => onDelete?.(song)}
                                     onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                 />
+                                {stemsOpen && <StemsModal song={song} onClose={() => setStemsOpen(false)} />}
                             </div>
                         </div>
 
@@ -348,7 +355,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                             onClick={() => {
                                 if (!song?.audioUrl) return;
                                 const audioUrl = song.audioUrl.startsWith('http') ? song.audioUrl : `${window.location.origin}${song.audioUrl}`;
-                                window.open(`/editor?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
+                                void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`));
                             }}
                             title={t('openInEditor')}
                             className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"

@@ -4,6 +4,7 @@ import { Play, MoreHorizontal, Heart, ThumbsDown, ListPlus, Pause, Search, Filte
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
+import { StemsModal } from './StemsModal';
 import { AlbumCover } from './AlbumCover';
 import { updateNativeSong } from '../services/nativeLibrary';
 import { captionSummary } from '../services/examples';
@@ -520,6 +521,8 @@ const SongItem: React.FC<SongItemProps> = ({
 }) => {
     const { t } = useI18n();
     const [showDropdown, setShowDropdown] = useState(false);
+    // Stems open over the list, on the track whose menu asked for them.
+    const [stemsOpen, setStemsOpen] = useState(false);
     const [imageError, setImageError] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [editedTitle, setEditedTitle] = useState(song.title);
@@ -803,9 +806,11 @@ const SongItem: React.FC<SongItemProps> = ({
                                 onReusePrompt={onReusePrompt ? () => onReusePrompt?.(song) : undefined}
                                 onReplayMusic={onReplayMusic}
                                 onExportVideo={onExportVideo}
+                                onSeparateStems={() => setStemsOpen(true)}
                                 onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                 onDelete={() => onDelete?.(song)}
                             />
+                            {stemsOpen && <StemsModal song={song} onClose={() => setStemsOpen(false)} />}
                         </div>
                     </div>
                 )}

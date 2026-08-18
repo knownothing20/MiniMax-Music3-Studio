@@ -402,6 +402,12 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               installUrl="/v1/assistant/runtime/install"
             />
             <OptionalGroup
+              title={t('stemsTitle')}
+              purpose={t('separationSectionHint')}
+              statusUrl="/v1/separation/runtime"
+              installUrl="/v1/separation/runtime/install"
+            />
+            <OptionalGroup
               title={t('karaokeSection')}
               purpose={t('karaokeOptionalPurpose')}
               statusUrl="/v1/karaoke/status"

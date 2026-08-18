@@ -17,7 +17,40 @@ use anyhow::{bail, Context, Result};
 use ort::session::Session;
 use ort::value::Value;
 
+use serde::{Deserialize, Serialize};
+
 use crate::downloads::{Asset, AssetKind, Downloader};
+
+/// What a separation run should produce, and how carefully.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SeparationConfig {
+    /// Which stems to keep. Every one still costs the same run - the model
+    /// returns all six - but writing only what the user wants keeps the
+    /// library from filling with silence they never asked for.
+    pub stems: Vec<String>,
+    /// How much neighbouring segments share. More overlap means more passes
+    /// and a smoother seam; a quarter is the model's own reference setting.
+    pub overlap: f64,
+}
+
+impl Default for SeparationConfig {
+    fn default() -> Self {
+        Self { stems: STEMS.iter().map(|stem| (*stem).to_string()).collect(), overlap: OVERLAP }
+    }
+}
+
+impl SeparationConfig {
+    /// The overlap, kept inside what the segment length can actually support.
+    pub fn sane_overlap(&self) -> f64 {
+        self.overlap.clamp(0.0, 0.5)
+    }
+
+    pub fn wants(&self, stem: &str) -> bool {
+        self.stems.iter().any(|wanted| wanted == stem)
+    }
+}
+
 
 
 /// The separation model, and where it comes from.
@@ -94,6 +127,7 @@ pub fn separate(
     model: &Path,
     audio: &[f32],
     stem_count: usize,
+    overlap: f64,
     mut progress: impl FnMut(f64),
 ) -> Result<Vec<Stem>> {
     if audio.is_empty() {
@@ -109,11 +143,12 @@ pub fn separate(
         .with_context(|| format!("load the separation model {}", model.display()))?;
 
     let frames = audio.len() / CHANNELS;
-    let step = ((SEGMENT_SAMPLES as f64) * (1.0 - OVERLAP)) as usize;
+    let overlap = overlap.clamp(0.0, 0.5);
+    let step = (((SEGMENT_SAMPLES as f64) * (1.0 - overlap)) as usize).max(1);
     let mut sums = vec![vec![0f32; frames * CHANNELS]; stem_count];
     let mut weights = vec![0f32; frames];
 
-    let window = fade_window(SEGMENT_SAMPLES, (SEGMENT_SAMPLES as f64 * OVERLAP) as usize);
+    let window = fade_window(SEGMENT_SAMPLES, (SEGMENT_SAMPLES as f64 * overlap) as usize);
     let segments = frames.div_ceil(step).max(1);
 
     for (index, start) in (0..frames).step_by(step).enumerate() {

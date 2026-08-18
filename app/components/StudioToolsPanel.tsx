@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, Download, FileAudio, Loader2, Play, RefreshCw, Scissors, SlidersHorizontal } from 'lucide-react';
+import { Check, Copy, Download, FileAudio, Loader2, Music, Play, RefreshCw, Scissors, Search, SlidersHorizontal } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { transcribeWithNativeOpenRouter } from '../services/nativeOpenRouter';
 import { apiUrl } from '../services/apiBase';
+import { openExternal } from '../services/externalLinks';
 
 /**
  * Studio tools.
@@ -29,8 +30,16 @@ interface SeparationStatus {
   ready: boolean;
   stems: string[];
   download: { downloaded_bytes: number; total_bytes: number; done: boolean } | null;
+  settings: { stems: string[]; overlap: number };
   run: { song_id: string; progress: number; done: boolean; error: string | null; stems: string[] } | null;
 }
+
+/** Fast, the model's own reference setting, and slow-but-smoothest. */
+const QUALITIES = [
+  { overlap: 0.1, key: 'separationQualityFast' },
+  { overlap: 0.25, key: 'separationQualityBalanced' },
+  { overlap: 0.5, key: 'separationQualityBest' },
+] as const;
 
 interface CatalogModel {
   id: string;
@@ -61,6 +70,7 @@ export function StudioToolsPanel(): React.ReactElement {
   const [asrBusy, setAsrBusy] = useState(false);
   const [asrText, setAsrText] = useState('');
   const [copied, setCopied] = useState(false);
+  const [query, setQuery] = useState('');
   const filePicker = useRef<HTMLInputElement | null>(null);
 
   const loadSongs = useCallback(async () => {
@@ -98,6 +108,15 @@ export function StudioToolsPanel(): React.ReactElement {
     const timer = window.setInterval(() => void refresh().catch(() => undefined), 1000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  const saveSettings = async (next: { stems: string[]; overlap: number }) => {
+    setStatus(current => (current ? { ...current, settings: next } : current));
+    await fetch('/v1/separation/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    }).catch(() => undefined);
+  };
 
   const install = async () => {
     setBusy(true);
@@ -142,6 +161,14 @@ export function StudioToolsPanel(): React.ReactElement {
     }
   };
 
+  // The list the user actually sees: filtered, and short enough to scan.
+  // A library of five thousand tracks is not a list to scroll: the search
+  // narrows it, and only the first handful of matches are drawn.
+  const needle = query.trim().toLowerCase();
+  const matches = needle ? songs.filter(song => song.title.toLowerCase().includes(needle)) : songs;
+  const visible = matches.slice(0, 12);
+  const hidden = matches.length - visible.length;
+  const settings = status?.settings ?? { stems: status?.stems ?? [], overlap: 0.25 };
   const run = status?.run?.song_id === songId ? status?.run : null;
   const running = Boolean(run && !run.done);
   const percent = Math.round((run?.progress ?? 0) * 100);
@@ -171,18 +198,98 @@ export function StudioToolsPanel(): React.ReactElement {
           </div>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{t('stemsHint')}</p>
 
-          <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-            <select value={songId} onChange={event => setSongId(event.target.value)} className={CONTROL}>
-              {songs.length === 0 && <option value="">{t('noSongsYet')}</option>}
-              {songs.map(song => (
-                <option key={song.id} value={song.id}>{song.title}</option>
+          {/* A track is picked from a list, not from a native dropdown: a
+              generated title can be a whole paragraph, and an <option> shows
+              all of it, at any width it likes. */}
+          <div className="mt-3">
+            <div className="relative">
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+              <input
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder={t('searchYourSongs')}
+                className={`${CONTROL} pl-9`}
+              />
+            </div>
+            <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-zinc-200 dark:border-white/10">
+              {visible.length === 0 && (
+                <p className="px-3 py-3 text-xs text-zinc-500">{t('noSongsYet')}</p>
+              )}
+              {visible.map(song => (
+                <button
+                  key={song.id}
+                  type="button"
+                  onClick={() => setSongId(song.id)}
+                  className={`flex w-full items-center gap-2 border-b border-zinc-100 px-3 py-2 text-left last:border-b-0 dark:border-white/5 ${
+                    song.id === songId ? 'bg-pink-500/10' : 'hover:bg-zinc-100 dark:hover:bg-white/5'
+                  }`}
+                >
+                  <Music size={13} className={song.id === songId ? 'shrink-0 text-pink-500' : 'shrink-0 text-zinc-400'} />
+                  <span className="min-w-0 flex-1 truncate text-sm text-zinc-800 dark:text-zinc-200">{song.title}</span>
+                  {song.id === songId && <Check size={14} className="shrink-0 text-pink-500" />}
+                </button>
               ))}
-            </select>
+              {hidden > 0 && (
+                <p className="px-3 py-2 text-[11px] text-zinc-500">{t('searchNarrowsMore')} · {hidden}</p>
+              )}
+            </div>
+            {/* What to keep, and how carefully to join the segments. Both are
+                remembered, so the next track starts where this one left off. */}
+            <div className="mt-4">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('separationWhichStems')}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(status?.stems ?? []).map(stem => {
+                  const chosen = settings.stems.includes(stem);
+                  return (
+                    <button
+                      key={stem}
+                      type="button"
+                      onClick={() => {
+                        const next = chosen ? settings.stems.filter(name => name !== stem) : [...settings.stems, stem];
+                        void saveSettings({ ...settings, stems: next });
+                      }}
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                        chosen
+                          ? 'border-pink-400 bg-pink-500/10 text-zinc-900 dark:text-white'
+                          : 'border-zinc-200 text-zinc-500 dark:border-white/10'
+                      }`}
+                    >
+                      <span className={`grid h-3.5 w-3.5 place-items-center rounded ${chosen ? 'bg-pink-500 text-white' : 'bg-zinc-200 dark:bg-white/10'}`}>
+                        {chosen && <Check size={9} strokeWidth={3} />}
+                      </span>
+                      {t(`stem_${stem}` as never) || stem}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('separationQuality')}</p>
+              <div className="mt-2 flex gap-2">
+                {QUALITIES.map(quality => (
+                  <button
+                    key={quality.overlap}
+                    type="button"
+                    onClick={() => void saveSettings({ ...settings, overlap: quality.overlap })}
+                    className={`flex-1 rounded-lg border px-3 py-2 text-xs font-semibold ${
+                      Math.abs(settings.overlap - quality.overlap) < 0.01
+                        ? 'border-pink-400 bg-pink-500/10 text-zinc-900 dark:text-white'
+                        : 'border-zinc-200 text-zinc-500 dark:border-white/10'
+                    }`}
+                  >
+                    {t(quality.key)}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('separationQualityHint')}</p>
+            </div>
+
             <button
               type="button"
               onClick={() => void separate()}
-              disabled={!status?.ready || !songId || running || busy}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!status?.ready || !songId || settings.stems.length === 0 || running || busy}
+              className="mt-3 inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               {stems.length > 0 ? t('stemsAgain') : t('stemsStart')}
@@ -265,7 +372,7 @@ export function StudioToolsPanel(): React.ReactElement {
               onClick={() => {
                 if (!songId) return;
                 const url = apiUrl(`/v1/library/media/${encodeURIComponent(songId)}`);
-                window.open(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`, '_blank');
+                void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`));
               }}
               disabled={!songId}
               className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
@@ -278,7 +385,7 @@ export function StudioToolsPanel(): React.ReactElement {
                 type="button"
                 onClick={() => {
                   const url = apiUrl(`/v1/library/songs/${encodeURIComponent(songId)}/stems/${stem}`);
-                  window.open(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`, '_blank');
+                  void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`));
                 }}
                 className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/10 dark:text-zinc-300"
               >

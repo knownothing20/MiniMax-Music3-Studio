@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Song } from '../types';
 import { useI18n } from '../context/I18nContext';
+import { openExternal } from '../services/externalLinks';
+import { apiUrl } from '../services/apiBase';
 import {
     Clapperboard,
     Edit3,
@@ -154,7 +156,7 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
             : `${window.location.origin}${song.audioUrl}`;
         // AudioMass is a fully client-side editor shipped as static assets, so
         // it runs without any backend service.
-        window.open(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
+        void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`));
         onClose();
     };
 

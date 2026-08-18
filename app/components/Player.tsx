@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useResponsive } from '../context/ResponsiveContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
+import { StemsModal } from './StemsModal';
 import { AlbumCover } from './AlbumCover';
 import { captionSummary } from '../services/examples';
 import { getCurrentLrcIndex, parseLrc } from '../services/lrc-parser';
@@ -68,6 +69,8 @@ export const Player: React.FC<PlayerProps> = ({
     const [isHoveringVolume, setIsHoveringVolume] = useState(false);
     const volumeHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [showDropdown, setShowDropdown] = useState(false);
+    // Stems open over the player, on the track the menu belongs to.
+    const [stemsOpen, setStemsOpen] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
     const speedMenuRef = useRef<HTMLDivElement>(null);
@@ -323,9 +326,11 @@ export const Player: React.FC<PlayerProps> = ({
                                 position="center"
                                 direction="up"
                                 onReusePrompt={onReusePrompt}
+                                onSeparateStems={() => setStemsOpen(true)}
                                 onAddToPlaylist={onAddToPlaylist}
                                 onDelete={onDelete}
                             />
+                            {stemsOpen && <StemsModal song={currentSong} onClose={() => setStemsOpen(false)} />}
                         </div>
                     )}
                 </div>
@@ -601,6 +606,7 @@ export const Player: React.FC<PlayerProps> = ({
                                             position="center"
                                             direction="up"
                                             onReusePrompt={onReusePrompt}
+                                            onSeparateStems={() => setStemsOpen(true)}
                                             onAddToPlaylist={onAddToPlaylist}
                                             onDelete={onDelete}
                                         />
@@ -803,6 +809,7 @@ export const Player: React.FC<PlayerProps> = ({
                             position="right"
                             direction="up"
                             onReusePrompt={onReusePrompt}
+                            onSeparateStems={() => setStemsOpen(true)}
                             onAddToPlaylist={onAddToPlaylist}
                             onDelete={onDelete}
                         />

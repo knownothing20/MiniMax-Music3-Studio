@@ -61,6 +61,7 @@ struct AppState {
     /// The look a new cover starts from, chosen in Settings.
     cover_template_default: Arc<RwLock<Option<String>>>,
     separator: Arc<separation::Separator>,
+    separation_config: Arc<RwLock<separation::SeparationConfig>>,
     /// The separation run in progress, if any. One at a time: the model wants
     /// the whole machine for a minute, and two runs would only make both slow.
     separation_run: Arc<RwLock<Option<SeparationRun>>>,
@@ -248,6 +249,8 @@ struct PersistedStudioSettings {
     cover_templates: Option<Vec<cover_prompt::CoverTemplate>>,
     #[serde(default)]
     cover_template_default: Option<String>,
+    #[serde(default)]
+    separation: Option<separation::SeparationConfig>,
 }
 
 #[derive(Default)]
@@ -423,6 +426,9 @@ pub async fn serve() -> anyhow::Result<()> {
         cover_template_default: Arc::new(RwLock::new(
             persisted.as_ref().and_then(|settings| settings.cover_template_default.clone()),
         )),
+        separation_config: Arc::new(RwLock::new(
+            persisted.as_ref().and_then(|settings| settings.separation.clone()).unwrap_or_default(),
+        )),
         separator: Arc::new(separation::Separator::new(
             &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
         )),
@@ -472,7 +478,12 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
         .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
         .route("/v1/openrouter/covers", post(create_openrouter_cover))
+        .route("/editor", get(|| async { axum::response::Redirect::permanent("/editor/index.html") }))
+        .route("/editor/{*path}", get(editor_asset))
+        .route("/v1/separation/runtime", get(separation_assets))
+        .route("/v1/separation/runtime/install", post(install_separation_asset))
         .route("/v1/separation/status", get(separation_status))
+        .route("/v1/separation/settings", get(read_separation_settings).put(write_separation_settings))
         .route("/v1/separation/install", post(install_separation_model))
         .route("/v1/library/songs/{id}/stems", get(read_stems).post(start_separation))
         .route("/v1/library/songs/{id}/stems/{stem}", get(read_stem_audio))
@@ -619,6 +630,37 @@ struct RenderCoverPromptRequest {
 }
 
 
+/// The waveform editor, carried inside the binary.
+///
+/// It is a static web application; embedding it keeps the promise that the
+/// studio is one executable, and serving it over the studio's own port means
+/// the browser can open it with the track already loaded.
+static EDITOR: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../app/public/editor");
+
+async fn editor_asset(Path(path): Path<String>) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let file = EDITOR
+        .get_file(path.trim_start_matches('/'))
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, format!("the editor has no file {path}")))?;
+    let media_type = match std::path::Path::new(&path).extension().and_then(|value| value.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("mp3") => "audio/mpeg",
+        Some("mp4") => "video/mp4",
+        Some("wasm") => "application/wasm",
+        _ => "application/octet-stream",
+    };
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, media_type)
+        .header(header::CONTENT_LENGTH, file.contents().len())
+        .body(Body::from(file.contents().to_vec()))
+        .expect("valid editor response"))
+}
+
 /// One separation in progress, as the interface sees it.
 #[derive(Debug, Clone, Serialize)]
 struct SeparationRun {
@@ -643,6 +685,81 @@ fn stems_on_disk(state: &AppState, song_id: &str) -> Vec<String> {
         .collect()
 }
 
+/// The separator as an optional module: its files, and whichever download is
+/// running. The same envelope the assistant and karaoke use, because the models
+/// page lists all three the same way.
+async fn separation_assets(State(state): State<AppState>) -> Json<Value> {
+    let runtime_installed = state.lyrics_sync.onnxruntime_library().is_some();
+    let assets = serde_json::json!([
+        {
+            "id": separation::MODEL.id,
+            "label": separation::MODEL.label,
+            "bytes": separation::MODEL.bytes,
+            "note": separation::MODEL.note,
+            "installed": state.separator.is_installed(),
+        },
+        {
+            "id": "onnxruntime",
+            "label": "ONNX Runtime 1.24.2",
+            "bytes": 74_075_355,
+            "note": "Runs the separator and the karaoke recogniser; shared between them.",
+            "installed": runtime_installed,
+        }
+    ]);
+    Json(serde_json::json!({
+        "assets": assets,
+        "active_download": state.separator.downloader().active().await.or(state.lyrics_sync.downloader().active().await),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct InstallSeparationAssetRequest {
+    asset_id: String,
+}
+
+async fn install_separation_asset(
+    State(state): State<AppState>,
+    Json(request): Json<InstallSeparationAssetRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    match request.asset_id.as_str() {
+        id if id == separation::MODEL.id => {
+            let separator = state.separator.clone();
+            tokio::spawn(async move { let _ = separator.downloader().install(&separation::MODEL).await; });
+        }
+        "onnxruntime" => {
+            let sync = state.lyrics_sync.clone();
+            let asset = lyrics_sync::asset("onnxruntime")
+                .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "the runtime is not in the catalogue".into()))?;
+            tokio::spawn(async move { let _ = sync.downloader().install(asset).await; });
+        }
+        other => return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown asset {other}"))),
+    }
+    Ok(Json(serde_json::json!({ "started": true })))
+}
+
+async fn read_separation_settings(State(state): State<AppState>) -> Json<separation::SeparationConfig> {
+    Json(state.separation_config.read().await.clone())
+}
+
+async fn write_separation_settings(
+    State(state): State<AppState>,
+    Json(config): Json<separation::SeparationConfig>,
+) -> Result<Json<separation::SeparationConfig>, (StatusCode, Json<ApiError>)> {
+    // A run that writes nothing is a run nobody wanted; an empty choice means
+    // everything, which is also what the studio starts with.
+    let stems: Vec<String> = if config.stems.is_empty() {
+        separation::STEMS.iter().map(|stem| (*stem).to_string()).collect()
+    } else {
+        config.stems.iter().filter(|stem| separation::STEMS.contains(&stem.as_str())).cloned().collect()
+    };
+    let stored = separation::SeparationConfig { stems, overlap: config.sane_overlap() };
+    *state.separation_config.write().await = stored.clone();
+    persist_studio_settings(&state)
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(stored))
+}
+
 async fn separation_status(State(state): State<AppState>) -> Json<Value> {
     let runtime = state.lyrics_sync.onnxruntime_library();
     Json(serde_json::json!({
@@ -657,6 +774,7 @@ async fn separation_status(State(state): State<AppState>) -> Json<Value> {
         "ready": state.separator.ready(runtime.as_deref()),
         "stems": separation::STEMS,
         "download": state.separator.downloader().active().await,
+        "settings": state.separation_config.read().await.clone(),
         "run": state.separation_run.read().await.clone(),
     }))
 }
@@ -732,6 +850,9 @@ async fn start_separation(
         Some(SeparationRun { song_id: id.clone(), progress: 0.0, done: false, error: None, stems: vec![] });
 
     let model = state.separator.model_path();
+    let config = state.separation_config.read().await.clone();
+    let overlap = config.sane_overlap();
+    let wanted = config.stems.clone();
     let background = state.clone();
     let song_id = id.clone();
     tokio::task::spawn_blocking(move || {
@@ -743,7 +864,7 @@ async fn start_separation(
         let outcome = (|| -> anyhow::Result<Vec<String>> {
             let audio = audio_pcm::decode_stereo_44k(&audio_path)?;
             let handle = tokio::runtime::Handle::current();
-            let stems = separation::separate(&model, &audio, separation::STEMS.len(), |fraction| {
+            let stems = separation::separate(&model, &audio, separation::STEMS.len(), overlap, |fraction| {
                 let state = background.clone();
                 handle.spawn(async move {
                     if let Some(run) = state.separation_run.write().await.as_mut() {
@@ -753,6 +874,9 @@ async fn start_separation(
             })?;
             let mut written = Vec::new();
             for stem in stems {
+                if !wanted.iter().any(|name| name == stem.name) {
+                    continue;
+                }
                 let path = stem_path(&background, &song_id, stem.name);
                 separation::write_wav_stereo(&path, &stem.samples)?;
                 written.push(stem.name.to_string());
@@ -1419,6 +1543,7 @@ async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
         selected_component_ids: state.selected_component_ids.read().await.clone(),
         cover_templates: Some(state.cover_templates.read().await.clone()),
         cover_template_default: state.cover_template_default.read().await.clone(),
+        separation: Some(state.separation_config.read().await.clone()),
     };
     if let Some(parent) = state.settings_path.parent() { fs::create_dir_all(parent)?; }
     let temporary = state.settings_path.with_extension("json.part");
@@ -2831,6 +2956,7 @@ mod tests {
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
             cover_templates: Some(cover_prompt::default_templates()),
+            separation: Some(separation::SeparationConfig::default()),
             cover_template_default: Some("photographic".into()),
         };
         let restored: PersistedStudioSettings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
