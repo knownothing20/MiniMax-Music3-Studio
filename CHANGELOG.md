@@ -20,9 +20,12 @@ Windows build.
   import `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` and
   `VCOMP140.DLL`. When they are absent the studio downloads Microsoft's own
   redistributable and runs it, once, and only then.
-- A refused optional download said nothing at all: the reply was discarded
-  unread, so pressing the button twice looked identical to a button that does
-  nothing. The reason now appears under the list.
+- **The download buttons for the optional CUDA libraries did nothing.** The
+  endpoint started the download inside a task that threw away its own result,
+  then answered "started" regardless - so a refusal ("another download is
+  already running") vanished into a successful reply, and no interface could
+  have reported it. The refusal now reaches the caller, and the interface reads
+  the reply instead of discarding it.
 - Two of the five interface languages carried `karaokeOff` twice, and the
   second silently replaced the first.
 

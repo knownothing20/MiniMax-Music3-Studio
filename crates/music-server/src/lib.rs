@@ -829,12 +829,27 @@ async fn install_separation_asset(
     }
     // Anything in the catalogue may be installed by name; listing the ids here
     // by hand is how cuFFT ended up silently rejected.
+    // `install` starts a background task and returns immediately; its Result
+    // says whether the download was accepted at all. Discarding it inside a
+    // spawn - which is what this did - meant a refusal ("another download is
+    // already running") was thrown away while the endpoint answered
+    // "started: true". The button then did nothing, twice, silently, with a
+    // successful reply, and no amount of error handling in the interface could
+    // have shown it.
     if request.asset_id == separation::MODEL.id {
-        let separator = state.separator.clone();
-        tokio::spawn(async move { let _ = separator.downloader().install(&separation::MODEL).await; });
+        state
+            .separator
+            .downloader()
+            .install(&separation::MODEL)
+            .await
+            .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
     } else if let Some(asset) = lyrics_sync::asset(&request.asset_id) {
-        let sync = state.lyrics_sync.clone();
-        tokio::spawn(async move { let _ = sync.downloader().install(asset).await; });
+        state
+            .lyrics_sync
+            .downloader()
+            .install(asset)
+            .await
+            .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
     } else {
         return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown asset {}", request.asset_id)));
     }
