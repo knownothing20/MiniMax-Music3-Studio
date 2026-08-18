@@ -931,9 +931,18 @@ async fn shutdown() {
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
     let engine_ready = state.music_server.health().await;
+    // Which program is actually answering here, and whether it can start an
+    // engine at all. A second copy of the studio - a development build, say -
+    // takes this port and the window then waits forever on an engine that
+    // copy has no bundle for. Saying whose service this is turns a hang into
+    // a sentence.
+    let executable = std::env::current_exe().ok().map(|path| path.display().to_string());
+    let engine_available = engine_location(*state.engine_options.read().await).bundle_root.is_dir();
     Json(serde_json::json!({
         "status": "ok",
         "runtime": "native",
+        "service_executable": executable,
+        "engine_bundle_present": engine_available,
         "music_engine": {
             "id": PRIMARY_MUSIC_ENGINE_ID,
             "base_url": state.music_server.base_url,

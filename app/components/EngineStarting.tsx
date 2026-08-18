@@ -17,6 +17,7 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
   const [open, setOpen] = useState(true);
   const [seconds, setSeconds] = useState(0);
   const [failed, setFailed] = useState<string | null>(null);
+  const [foreign, setForeign] = useState<string | null>(null);
 
   useEffect(() => {
     const started = Date.now();
@@ -32,8 +33,12 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
         .catch(() => undefined);
       await fetch('/health')
         .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
-        .then((body: { music_engine?: { reachable?: boolean } }) => {
+        .then((body: { music_engine?: { reachable?: boolean }; engine_bundle_present?: boolean; service_executable?: string }) => {
           if (body.music_engine?.reachable) onReady?.();
+          // A service with no engine bundle is not this application's service:
+          // another copy of the studio holds the port, and waiting for it to
+          // start an engine it does not have is waiting forever.
+          setForeign(body.engine_bundle_present === false ? body.service_executable ?? '' : null);
         })
         .catch(() => undefined);
     };
@@ -81,7 +86,13 @@ export const EngineStarting: React.FC<{ onReady?: () => void }> = ({ onReady }) 
           <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-orange-500 to-pink-500" />
         </div>
 
-        {failed && <p className="mt-3 text-xs leading-5 text-amber-600 dark:text-amber-300">{failed}</p>}
+        {foreign !== null && (
+          <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-200">
+            {t('engineForeignService')}
+            {foreign && <div className="mt-1 break-all font-mono text-[11px] opacity-80">{foreign}</div>}
+          </div>
+        )}
+        {failed && foreign === null && <p className="mt-3 text-xs leading-5 text-amber-600 dark:text-amber-300">{failed}</p>}
 
         <button
           type="button"

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Check, Cpu, Loader2, RotateCw } from 'lucide-react';
+import { AlertTriangle, Check, Cpu, Loader2, RotateCw , Terminal } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 
 /**
@@ -88,6 +88,21 @@ export const EngineSettings: React.FC = () => {
       setBusy(false);
     }
   };
+
+  // What the engine is saying. It used to be on a page of its own; it belongs
+  // with the flags that started the process.
+  const [logs, setLogs] = useState<string[]>([]);
+  const [logsOpen, setLogsOpen] = useState(false);
+  useEffect(() => {
+    if (!logsOpen) return;
+    const read = () => void fetch('/v1/engine/logs')
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
+      .then((body: { lines?: string[] }) => setLogs((body.lines ?? []).slice(-200)))
+      .catch(() => undefined);
+    read();
+    const timer = window.setInterval(read, 2000);
+    return () => window.clearInterval(timer);
+  }, [logsOpen]);
 
   const restart = async () => {
     setBusy(true);
@@ -193,6 +208,21 @@ export const EngineSettings: React.FC = () => {
         >
           <RotateCw size={13} /> {t('restartEngine')}
         </button>
+      </div>
+
+      <div className="rounded-xl border border-zinc-200 dark:border-white/10">
+        <button
+          type="button"
+          onClick={() => setLogsOpen(open => !open)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-zinc-500 hover:text-pink-500"
+        >
+          <Terminal size={13} /> {t('engineLog')}
+        </button>
+        {logsOpen && (
+          <div className="max-h-64 overflow-y-auto border-t border-zinc-200 bg-zinc-50 p-3 font-mono text-[11px] leading-4 text-zinc-600 dark:border-white/10 dark:bg-black/30 dark:text-zinc-400">
+            {logs.length === 0 ? <span className="text-zinc-400">—</span> : logs.map((line, index) => <div key={index} className="break-words">{line}</div>)}
+          </div>
+        )}
       </div>
 
       {notice && (
