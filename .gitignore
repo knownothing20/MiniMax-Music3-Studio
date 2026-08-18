@@ -21,3 +21,6 @@ release/
 # Local engineering notes: they never belong to the published repository.
 HANDOFF.md
 NEXT_SESSION_PROMPT.md
+
+# Local editor and agent settings.
+.claude/

@@ -20,7 +20,7 @@
 [![C%2B%2B](https://img.shields.io/badge/minimaxmusic.cpp-CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white)](#architecture)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11_x64-0078D6?style=flat-square&logo=windows&logoColor=white)](#models)
 
-**English** · [Русский](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ru) · [中文](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=zh) · [日本語](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ja) · [한국어](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ko)
+**English** · [Русский](https://timoncool.github.io/MiniMax-Music3-Studio/ru.html) · [中文](https://timoncool.github.io/MiniMax-Music3-Studio/zh.html) · [日本語](https://timoncool.github.io/MiniMax-Music3-Studio/ja.html) · [한국어](https://timoncool.github.io/MiniMax-Music3-Studio/ko.html)
 
 ![MiniMax Music3 Studio](docs/screenshots/en-01-create.png)
 
@@ -75,9 +75,9 @@ ask it to.
 | ![Cover art](docs/screenshots/en-06-cover.png) | ![Writing a track](docs/screenshots/en-01-create.png) |
 | Cover art — large preview, prompt templates filled from the track | Writing a track — the caption as a document, every parameter a slider |
 
-The same six screens are in the interface language you read: [Русский](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ru),
-[中文](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=zh), [日本語](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ja),
-[한국어](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ko) — on the project page, or in
+The same six screens are in the interface language you read: [Русский](https://timoncool.github.io/MiniMax-Music3-Studio/ru.html),
+[中文](https://timoncool.github.io/MiniMax-Music3-Studio/zh.html), [日本語](https://timoncool.github.io/MiniMax-Music3-Studio/ja.html),
+[한국어](https://timoncool.github.io/MiniMax-Music3-Studio/ko.html) — on the project page, or in
 [docs/screenshots](docs/screenshots).
 
 ## What it needs
