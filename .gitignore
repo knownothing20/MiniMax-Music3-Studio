@@ -1,6 +1,9 @@
 target/
 node_modules/
 dist/
+# ...except the waveform editor's own bundle, which is shipped, not built.
+!app/public/editor/dist/
+!app/public/editor/dist/**
 .env
 .env.*
 !.env.example

@@ -1190,6 +1190,13 @@ function AppContent() {
     setSelectedSong(prev => prev?.id === songId ? { ...prev, coverUrl: bust } : prev);
   }, []);
 
+  // Covers and karaoke timings finish after the track is already on screen.
+  useEffect(() => {
+    const reload = () => void refreshNativeLibrary();
+    window.addEventListener('mm3:library-changed', reload);
+    return () => window.removeEventListener('mm3:library-changed', reload);
+  }, [refreshNativeLibrary]);
+
   // Render Layout Logic
   const renderContent = () => {
     switch (currentView) {

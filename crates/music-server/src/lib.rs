@@ -10,6 +10,7 @@ mod lyrics_sync;
 mod credentials;
 mod model_manager;
 mod presets;
+mod remote_zip;
 mod resources;
 mod separation;
 mod skill;
@@ -36,7 +37,6 @@ use tokio::sync::RwLock;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 const PRIMARY_MUSIC_ENGINE_ID: &str = "minimaxmusic-cpp";
-const AUDIOCPP_ENGINE_ID: &str = "audiocpp-minimax-music3";
 
 #[derive(Clone)]
 struct AppState {
@@ -62,6 +62,11 @@ struct AppState {
     cover_template_default: Arc<RwLock<Option<String>>>,
     separator: Arc<separation::Separator>,
     separation_config: Arc<RwLock<separation::SeparationConfig>>,
+    /// Draw a cover as soon as a track is finished.
+    cover_auto: Arc<RwLock<bool>>,
+    /// What is being done to finished tracks right now - covers, karaoke - so
+    /// the interface can say it instead of leaving the user guessing.
+    activity: Arc<RwLock<Vec<Activity>>>,
     /// The separation run in progress, if any. One at a time: the model wants
     /// the whole machine for a minute, and two runs would only make both slow.
     separation_run: Arc<RwLock<Option<SeparationRun>>>,
@@ -93,6 +98,9 @@ struct CreateMusicJobRequest {
     /// Library title only. It is never sent to mm-server, which has no title
     /// field, so it must not become part of the replayable request.
     title: Option<String>,
+    /// What the cover should show, when the assistant already described it.
+    /// Also library-only, for the same reason.
+    cover_prompt: Option<String>,
 }
 
 /// The name this request goes into the library under: the user's, or one taken
@@ -149,6 +157,9 @@ enum MusicJobPhase {
 struct MusicJob {
     id: String,
     engine_id: String,
+    /// What the assistant said this track's cover should show, if anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     status: MusicJobStatus,
@@ -251,6 +262,9 @@ struct PersistedStudioSettings {
     cover_template_default: Option<String>,
     #[serde(default)]
     separation: Option<separation::SeparationConfig>,
+    /// Whether a finished track gets its cover drawn without being asked.
+    #[serde(default)]
+    cover_auto: Option<bool>,
 }
 
 #[derive(Default)]
@@ -426,6 +440,10 @@ pub async fn serve() -> anyhow::Result<()> {
         cover_template_default: Arc::new(RwLock::new(
             persisted.as_ref().and_then(|settings| settings.cover_template_default.clone()),
         )),
+        activity: Arc::new(RwLock::new(Vec::new())),
+        cover_auto: Arc::new(RwLock::new(
+            persisted.as_ref().and_then(|settings| settings.cover_auto).unwrap_or(true),
+        )),
         separation_config: Arc::new(RwLock::new(
             persisted.as_ref().and_then(|settings| settings.separation.clone()).unwrap_or_default(),
         )),
@@ -467,6 +485,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
         .route("/v1/assistant/status", get(assistant_status).put(update_assistant_settings))
         .route("/v1/assistant/write", post(assistant_write))
+        .route("/v1/assistant/write/stream", post(assistant_write_stream))
         .route("/v1/assistant/runtime", get(assistant_runtime_status))
         .route("/v1/assistant/runtime/install", post(assistant_runtime_install))
         .route("/v1/assistant/runtime/start", post(assistant_runtime_start))
@@ -487,6 +506,8 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/separation/install", post(install_separation_model))
         .route("/v1/library/songs/{id}/stems", get(read_stems).post(start_separation))
         .route("/v1/library/songs/{id}/stems/{stem}", get(read_stem_audio))
+        .route("/v1/library/songs/{id}/cover/auto", post(draw_cover_now))
+        .route("/v1/activity", get(read_activity))
         .route("/v1/cover-templates", get(read_cover_templates).put(write_cover_templates))
         .route("/v1/cover-templates/render", post(render_cover_template))
         .route("/v1/openrouter/completions", post(create_openrouter_completion))
@@ -618,6 +639,9 @@ struct StoreCoverRequest {
 #[derive(Debug, Deserialize)]
 struct CoverTemplatesRequest {
     templates: Vec<cover_prompt::CoverTemplate>,
+    /// Draw a cover as soon as a track finishes.
+    #[serde(default)]
+    auto: Option<bool>,
     /// Which of them a new cover starts from. `None` leaves it as it was.
     #[serde(default)]
     default_id: Option<String>,
@@ -678,6 +702,8 @@ struct SeparationRun {
     done: bool,
     error: Option<String>,
     stems: Vec<String>,
+    /// Whether the graphics card did the work, once the run is over.
+    used_gpu: Option<bool>,
 }
 
 /// Where a song's stems live: beside the track, named after it.
@@ -709,9 +735,30 @@ async fn separation_assets(State(state): State<AppState>) -> Json<Value> {
         {
             "id": "onnxruntime-cuda",
             "label": "ONNX Runtime 1.24.2 · CUDA",
-            "bytes": 280_819_000u64,
-            "note": "Runs the separator on an NVIDIA card instead of the processor. Needs CUDA 12.",
+            "bytes": 280_855_316u64,
+            "note": "The CUDA build of the runtime.",
             "installed": state.lyrics_sync.has_cuda_runtime(),
+        },
+        {
+            "id": "cuda-cublas",
+            "label": "NVIDIA cuBLAS 12.9",
+            "bytes": 549_731_131u64,
+            "note": "The linear algebra the CUDA provider is built on.",
+            "installed": state.lyrics_sync.downloader().runtime_dir("onnx-cuda").join("cublasLt64_12.dll").is_file(),
+        },
+        {
+            "id": "cuda-cudart",
+            "label": "NVIDIA CUDA runtime 12.9",
+            "bytes": 3_521_238u64,
+            "note": "The CUDA runtime itself.",
+            "installed": state.lyrics_sync.downloader().runtime_dir("onnx-cuda").join("cudart64_12.dll").is_file(),
+        },
+        {
+            "id": "cuda-cudnn",
+            "label": "NVIDIA cuDNN 9.25",
+            "bytes": 1_904_452_100u64,
+            "note": "The convolution kernels the separator spends its time in.",
+            "installed": state.lyrics_sync.downloader().runtime_dir("onnx-cuda").join("cudnn64_9.dll").is_file(),
         },
         {
             "id": "onnxruntime",
@@ -732,28 +779,51 @@ struct InstallSeparationAssetRequest {
     asset_id: String,
 }
 
+/// Everything the card path needs, in the order it is used.
+const CARD_ASSETS: [&str; 5] = ["onnxruntime-cuda", "cuda-cudart", "cuda-cublas", "cuda-cufft", "cuda-cudnn"];
+
 async fn install_separation_asset(
     State(state): State<AppState>,
     Json(request): Json<InstallSeparationAssetRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
-    match request.asset_id.as_str() {
-        id if id == separation::MODEL.id => {
-            let separator = state.separator.clone();
-            tokio::spawn(async move { let _ = separator.downloader().install(&separation::MODEL).await; });
-        }
-        "onnxruntime-cuda" => {
-            let sync = state.lyrics_sync.clone();
-            let asset = lyrics_sync::asset("onnxruntime-cuda")
-                .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "the CUDA runtime is not in the catalogue".into()))?;
-            tokio::spawn(async move { let _ = sync.downloader().install(asset).await; });
-        }
-        "onnxruntime" => {
-            let sync = state.lyrics_sync.clone();
-            let asset = lyrics_sync::asset("onnxruntime")
-                .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "the runtime is not in the catalogue".into()))?;
-            tokio::spawn(async move { let _ = sync.downloader().install(asset).await; });
-        }
-        other => return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown asset {other}"))),
+    // "card" means whatever is still missing for the graphics card, one after
+    // another: asking someone to press four buttons in the right order is not a
+    // setup, it is a quiz.
+    if request.asset_id == "card" {
+        let sync = state.lyrics_sync.clone();
+        tokio::spawn(async move {
+            for id in CARD_ASSETS {
+                let Some(asset) = lyrics_sync::asset(id) else { continue };
+                if sync.downloader().is_installed(asset) {
+                    continue;
+                }
+                if let Err(error) = sync.downloader().install(asset).await {
+                    eprintln!("could not install {id}: {error}");
+                    return;
+                }
+                // The downloader takes one job at a time on purpose; wait for
+                // this one before starting the next.
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    match sync.downloader().active().await {
+                        Some(progress) if !progress.done => continue,
+                        _ => break,
+                    }
+                }
+            }
+        });
+        return Ok(Json(serde_json::json!({ "started": true })));
+    }
+    // Anything in the catalogue may be installed by name; listing the ids here
+    // by hand is how cuFFT ended up silently rejected.
+    if request.asset_id == separation::MODEL.id {
+        let separator = state.separator.clone();
+        tokio::spawn(async move { let _ = separator.downloader().install(&separation::MODEL).await; });
+    } else if let Some(asset) = lyrics_sync::asset(&request.asset_id) {
+        let sync = state.lyrics_sync.clone();
+        tokio::spawn(async move { let _ = sync.downloader().install(asset).await; });
+    } else {
+        return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown asset {}", request.asset_id)));
     }
     Ok(Json(serde_json::json!({ "started": true })))
 }
@@ -792,10 +862,25 @@ async fn separation_status(State(state): State<AppState>) -> Json<Value> {
             "installed": state.separator.is_installed(),
         },
         "runtime_installed": runtime.is_some(),
-        "cuda_runtime_installed": state.lyrics_sync.has_cuda_runtime(),
+        "cuda_runtime_installed": state.lyrics_sync.has_cuda_libraries(),
+        "card_missing_bytes": CARD_ASSETS
+            .iter()
+            .filter_map(|id| lyrics_sync::asset(id))
+            .filter(|asset| !state.lyrics_sync.downloader().is_installed(asset))
+            .map(|asset| asset.bytes)
+            .sum::<u64>(),
         "ready": state.separator.ready(runtime.as_deref()),
         "stems": separation::STEMS,
-        "download": state.separator.downloader().active().await,
+        // Either downloader may be the busy one: the model has its own, the
+        // card libraries come through karaoke's. Reporting only the first is
+        // what made a running download look like a dead button.
+        "download": match state.separator.downloader().active().await {
+            Some(active) if !active.done => Some(active),
+            other => match state.lyrics_sync.downloader().active().await {
+                Some(active) if !active.done => Some(active),
+                fallback => fallback.or(other),
+            },
+        },
         "settings": state.separation_config.read().await.clone(),
         "run": state.separation_run.read().await.clone(),
     }))
@@ -873,13 +958,24 @@ async fn start_separation(
         return Err(api_error(StatusCode::CONFLICT, "a track is already being separated".into()));
     }
     let wanted_runtime = state.separation_config.read().await.runtime;
+    // Which library is loaded is decided once per process - `ort` binds it on
+    // first use - so always take the CUDA build when it is complete: it carries
+    // the processor provider too, and the setting below decides which of them
+    // actually runs. Choosing by the setting meant a studio that had run once
+    // on the processor could never reach the card without a restart.
     let runtime = state
         .lyrics_sync
-        .onnxruntime_library_of(wanted_runtime)
+        .onnxruntime_library_of(if state.lyrics_sync.has_cuda_libraries() {
+            lyrics_sync::OnnxFlavour::Cuda
+        } else {
+            lyrics_sync::OnnxFlavour::Cpu
+        })
+        .or_else(|| state.lyrics_sync.onnxruntime_library())
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "the ONNX Runtime is not installed yet".into()))?;
-    // Whether this run can use the card at all: the CUDA provider lives in the
-    // CUDA build of the runtime and nowhere else.
-    let on_gpu = runtime.parent().is_some_and(|parent| parent.join("onnxruntime_providers_cuda.dll").is_file());
+    // The card is only really available when every CUDA library the provider
+    // links against is beside it.
+    let on_gpu = !matches!(wanted_runtime, lyrics_sync::OnnxFlavour::Cpu)
+        && state.lyrics_sync.has_cuda_libraries();
     if !state.separator.is_installed() {
         return Err(api_error(StatusCode::BAD_REQUEST, "the separation model is not installed yet".into()));
     }
@@ -894,7 +990,7 @@ async fn start_separation(
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "this track has no stored audio".into()))?;
 
     *state.separation_run.write().await =
-        Some(SeparationRun { song_id: id.clone(), progress: 0.0, done: false, error: None, stems: vec![] });
+        Some(SeparationRun { song_id: id.clone(), progress: 0.0, done: false, error: None, stems: vec![], used_gpu: None });
 
     let model = state.separator.model_path();
     let config = state.separation_config.read().await.clone();
@@ -906,12 +1002,22 @@ async fn start_separation(
         // Must be set before anything touches `ort`, or it binds to whatever
         // onnxruntime.dll the system happens to have.
         static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| unsafe { std::env::set_var("ORT_DYLIB_PATH", &runtime) });
+        ONCE.call_once(|| unsafe {
+            std::env::set_var("ORT_DYLIB_PATH", &runtime);
+            // Windows resolves a DLL's own dependencies through the process
+            // search path, not through the folder the DLL came from. The CUDA
+            // provider sits next to cuBLAS and cuDNN and still reported them
+            // "missing" until this directory was on PATH.
+            if let Some(directory) = runtime.parent() {
+                let existing = std::env::var("PATH").unwrap_or_default();
+                std::env::set_var("PATH", format!("{};{existing}", directory.display()));
+            }
+        });
 
-        let outcome = (|| -> anyhow::Result<Vec<String>> {
+        let outcome = (|| -> anyhow::Result<(Vec<String>, bool)> {
             let audio = audio_pcm::decode_stereo_44k(&audio_path)?;
             let handle = tokio::runtime::Handle::current();
-            let stems = separation::separate(&model, &audio, separation::STEMS.len(), overlap, on_gpu, |fraction| {
+            let separated = separation::separate(&model, &audio, separation::STEMS.len(), overlap, on_gpu, |fraction| {
                 let state = background.clone();
                 handle.spawn(async move {
                     if let Some(run) = state.separation_run.write().await.as_mut() {
@@ -920,7 +1026,8 @@ async fn start_separation(
                 });
             })?;
             let mut written = Vec::new();
-            for stem in stems {
+            let ran_on_gpu = separated.used_gpu;
+            for stem in separated.stems {
                 if !wanted.iter().any(|name| name == stem.name) {
                     continue;
                 }
@@ -928,7 +1035,7 @@ async fn start_separation(
                 separation::write_wav_stereo(&path, &stem.samples)?;
                 written.push(stem.name.to_string());
             }
-            Ok(written)
+            Ok((written, ran_on_gpu))
         })();
 
         let handle = tokio::runtime::Handle::current();
@@ -936,9 +1043,10 @@ async fn start_separation(
             if let Some(run) = background.separation_run.write().await.as_mut() {
                 run.done = true;
                 match outcome {
-                    Ok(stems) => {
+                    Ok((stems, ran_on_gpu)) => {
                         run.progress = 1.0;
                         run.stems = stems;
+                        run.used_gpu = Some(ran_on_gpu);
                     }
                     Err(error) => run.error = Some(error.to_string()),
                 }
@@ -949,8 +1057,309 @@ async fn start_separation(
     Ok(Json(serde_json::json!({ "started": true, "song_id": id })))
 }
 
+
+/// Draws a cover for a finished track, if the studio was told to.
+///
+/// The same pieces the cover window uses: the default template, filled in from
+/// this track, and the image model chosen on the provider page. Nothing happens
+/// without a key, without a model, or when the user turned this off - and a
+/// failure is written to the log rather than shown as a broken track.
+/// Draws the cover for one track now, and says what went wrong if it did not.
+async fn draw_cover_now(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    match draw_cover(&state, &id).await {
+        Ok(()) => Ok(Json(serde_json::json!({ "drawn": true }))),
+        Err(error) => Err(api_error(StatusCode::BAD_GATEWAY, error.to_string())),
+    }
+}
+
+
+/// Times the lyrics of a finished track, if karaoke is switched on.
+///
+/// The switch said "on" and nothing happened: the timings were only ever made
+/// by the button in the track menu. A track arrives with its words already
+/// known, so this is the moment to time them.
+
+/// One background piece of work on a finished track.
+#[derive(Debug, Clone, Serialize)]
+struct Activity {
+    song_id: String,
+    title: String,
+    /// "cover" or "karaoke".
+    kind: &'static str,
+    /// "running", "done" or "failed".
+    state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+/// Notes what is happening, keeping only the recent past.
+async fn note_activity(state: &AppState, song_id: &str, title: &str, kind: &'static str, phase: &'static str, detail: Option<String>) {
+    let mut activity = state.activity.write().await;
+    if let Some(existing) = activity.iter_mut().find(|entry| entry.song_id == song_id && entry.kind == kind) {
+        existing.state = phase;
+        existing.detail = detail;
+        existing.title = title.to_string();
+    } else {
+        activity.push(Activity {
+            song_id: song_id.to_string(),
+            title: title.to_string(),
+            kind,
+            state: phase,
+            detail,
+        });
+    }
+    let overflow = activity.len().saturating_sub(20);
+    if overflow > 0 {
+        activity.drain(..overflow);
+    }
+}
+
+async fn read_activity(State(state): State<AppState>) -> Json<Value> {
+    Json(serde_json::json!({ "activity": state.activity.read().await.clone() }))
+}
+
+async fn time_lyrics_for(state: AppState, song_id: String) {
+    let config = state.lyrics_sync_config.read().await.clone();
+    if !config.enabled || config.provider == lyrics_sync::AsrProvider::None {
+        return;
+    }
+    let Ok(Some(song)) = state.library.get_song(&song_id) else { return };
+    // An instrumental has section markers and no words. Timing it means asking
+    // the recogniser to find lyrics that were never sung.
+    if !auto_title::has_sung_lines(&song.lyrics) {
+        return;
+    }
+    let Some(audio) = state.library.media_path_for_song(&song) else { return };
+    let audio = audio.display().to_string();
+
+    note_activity(&state, &song_id, &song.title, "karaoke", "running", None).await;
+    let words = match config.provider {
+        lyrics_sync::AsrProvider::None => return,
+        lyrics_sync::AsrProvider::Parakeet => {
+            let sync = state.lyrics_sync.clone();
+            let path = std::path::PathBuf::from(&audio);
+            match tokio::task::spawn_blocking(move || sync.parakeet_words(&path)).await {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("no karaoke for {song_id}: {error}");
+                    return;
+                }
+            }
+        }
+        lyrics_sync::AsrProvider::Whisper => {
+            let sync = state.lyrics_sync.clone();
+            let config = config.clone();
+            let path = std::path::PathBuf::from(&audio);
+            let lyrics = song.lyrics.clone();
+            match tokio::task::spawn_blocking(move || sync.whisper_words(&config, &path, None, &lyrics)).await {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("no karaoke for {song_id}: {error}");
+                    return;
+                }
+            }
+        }
+        lyrics_sync::AsrProvider::OpenRouter => {
+            karaoke_words_from_openrouter(&state, &config, &audio, None).await
+        }
+    };
+    let words = match words {
+        Ok(words) => words,
+        Err(error) => {
+            eprintln!("no karaoke for {song_id}: {error}");
+            note_activity(&state, &song_id, &song.title, "karaoke", "failed", Some(error.to_string())).await;
+            return;
+        }
+    };
+    let lines = lyrics_sync::align_lyrics_words(&words, &song.lyrics);
+    if lines.is_empty() {
+        let reason = "karaoke.no-match";
+        eprintln!("no karaoke for {song_id}: {reason}");
+        note_activity(&state, &song_id, &song.title, "karaoke", "failed", Some(reason.to_string())).await;
+        return;
+    }
+    match state.library.set_song_lrc(&song_id, &lyrics_sync::enhanced_lrc(&lines)) {
+        Ok(_) => note_activity(&state, &song_id, &song.title, "karaoke", "done", None).await,
+        Err(error) => {
+            eprintln!("could not store karaoke for {song_id}: {error}");
+            note_activity(&state, &song_id, &song.title, "karaoke", "failed", Some(error.to_string())).await;
+        }
+    }
+}
+
+async fn draw_cover_for(state: AppState, song_id: String) {
+    if !*state.cover_auto.read().await {
+        return;
+    }
+    let title = state.library.get_song(&song_id).ok().flatten().map(|song| song.title).unwrap_or_default();
+    note_activity(&state, &song_id, &title, "cover", "running", None).await;
+    match draw_cover(&state, &song_id).await {
+        Ok(()) => note_activity(&state, &song_id, &title, "cover", "done", None).await,
+        Err(error) => {
+            eprintln!("no cover for {song_id}: {error}");
+            note_activity(&state, &song_id, &title, "cover", "failed", Some(error.to_string())).await;
+        }
+    }
+}
+
+/// The work itself, with its reasons kept rather than printed.
+async fn draw_cover(state: &AppState, song_id: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let song = state
+        .library
+        .get_song(song_id)?
+        .context("the track is not in the library")?;
+    if song.metadata.get("cover_filename").is_some() {
+        return Ok(());
+    }
+    let model = {
+        let configuration = state.configuration.read().await;
+        configuration
+            .selections
+            .iter()
+            .find(|selection| selection.capability == Capability::CoverArt)
+            .filter(|selection| selection.mode == ExecutionMode::OpenRouter)
+            .and_then(|selection| selection.cloud_model.clone())
+            .filter(|model| !model.trim().is_empty())
+    };
+    let catalog = catalog_for(state).await.map_err(|error| anyhow::anyhow!(error))?;
+    let model = match model {
+        Some(model) => model,
+        None => providers::openrouter::suggested_model(&catalog, Capability::CoverArt)
+            .context("no image model is chosen for covers")?,
+    };
+    let templates = state.cover_templates.read().await.clone();
+    let default_id = state.cover_template_default.read().await.clone();
+    let template = templates
+        .iter()
+        .find(|entry| Some(&entry.id) == default_id.as_ref())
+        .or_else(|| templates.first())
+        .map(|entry| entry.template.clone())
+        .context("there are no cover templates")?;
+    let facts = cover_prompt::TrackFacts {
+        title: song.title.clone(),
+        style: song.caption.clone(),
+        lyrics: song.lyrics.clone(),
+        duration_seconds: song.metadata.get("duration_seconds").and_then(Value::as_f64).unwrap_or(0.0),
+    };
+    let prompt = match song.metadata.get("cover_prompt").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) {
+        Some(written) => written.to_string(),
+        None => cover_prompt::render(&template, &facts),
+    };
+    let request = providers::openrouter::request_for(&catalog, Capability::CoverArt, &model, &prompt)?;
+    let answered = execute_openrouter_json(request).await.map_err(|error| anyhow::anyhow!(error))?;
+    let first = answered
+        .body
+        .get("data")
+        .and_then(|data| data.get(0))
+        .context("the model returned no image")?;
+    let image = first
+        .get("b64_json")
+        .and_then(Value::as_str)
+        .context("the model returned no image")?;
+    // The answer states its own format, and it is not always PNG.
+    let media_type = first.get("media_type").and_then(Value::as_str).unwrap_or("image/png").to_string();
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let bytes = STANDARD.decode(image.trim()).context("the image was not valid base64")?;
+    state.library.store_song_cover(song_id, &bytes, &media_type)?;
+    tag_stored_song(state, song_id).await;
+    Ok(())
+}
+
+#[allow(dead_code)]
+async fn draw_cover_unused(state: AppState, song_id: String) {
+    let Ok(Some(song)) = state.library.get_song(&song_id) else { return };
+    if song.metadata.get("cover_filename").is_some() {
+        return;
+    }
+
+    let model = {
+        let configuration = state.configuration.read().await;
+        configuration
+            .selections
+            .iter()
+            .find(|selection| selection.capability == Capability::CoverArt)
+            .filter(|selection| selection.mode == ExecutionMode::OpenRouter)
+            .and_then(|selection| selection.cloud_model.clone())
+    };
+    let model = match model {
+        Some(model) if !model.trim().is_empty() => model,
+        _ => match catalog_for(&state).await.ok().and_then(|catalog| {
+            providers::openrouter::suggested_model(&catalog, Capability::CoverArt)
+        }) {
+            Some(model) => model,
+            None => return,
+        },
+    };
+
+    let template = {
+        let templates = state.cover_templates.read().await;
+        let default_id = state.cover_template_default.read().await.clone();
+        templates
+            .iter()
+            .find(|entry| Some(&entry.id) == default_id.as_ref())
+            .or_else(|| templates.first())
+            .map(|entry| entry.template.clone())
+    };
+    let Some(template) = template else { return };
+
+    let facts = cover_prompt::TrackFacts {
+        title: song.title.clone(),
+        style: song.caption.clone(),
+        lyrics: song.lyrics.clone(),
+        duration_seconds: song.metadata.get("duration_seconds").and_then(Value::as_f64).unwrap_or(0.0),
+    };
+    // What the assistant wrote for this track beats the generic template: it
+    // was written with the lyrics in front of it.
+    let prompt = match song.metadata.get("cover_prompt").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) {
+        Some(written) => written.to_string(),
+        None => cover_prompt::render(&template, &facts),
+    };
+
+    let catalog = match catalog_for(&state).await {
+        Ok(catalog) => catalog,
+        Err(_) => return,
+    };
+    let request = match providers::openrouter::request_for(&catalog, Capability::CoverArt, &model, &prompt) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("no cover for {song_id}: {error}");
+            return;
+        }
+    };
+    let answered = match execute_openrouter_json(request).await {
+        Ok(answered) => answered,
+        Err(error) => {
+            eprintln!("no cover for {song_id}: {error}");
+            return;
+        }
+    };
+    let image = answered
+        .body
+        .get("data")
+        .and_then(|data| data.get(0))
+        .and_then(|first| first.get("b64_json"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let Some(image) = image else {
+        eprintln!("no cover for {song_id}: the model returned no image");
+        return;
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let Ok(bytes) = STANDARD.decode(image.trim()) else { return };
+    if let Err(error) = state.library.store_song_cover(&song_id, &bytes, "image/png") {
+        eprintln!("could not store the cover for {song_id}: {error}");
+        return;
+    }
+    tag_stored_song(&state, &song_id).await;
+}
+
 async fn read_cover_templates(State(state): State<AppState>) -> Json<Value> {
     Json(serde_json::json!({
+        "auto": *state.cover_auto.read().await,
         "templates": state.cover_templates.read().await.clone(),
         "default_id": state.cover_template_default.read().await.clone(),
         "placeholders": ["title", "style", "lyrics", "excerpt", "duration"],
@@ -968,10 +1377,17 @@ async fn write_cover_templates(
         .default_id
         .filter(|id| !id.trim().is_empty() && templates.iter().any(|entry| entry.id == *id));
     *state.cover_template_default.write().await = default_id.clone();
+    if let Some(auto) = request.auto {
+        *state.cover_auto.write().await = auto;
+    }
     persist_studio_settings(&state)
         .await
         .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    Ok(Json(serde_json::json!({ "templates": templates, "default_id": default_id })))
+    Ok(Json(serde_json::json!({
+        "templates": templates,
+        "default_id": default_id,
+        "auto": *state.cover_auto.read().await,
+    })))
 }
 
 /// The prompt a template turns into for one track, exactly as it would be sent.
@@ -1131,6 +1547,52 @@ async fn update_configuration(
     Json(configuration): Json<StudioConfiguration>,
 ) -> Json<StudioConfiguration> {
     *state.configuration.write().await = configuration.clone();
+
+    // The choice has to reach the code that does the work, or the button is
+    // decoration. Speech-to-text is done by the karaoke stack, and the writing
+    // assistant has its own provider; both follow this page now.
+    for selection in &configuration.selections {
+        match selection.capability {
+            Capability::SpeechToText => {
+                let mut sync = state.lyrics_sync_config.write().await;
+                sync.provider = match selection.mode {
+                    ExecutionMode::OpenRouter => lyrics_sync::AsrProvider::OpenRouter,
+                    ExecutionMode::Local => match selection.local_engine.as_deref() {
+                        Some("whisper") => lyrics_sync::AsrProvider::Whisper,
+                        Some("parakeet") => lyrics_sync::AsrProvider::Parakeet,
+                        _ if state.lyrics_sync.parakeet_ready() => lyrics_sync::AsrProvider::Parakeet,
+                        _ if state.lyrics_sync.whisper_binary().is_some() => lyrics_sync::AsrProvider::Whisper,
+                        _ => sync.provider,
+                    },
+                };
+                if selection.mode == ExecutionMode::OpenRouter {
+                    sync.openrouter_model = selection.cloud_model.clone();
+                }
+            }
+            Capability::PromptEnhancement => {
+                let mut assistant = state.assistant.write().await;
+                match selection.mode {
+                    ExecutionMode::OpenRouter => {
+                        assistant.provider = AssistantProvider::OpenRouter;
+                        if let Some(model) = selection.cloud_model.clone() {
+                            assistant.openrouter_model = Some(model);
+                        }
+                    }
+                    ExecutionMode::Local => {
+                        // Whichever local shape is set up: a managed model the
+                        // studio downloaded, or a server the user runs.
+                        assistant.provider = if assistant.managed_model.is_some() || assistant.managed_path.is_some() {
+                            AssistantProvider::Managed
+                        } else {
+                            AssistantProvider::Local
+                        };
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     let _ = persist_studio_settings(&state).await;
     Json(configuration)
 }
@@ -1591,6 +2053,7 @@ async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
         cover_templates: Some(state.cover_templates.read().await.clone()),
         cover_template_default: state.cover_template_default.read().await.clone(),
         separation: Some(state.separation_config.read().await.clone()),
+        cover_auto: Some(*state.cover_auto.read().await),
     };
     if let Some(parent) = state.settings_path.parent() { fs::create_dir_all(parent)?; }
     let temporary = state.settings_path.with_extension("json.part");
@@ -1869,7 +2332,7 @@ async fn create_song_karaoke(
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let config = state.lyrics_sync_config.read().await.clone();
     if !config.available() {
-        return Err(api_error(StatusCode::CONFLICT, "Karaoke is switched off. Turn it on in Settings and pick a recogniser.".into()));
+        return Err(api_error(StatusCode::CONFLICT, "karaoke.off".into()));
     }
     let song = state
         .library
@@ -1880,13 +2343,13 @@ async fn create_song_karaoke(
         .audio_path
         .clone()
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "this track has no audio to listen to".into()))?;
-    if song.lyrics.trim().is_empty() {
-        return Err(api_error(StatusCode::BAD_REQUEST, "this track has no lyrics to time".into()));
+    if !auto_title::has_sung_lines(&song.lyrics) {
+        return Err(api_error(StatusCode::BAD_REQUEST, "karaoke.instrumental".into()));
     }
 
     let words = match config.provider {
         lyrics_sync::AsrProvider::None => {
-            return Err(api_error(StatusCode::CONFLICT, "no recogniser is selected".into()))
+            return Err(api_error(StatusCode::CONFLICT, "karaoke.no-recogniser".into()))
         }
         lyrics_sync::AsrProvider::Parakeet => {
             let sync = state.lyrics_sync.clone();
@@ -1916,7 +2379,7 @@ async fn create_song_karaoke(
     // drifts off the singing immediately.
     let lines = lyrics_sync::align_lyrics_words(&words, &song.lyrics);
     if lines.is_empty() {
-        return Err(api_error(StatusCode::BAD_GATEWAY, "the recogniser heard nothing that matches these lyrics".into()));
+        return Err(api_error(StatusCode::BAD_GATEWAY, "karaoke.no-match".into()));
     }
     let lrc = lyrics_sync::enhanced_lrc(&lines);
     state
@@ -1975,6 +2438,188 @@ async fn karaoke_words_from_openrouter(
 
 /// Writes lyrics and/or the structured caption. Optional by design: with no
 /// provider configured this answers 409 and the manual form is unaffected.
+
+/// The same request as `assistant_write`, reported while it happens.
+///
+/// A model can take a minute, and a button that only spins says nothing about
+/// whether the request even left the machine. This sends the stages as they
+/// occur - the request going out, the first token coming back - and then the
+/// text itself, piece by piece, so the fields fill in front of the user.
+
+/// The OpenRouter model the writing assistant should use.
+///
+/// Two screens name this: the provider page, where every capability picks its
+/// model, and the assistant page, which has a field of its own. They disagreed,
+/// and the request went to whichever the code happened to read - so the panel
+/// showed one model while another answered. The provider selection wins,
+/// because that page is where every other capability is chosen.
+async fn assistant_openrouter_model(state: &AppState, config: &AssistantConfig) -> String {
+    let selected = state
+        .configuration
+        .read()
+        .await
+        .selections
+        .iter()
+        .find(|selection| selection.capability == Capability::PromptEnhancement)
+        .and_then(|selection| selection.cloud_model.clone())
+        .filter(|model| !model.trim().is_empty());
+    if let Some(model) = selected {
+        return model;
+    }
+    if let Some(model) = config.openrouter_model.clone().filter(|model| !model.trim().is_empty()) {
+        return model;
+    }
+    catalog_for(state)
+        .await
+        .ok()
+        .and_then(|catalog| providers::openrouter::suggested_model(&catalog, Capability::PromptEnhancement))
+        .unwrap_or_default()
+}
+
+async fn assistant_write_stream(
+    State(state): State<AppState>,
+    Json(request): Json<assistant::AssistRequest>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let config = state.assistant.read().await.clone();
+    if !config.available() {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "No writing assistant is configured. The manual form does not need one.".into(),
+        ));
+    }
+    let (system, _required) = assistant::instructions(&request);
+    let user = assistant::user_message(&request);
+
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
+    let emit = |sender: tokio::sync::mpsc::Sender<Result<axum::body::Bytes, std::io::Error>>, event: Value| async move {
+        let line = format!("data: {event}\n\n");
+        let _ = sender.send(Ok(axum::body::Bytes::from(line))).await;
+    };
+
+    tokio::spawn(async move {
+        emit(sender.clone(), serde_json::json!({ "stage": "preparing" })).await;
+
+        // Where the request goes, and with which model.
+        let (base, model, key): (String, String, Option<String>) = match config.provider {
+            AssistantProvider::OpenRouter => {
+                let model = assistant_openrouter_model(&state, &config).await;
+                let key = match credentials::openrouter_api_key().map(|(key, _)| key) {
+                    Some(key) => key,
+                    None => {
+                        emit(sender.clone(), serde_json::json!({ "error": "no OpenRouter key is stored" })).await;
+                        return;
+                    }
+                };
+                ("https://openrouter.ai/api/v1".to_string(), model, Some(key))
+            }
+            AssistantProvider::Managed => {
+                let own_file = config.managed_path.clone().unwrap_or_default();
+                let id = config.managed_model.clone().unwrap_or_default();
+                let reasoning = config.reasoning_effort.clone();
+                let started = if own_file.trim().is_empty() {
+                    state.assistant_runtime.start(&id, 8192, reasoning.as_deref()).await
+                } else {
+                    state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192, reasoning.as_deref()).await
+                };
+                match started {
+                    Ok(base) => (base, if own_file.trim().is_empty() { id } else { "local-model".to_string() }, None),
+                    Err(error) => {
+                        emit(sender.clone(), serde_json::json!({ "error": format!("the local assistant did not start: {error}") })).await;
+                        return;
+                    }
+                }
+            }
+            _ => (
+                config.local_base_url.clone().unwrap_or_default(),
+                config.local_model.clone().unwrap_or_default(),
+                None,
+            ),
+        };
+
+        let mut body = assistant::chat_body_full(&model, &system, &user, config.reasoning_effort.as_deref(), None);
+        body["stream"] = Value::Bool(true);
+
+        emit(sender.clone(), serde_json::json!({ "stage": "sent", "model": model })).await;
+
+        let client = reqwest::Client::new();
+        let mut outgoing = client
+            .post(format!("{}/chat/completions", base.trim_end_matches('/')))
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(600));
+        if let Some(key) = key {
+            outgoing = outgoing
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"))
+                .header("HTTP-Referer", "https://github.com/timoncool/MiniMax-Music3-Studio")
+                .header("X-Title", "MiniMax Music3 Studio");
+        }
+
+        let response = match outgoing.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                emit(sender.clone(), serde_json::json!({ "error": format!("the assistant is unreachable: {error}") })).await;
+                return;
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            emit(sender.clone(), serde_json::json!({ "error": format!("the assistant returned {status}: {text}") })).await;
+            return;
+        }
+
+        // Server-sent events, one JSON object per `data:` line, with the text in
+        // `choices[0].delta.content`.
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut first = true;
+        let mut whole = String::new();
+        while let Some(chunk) = stream.next().await {
+            let Ok(chunk) = chunk else { break };
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer.drain(..line_end + 1);
+                let Some(payload) = line.strip_prefix("data:") else { continue };
+                let payload = payload.trim();
+                if payload == "[DONE]" {
+                    continue;
+                }
+                let Ok(event): Result<Value, _> = serde_json::from_str(payload) else { continue };
+                let delta = event
+                    .get("choices")
+                    .and_then(|choices| choices.get(0))
+                    .and_then(|choice| choice.get("delta"))
+                    .and_then(|delta| delta.get("content"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if delta.is_empty() {
+                    continue;
+                }
+                if first {
+                    first = false;
+                    emit(sender.clone(), serde_json::json!({ "stage": "writing" })).await;
+                }
+                whole.push_str(delta);
+                emit(sender.clone(), serde_json::json!({ "delta": delta })).await;
+            }
+        }
+
+        emit(sender.clone(), serde_json::json!({ "stage": "done", "text": whole })).await;
+    });
+
+    // A channel of chunks becomes the response body; the receiver is turned into
+    // a stream by hand to avoid another dependency for four lines.
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+    let body = Body::from_stream(stream);
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(body)
+        .expect("valid stream response"))
+}
+
 async fn assistant_write(
     State(state): State<AppState>,
     Json(request): Json<assistant::AssistRequest>,
@@ -2035,13 +2680,7 @@ async fn assistant_write(
         }
         AssistantProvider::OpenRouter => {
             let catalog_now = catalog_for(&state).await.ok();
-            let model = config
-                .openrouter_model
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                // Adding a key should be enough to start writing.
-                .or_else(|| catalog_now.as_ref().and_then(|catalog| providers::openrouter::suggested_model(catalog, Capability::PromptEnhancement)))
-                .unwrap_or_default();
+            let model = assistant_openrouter_model(&state, &config).await;
             let catalog = catalog_for(&state)
         .await
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;
@@ -2210,14 +2849,34 @@ async fn setup_cancel(State(state): State<AppState>) -> Result<Json<Value>, (Sta
 }
 
 async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesResponse> {
-    let catalog = state.openrouter_catalog.read().await;
     let primary_installed = state.music_server.health().await;
-    Json(CapabilitiesResponse { engines: capability_engines(catalog.catalog.as_ref(), primary_installed) })
+    let parakeet_installed = state.lyrics_sync.parakeet_ready();
+    let whisper_installed = state.lyrics_sync.whisper_binary().is_some();
+    let assistant = state.assistant.read().await.clone();
+    let assistant_installed = assistant.available();
+    let catalog = state.openrouter_catalog.read().await;
+    Json(CapabilitiesResponse {
+        engines: capability_engines_with(catalog.catalog.as_ref(), primary_installed, parakeet_installed, whisper_installed, assistant_installed),
+    })
 }
 
 fn capability_engines(
     catalog: Option<&providers::openrouter::CapabilityCatalog>,
     primary_installed: bool,
+) -> Vec<EngineDescriptor> {
+    capability_engines_with(catalog, primary_installed, false, false, false)
+}
+
+/// The engines the studio can offer, including the local ones it only has when
+/// their models are installed. Without these the "Local" button on the provider
+/// page was disabled for ever: the studio recognises speech and writes captions
+/// locally, but never said so here.
+fn capability_engines_with(
+    catalog: Option<&providers::openrouter::CapabilityCatalog>,
+    primary_installed: bool,
+    parakeet_installed: bool,
+    whisper_installed: bool,
+    assistant_installed: bool,
 ) -> Vec<EngineDescriptor> {
     let mut openrouter_capabilities = vec![
         Capability::SpeechToText,
@@ -2235,12 +2894,28 @@ fn capability_engines(
             execution_mode: ExecutionMode::Local,
             installed: primary_installed,
         },
+        // Two different recognisers, named. "Parakeet / Whisper" was not a
+        // choice, it was a shrug.
         EngineDescriptor {
-            id: AUDIOCPP_ENGINE_ID.into(),
-            display_name: "MiniMax Music3 (audio.cpp, optional)".into(),
-            capabilities: vec![Capability::MusicGeneration],
+            id: "parakeet".into(),
+            display_name: "Parakeet TDT 0.6B (local)".into(),
+            capabilities: vec![Capability::SpeechToText],
             execution_mode: ExecutionMode::Local,
-            installed: false,
+            installed: parakeet_installed,
+        },
+        EngineDescriptor {
+            id: "whisper".into(),
+            display_name: "Whisper.cpp (local)".into(),
+            capabilities: vec![Capability::SpeechToText],
+            execution_mode: ExecutionMode::Local,
+            installed: whisper_installed,
+        },
+        EngineDescriptor {
+            id: "local-assistant".into(),
+            display_name: "Local GGUF model".into(),
+            capabilities: vec![Capability::PromptEnhancement],
+            execution_mode: ExecutionMode::Local,
+            installed: assistant_installed,
         },
         EngineDescriptor {
             id: "openrouter".into(),
@@ -2279,6 +2954,7 @@ async fn create_music_job(
             let job = MusicJob {
                 id: remote.id,
                 engine_id,
+                cover_prompt: request.cover_prompt.clone(),
                 title: Some(titled(&request)),
                 status: MusicJobStatus::Queued,
                 dispatch: MusicJobDispatch::Local,
@@ -2297,6 +2973,7 @@ async fn create_music_job(
         Err(error) => {
             let job = queued_not_configured_job(request, engine_id);
             let job = MusicJob {
+                cover_prompt: None,
                 message: format!("mm-server is unavailable; no inference started: {error}"),
                 ..job
             };
@@ -2330,6 +3007,7 @@ async fn replay_music_job(
     let lyrics = synth_request.get("lyrics").and_then(Value::as_str).unwrap_or_default().to_owned();
     let remote = state.music_server.submit(synth_request.clone()).await.map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("mm-server replay synthesis is unavailable: {error}")))?;
     let job = MusicJob {
+        cover_prompt: None,
         id: remote.id, engine_id: PRIMARY_MUSIC_ENGINE_ID.into(), title: source_title, status: MusicJobStatus::Queued,
         dispatch: MusicJobDispatch::Local, phase: MusicJobPhase::Queued, caption, lyrics,
         duration_seconds: synth_request.get("duration").and_then(Value::as_f64).unwrap_or_default(), generation_settings: synth_request,
@@ -2378,7 +3056,7 @@ async fn create_openrouter_music_job(state: AppState, request: CreateMusicJobReq
         Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
     let job = MusicJob {
-        id: format!("openrouter-{}", uuid_suffix()), engine_id: engine_id.clone(), title: Some(titled(&request)), status: MusicJobStatus::Running,
+        id: format!("openrouter-{}", uuid_suffix()), engine_id: engine_id.clone(), cover_prompt: request.cover_prompt.clone(), title: Some(titled(&request)), status: MusicJobStatus::Running,
         dispatch: MusicJobDispatch::OpenRouter, phase: MusicJobPhase::Running, caption: request.caption, lyrics: request.lyrics,
         duration_seconds: request.duration_seconds, generation_settings: stream_request.request.body.clone(), song: None, songs: vec![],
         message: "OpenRouter music stream started; the completed audio will be imported into the studio library.".into(),
@@ -2408,13 +3086,21 @@ async fn run_openrouter_music_generation(state: AppState, job_id: String, stream
         let job = state.jobs.read().await.get(&job_id).cloned().context("cloud music job disappeared before import")?;
         let imported_song = state.library.import_generated_song(library::GeneratedSongInput {
             title: job.title.clone(),
-            metadata: serde_json::json!({ "duration_seconds": job.duration_seconds }),
+            metadata: serde_json::json!({ "duration_seconds": job.duration_seconds, "cover_prompt": job.cover_prompt.clone() }),
             caption: job.caption.clone(), lyrics: job.lyrics.clone(), generation_settings: job.generation_settings.clone(),
             replay_request: None, audio_codes: None, engine_id: "openrouter".into(), profile_id: None,
             source: "openrouter_generation".into(), audio_extension: "wav", audio,
         })?;
         // A track goes into the library carrying its own name, style and words.
         tag_stored_song(&state, &imported_song.song.id).await;
+        {
+            let state = state.clone();
+            let song_id = imported_song.song.id.clone();
+            let timing_state = state.clone();
+            let timing_song = song_id.clone();
+            tokio::spawn(async move { draw_cover_for(state, song_id).await });
+            tokio::spawn(async move { time_lyrics_for(timing_state, timing_song).await });
+        }
         Ok::<CompletedSong, anyhow::Error>(CompletedSong { id: imported_song.song.id.clone(), audio_url: format!("/v1/library/media/{}", imported_song.song.id), song: imported_song.song })
     }.await;
     let mut jobs = state.jobs.write().await;
@@ -2516,6 +3202,7 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
             "seed": replay.get("seed"),
             "lm_seed": replay.get("lm_seed"),
             "output_format": replay.get("output_format"),
+            "cover_prompt": job.cover_prompt.clone(),
         });
         let imported_song = state.library.import_generated_song(library::GeneratedSongInput {
             title: job.title.clone(), metadata, caption, lyrics, generation_settings, replay_request: Some(replay), audio_codes: Some(audio_codes),
@@ -2525,6 +3212,17 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
         })?;
         let audio_url = format!("/v1/library/media/{}", imported_song.song.id);
         tag_stored_song(&state, &imported_song.song.id).await;
+        {
+            // Locally generated tracks get a cover too: this call was lost in an
+            // edit and only the cloud path kept it, which is why covers appeared
+            // for one kind of track and not the other.
+            let state = state.clone();
+            let song_id = imported_song.song.id.clone();
+            let timing_state = state.clone();
+            let timing_song = song_id.clone();
+            tokio::spawn(async move { draw_cover_for(state, song_id).await });
+            tokio::spawn(async move { time_lyrics_for(timing_state, timing_song).await });
+        }
         imported.push(CompletedSong { id: imported_song.song.id.clone(), song: imported_song.song, audio_url });
     }
     Ok(imported)
@@ -2808,6 +3506,7 @@ fn insert_optional<T: Serialize>(body: &mut Value, key: &str, value: Option<T>) 
 
 fn queued_not_configured_job(request: CreateMusicJobRequest, engine_id: String) -> MusicJob {
     MusicJob {
+        cover_prompt: None,
         id: format!("unconfigured-{}", uuid_suffix()),
         engine_id,
         title: request.title.clone(),
@@ -2826,6 +3525,7 @@ fn queued_not_configured_job(request: CreateMusicJobRequest, engine_id: String) 
 
 fn failed_request_job(request: CreateMusicJobRequest, engine_id: String, error: String) -> MusicJob {
     MusicJob {
+        cover_prompt: None,
         title: request.title.clone(),
         id: format!("rejected-{}", uuid_suffix()),
         engine_id,
@@ -2901,6 +3601,7 @@ mod tests {
     #[test]
     fn request_maps_only_confirmed_mm_server_fields() {
         let body = mm_request_from(&CreateMusicJobRequest {
+            cover_prompt: None,
             title: None,
             caption: "night drive".into(),
             lyrics: "one line".into(),
@@ -2939,6 +3640,7 @@ mod tests {
     #[test]
     fn request_rejects_legacy_audio_formats_not_supported_by_mm_server() {
         let error = mm_request_from(&CreateMusicJobRequest {
+            cover_prompt: None,
             title: None,
             caption: "night drive".into(),
             lyrics: "one line".into(),
@@ -2968,6 +3670,7 @@ mod tests {
     #[test]
     fn request_uses_confirmed_mm3_defaults_and_rejects_invalid_synth_batch() {
         let request = CreateMusicJobRequest {
+            cover_prompt: None,
             title: None,
             caption: "night drive".into(), lyrics: "[verse] one line".into(), duration_seconds: 60.0,
             steps: None, seed: None, lm_seed: None, lm_cfg: None, lm_top_k: None,
@@ -3003,6 +3706,7 @@ mod tests {
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
             cover_templates: Some(cover_prompt::default_templates()),
+            cover_auto: Some(true),
             separation: Some(separation::SeparationConfig::default()),
             cover_template_default: Some("photographic".into()),
         };
@@ -3026,6 +3730,7 @@ mod tests {
     fn remote_statuses_never_claim_success_for_an_unknown_value() {
         let mut job = queued_not_configured_job(
             CreateMusicJobRequest {
+                cover_prompt: None,
                 title: None,
             caption: "night drive".into(),
                 lyrics: "one line".into(),
@@ -3056,7 +3761,9 @@ mod tests {
         let catalog = providers::openrouter::CapabilityCatalog::parse(r#"{"data":[{"id":"catalog/music","name":"Song","description":"Music generation for full-length songs","architecture":{"input_modalities":["text"],"output_modalities":["audio"]}}]}"#).unwrap();
         let after_refresh = CapabilitiesResponse { engines: capability_engines(Some(&catalog), false) };
         assert!(after_refresh.engines.iter().find(|engine| engine.id == "openrouter").unwrap().capabilities.contains(&Capability::MusicGeneration));
-        assert_eq!(serde_json::to_value(after_refresh).unwrap()["engines"].as_array().unwrap().len(), 3);
+        // The music engine, two recognisers, the local assistant and
+        // OpenRouter: everything listed is something the studio can actually do.
+        assert_eq!(serde_json::to_value(after_refresh).unwrap()["engines"].as_array().unwrap().len(), 5);
     }
 
     #[test]

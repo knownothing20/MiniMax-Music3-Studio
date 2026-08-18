@@ -69,25 +69,34 @@ pub fn write_mp3_tags(path: &Path, tags: &TrackTags) -> anyhow::Result<()> {
 /// The genre field takes a phrase, and only a phrase.
 ///
 /// A one-line prompt starts with one - "Darkwave, Synth-pop. …" - so its first
-/// piece is the genre. A structured Music3 caption starts with labels and
-/// measurements instead, and squeezing a genre out of "bpm is 96. key is A"
-/// would be inventing one: there the field is left empty, which every player
-/// handles and a wrong genre does not.
+/// piece is the genre. A structured Music3 caption names its genre a few
+/// phrases in, behind the heading and a row of measurements, so the phrases are
+/// walked until one can stand as a genre. Nothing plausible means the field is
+/// left empty, which every player handles and a wrong genre does not.
 pub fn genre_from_caption(caption: &str) -> Option<String> {
-    let first = caption.split(['.', '\n']).map(str::trim).find(|piece| !piece.is_empty())?;
-    let phrase = first.split(',').next()?.trim();
+    caption
+        .split(['.', '\n'])
+        .filter_map(|piece| piece.split(',').next())
+        .map(str::trim)
+        .find(|phrase| plausible_genre(phrase))
+        .map(str::to_string)
+}
+
+/// Whether a phrase can stand as a genre.
+fn plausible_genre(phrase: &str) -> bool {
+    let lowered = phrase.to_lowercase();
     // A section name is not a genre, with or without its colon: a caption that
     // opens "Global Metadata Basic Attributes…" would otherwise file every
     // track under "Global Metadata".
-    let is_label = crate::auto_title::LABELS
-        .iter()
-        .any(|label| phrase.to_lowercase().starts_with(label));
-    let plausible = !phrase.is_empty()
+    let is_label = crate::auto_title::LABELS.iter().any(|label| lowered.starts_with(label));
+    // "key is D", "scale is minor", "bpm is 180" - a stated measurement, not a name.
+    let is_measurement = lowered.contains(" is ");
+    !phrase.is_empty()
         && phrase.chars().count() < 40
         && !phrase.contains(':')
         && !is_label
-        && !phrase.chars().any(|character| character.is_ascii_digit());
-    plausible.then(|| phrase.to_string())
+        && !is_measurement
+        && !phrase.chars().any(|character| character.is_ascii_digit())
 }
 
 /// The tempo, written either as `bpm is 96` the way Music3 captions state it,
@@ -187,5 +196,21 @@ mod tests {
         assert_eq!(bpm_from_caption("Basic Attributes: bpm is 96. key is A"), Some(96));
         assert_eq!(bpm_from_caption("[tempo: 124 BPM] progressive house"), Some(124));
         assert_eq!(bpm_from_caption("no tempo here"), None);
+    }
+
+    /// A real caption keeps its genre behind the heading and the measurements.
+    #[test]
+    fn the_genre_is_found_behind_the_heading_and_the_numbers() {
+        let caption = concat!(
+            "Global Metadata\n",
+            "Basic Attributes: bpm is 180. key is D, and scale is minor. ",
+            "Melodic Death Metal / Gothenburg Sound. Global Emotional Progression: cold."
+        );
+        assert_eq!(genre_from_caption(caption).as_deref(), Some("Melodic Death Metal / Gothenburg Sound"));
+    }
+
+    #[test]
+    fn a_caption_of_pure_measurements_names_no_genre() {
+        assert_eq!(genre_from_caption(concat!("Global Metadata\n", "Basic Attributes: bpm is 96. key is A")), None);
     }
 }

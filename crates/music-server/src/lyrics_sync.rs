@@ -59,6 +59,11 @@ impl LyricsSyncConfig {
 const WHISPER_BUILD: &str = "v1.9.2";
 /// The ONNX Runtime that Parakeet loads. Mixing versions deadlocks the loader,
 /// so this is pinned exactly as Dub Studio pins it.
+/// The NVIDIA libraries the CUDA provider links against, pinned like the rest.
+const CUBLAS_BUILD: &str = "12.9.2.10";
+const CUDART_BUILD: &str = "12.9.79";
+const CUFFT_BUILD: &str = "11.4.1.4";
+const CUDNN_BUILD: &str = "9.25.0.15";
 const ONNXRUNTIME_BUILD: &str = "v1.24.2";
 
 pub const ASSETS: &[Asset] = &[
@@ -71,6 +76,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 670_611_449,
         unzip_into: Some("whisper-cuda"),
         marker: "whisper-cli",
+        pick: &[],
         vram_gb: None,
         note: "GPU build. Large, because it carries the CUDA libraries with it.",
     },
@@ -83,6 +89,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 8_194_445,
         unzip_into: Some("whisper-cpu"),
         marker: "whisper-cli",
+        pick: &[],
         vram_gb: None,
         note: "Tiny download, works anywhere, slower on long tracks.",
     },
@@ -95,6 +102,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 574_041_195,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: Some(2),
         note: "The accurate choice for sung lyrics.",
     },
@@ -107,6 +115,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 147_951_465,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: Some(1),
         note: "Fast and small; misses words in dense mixes.",
     },
@@ -119,6 +128,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 652_183_999,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: Some(2),
         note: "The encoder; the decoder and vocabulary come with it.",
     },
@@ -131,6 +141,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 18_202_004,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: None,
         note: "Required alongside the Parakeet encoder.",
     },
@@ -143,6 +154,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 139_764,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: None,
         note: "The mel front end the encoder expects.",
     },
@@ -155,6 +167,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 93_939,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: None,
         note: "Token table.",
     },
@@ -167,6 +180,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 97,
         unzip_into: None,
         marker: "",
+        pick: &[],
         vram_gb: None,
         note: "Token table.",
     },
@@ -176,11 +190,76 @@ pub const ASSETS: &[Asset] = &[
         kind: AssetKind::Runtime,
         url: "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-win-x64-gpu-1.24.2.zip",
         relative_path: "runtime/onnxruntime-cuda.zip",
-        bytes: 280_819_000,
+        bytes: 280_855_316,
         unzip_into: Some("onnx-cuda"),
         marker: "onnxruntime_providers_cuda.dll",
+        pick: &[],
         vram_gb: Some(2),
         note: "Runs the separator on an NVIDIA card instead of the processor. Needs CUDA 12.",
+    },
+    Asset {
+        id: "cuda-cublas",
+        label: "NVIDIA cuBLAS 12.9",
+        kind: AssetKind::Runtime,
+        url: "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.9.2.10-archive.zip",
+        relative_path: "runtime/cuda-cublas.zip",
+        bytes: 549_731_131,
+        unzip_into: Some("onnx-cuda"),
+        marker: "cublasLt64_12.dll",
+        pick: &["cublasLt64_12.dll", "cublas64_12.dll"],
+        vram_gb: None,
+        note: "The linear algebra the CUDA provider is built on.",
+    },
+    Asset {
+        id: "cuda-cudart",
+        label: "NVIDIA CUDA runtime 12.9",
+        kind: AssetKind::Runtime,
+        url: "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.9.79-archive.zip",
+        relative_path: "runtime/cuda-cudart.zip",
+        bytes: 3_521_238,
+        unzip_into: Some("onnx-cuda"),
+        marker: "cudart64_12.dll",
+        pick: &["cudart64_12.dll"],
+        vram_gb: None,
+        note: "The CUDA runtime itself.",
+    },
+    Asset {
+        id: "cuda-cufft",
+        label: "NVIDIA cuFFT 11.4",
+        kind: AssetKind::Runtime,
+        url: "https://developer.download.nvidia.com/compute/cuda/redist/libcufft/windows-x86_64/libcufft-windows-x86_64-11.4.1.4-archive.zip",
+        relative_path: "runtime/cuda-cufft.zip",
+        bytes: 198_361_265,
+        unzip_into: Some("onnx-cuda"),
+        marker: "cufft64_11.dll",
+        pick: &["cufft64_11.dll"],
+        vram_gb: None,
+        note: "The transforms the provider uses for spectral work.",
+    },
+    Asset {
+        id: "cuda-cudnn",
+        label: "NVIDIA cuDNN 9.25",
+        kind: AssetKind::Runtime,
+        url: "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.25.0.15_cuda12-archive.zip",
+        relative_path: "runtime/cuda-cudnn.zip",
+        bytes: 1_904_452_100,
+        unzip_into: Some("onnx-cuda"),
+        marker: "cudnn64_9.dll",
+        // Everything the convolution path loads, and nothing else: the
+        // attention kernels alone are another 250 MB the separator never calls.
+        pick: &[
+            "cudnn64_9.dll",
+            "cudnn_graph64_9.dll",
+            "cudnn_ops64_9.dll",
+            "cudnn_cnn64_9.dll",
+            "cudnn_heuristic64_9.dll",
+            "cudnn_engines_precompiled64_9.dll",
+            "cudnn_engines_runtime_compiled64_9.dll",
+            "cudnn_engines_tensor_ir64_9.dll",
+            "cudnn_ext64_9.dll",
+        ],
+        vram_gb: None,
+        note: "The convolution kernels the separator spends its time in.",
     },
     Asset {
         id: "onnxruntime",
@@ -191,6 +270,7 @@ pub const ASSETS: &[Asset] = &[
         bytes: 74_075_355,
         unzip_into: Some("onnx"),
         marker: "onnxruntime.dll",
+        pick: &[],
         vram_gb: None,
         note: "Parakeet runs on this; it is loaded at run time, not linked in.",
     },
@@ -288,6 +368,16 @@ impl LyricsSync {
 
     pub fn has_cuda_runtime(&self) -> bool {
         self.downloader.runtime_dir("onnx-cuda").join("onnxruntime.dll").is_file()
+    }
+
+    /// The CUDA provider is a separate library, and it in turn needs cuBLAS and
+    /// cuDNN beside it. Without all of them the provider refuses to load and the
+    /// run silently lands on the processor.
+    pub fn has_cuda_libraries(&self) -> bool {
+        let dir = self.downloader.runtime_dir("onnx-cuda");
+        ["onnxruntime_providers_cuda.dll", "cublasLt64_12.dll", "cudart64_12.dll", "cudnn64_9.dll"]
+            .iter()
+            .all(|name| dir.join(name).is_file())
     }
 
     fn whisper_model_path(&self, config: &LyricsSyncConfig) -> Option<PathBuf> {
@@ -962,7 +1052,14 @@ Third");
                 // Every runtime is pinned to an exact release - whisper.cpp to
                 // its tag, ONNX Runtime to its version - so a working setup
                 // keeps working.
-                let pinned = entry.url.contains(WHISPER_BUILD) || entry.url.contains(ONNXRUNTIME_BUILD);
+                // NVIDIA's libraries are pinned by their own version in the
+                // archive name, the same way the others are.
+                let pinned = entry.url.contains(WHISPER_BUILD)
+                    || entry.url.contains(ONNXRUNTIME_BUILD)
+                    || entry.url.contains(CUBLAS_BUILD)
+                    || entry.url.contains(CUDART_BUILD)
+                    || entry.url.contains(CUDNN_BUILD)
+                    || entry.url.contains(CUFFT_BUILD);
                 assert!(pinned, "{} is not pinned to a release", entry.id);
                 assert!(!entry.marker.is_empty(), "{} has no proof of extraction", entry.id);
             }

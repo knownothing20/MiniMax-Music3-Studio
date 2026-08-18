@@ -20,7 +20,7 @@ static SKILL: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/skills/music-caption-r
 /// How many complete templates to put in the prompt. The skill asks for at
 /// most three - Foundation, Modifier, Arrangement - and each is a few hundred
 /// words, which is as much as a small local model will read carefully.
-const MAX_REFERENCES: usize = 2;
+const MAX_REFERENCES: usize = 3;
 
 /// One family of the router: the index file and the words that point at it.
 struct Family {
@@ -51,6 +51,34 @@ const FAMILIES: &[Family] = &[
     Family { index: "index-roots-traditional-global.md", cues: &["celtic", "traditional", "folk heritage", "world music", "reggae", "afrobeat", "latin"] },
     Family { index: "index-general-pop-ballad.md", cues: &["pop", "ballad"] },
 ];
+
+/// The families the router lands on: the primary one, and a second when the
+/// brief plainly names two styles. The skill asks for exactly that - one
+/// family for a clear request, a primary and a secondary for a fusion.
+fn route_all(brief: &str) -> Vec<&'static Family> {
+    let lowered = brief.to_lowercase();
+    let mut scored: Vec<(usize, &'static Family)> = FAMILIES
+        .iter()
+        .map(|family| {
+            let weight: usize = family.cues.iter().filter(|cue| lowered.contains(*cue)).map(|cue| cue.len()).sum();
+            (weight, family)
+        })
+        .filter(|(weight, _)| *weight > 0)
+        .collect();
+    scored.sort_by_key(|(weight, _)| std::cmp::Reverse(*weight));
+    if scored.is_empty() {
+        return vec![FAMILIES.last().expect("the router has families")];
+    }
+    // A second family only when it is a real second style, not a stray word:
+    // half the primary's weight is the line the router's own examples draw.
+    let primary = scored[0].0;
+    scored
+        .into_iter()
+        .take(2)
+        .filter(|(weight, _)| *weight * 2 >= primary)
+        .map(|(_, family)| family)
+        .collect()
+}
 
 /// The family the router lands on. Falls back to general pop, which is what
 /// the skill says to do when only mood or imagery is available.
@@ -109,19 +137,27 @@ pub fn references(brief: &str) -> Vec<String> {
     if brief.trim().is_empty() {
         return Vec::new();
     }
-    let family = route(brief);
-    let mut ids = cards(family.index);
-    if ids.is_empty() {
-        return Vec::new();
+    let families = route_all(brief);
+    let mut chosen: Vec<String> = Vec::new();
+    for (position, family) in families.iter().enumerate() {
+        let mut ids = cards(family.index);
+        if ids.is_empty() {
+            continue;
+        }
+        // Best match first, then the family's own order, which the index writes
+        // most-representative first.
+        ids.sort_by_key(|id| std::cmp::Reverse(score(id, brief)));
+        // The primary family gives the foundation and the arrangement, the
+        // secondary gives the one dimension it was chosen for.
+        let take = if position == 0 { MAX_REFERENCES - families.len().saturating_sub(1) } else { 1 };
+        for id in ids.into_iter().take(take) {
+            if let Some(text) = SKILL.get_file(format!("templates/{id}.txt")).and_then(|file| file.contents_utf8()) {
+                chosen.push(text.to_owned());
+            }
+        }
     }
-    // Best match first, then the family's own order, which the index writes
-    // most-representative first.
-    ids.sort_by_key(|id| std::cmp::Reverse(score(id, brief)));
-    ids.into_iter()
-        .filter_map(|id| SKILL.get_file(format!("templates/{id}.txt")).and_then(|file| file.contents_utf8()))
-        .take(MAX_REFERENCES)
-        .map(str::to_owned)
-        .collect()
+    chosen.truncate(MAX_REFERENCES);
+    chosen
 }
 
 /// The family index a brief routes to; useful in diagnostics and tests.
@@ -151,6 +187,16 @@ mod tests {
         assert_eq!(routed_index("symphonic metal with choirs"), "index-metal-heavy-rock.md");
         // Only mood: the skill says fall back to general pop and ballad.
         assert_eq!(routed_index("something sad and beautiful"), "index-general-pop-ballad.md");
+    }
+
+    #[test]
+    fn a_fusion_brings_a_second_family_in() {
+        // The skill asks for a primary and a secondary family when two styles
+        // are named, and for one family when only one is.
+        let fusion = route_all("symphonic metal with orchestral choirs");
+        assert_eq!(fusion.len(), 2, "a fusion should carry a secondary family");
+        let single = route_all("a dark synthwave night drive");
+        assert_eq!(single.len(), 1, "one style is one family");
     }
 
     #[test]

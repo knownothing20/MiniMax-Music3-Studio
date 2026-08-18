@@ -164,6 +164,28 @@ export const AssistantSettings: React.FC = () => {
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || String(response.status));
+
+      // The provider page owns which model each capability uses, and the
+      // assistant reads it from there. Saving here without updating it left two
+      // screens naming different models and the request going to the other one.
+      if (provider === 'open_router') {
+        const configuration = await fetch('/v1/configuration').then(response => response.json()).catch(() => null);
+        const selections = configuration?.selections;
+        if (Array.isArray(selections)) {
+          await fetch('/v1/configuration', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              selections: selections.map((selection: { capability: string; cloud_model: string | null }) =>
+                selection.capability === 'prompt_enhancement'
+                  ? { ...selection, execution_mode: 'open_router', cloud_model: openRouterModel.trim() || null }
+                  : selection,
+              ),
+            }),
+          }).catch(() => undefined);
+        }
+      }
+
       setAvailable(body?.available === true);
       setMessage({ tone: 'ok', text: t('assistantSaved') });
     } catch (reason) {

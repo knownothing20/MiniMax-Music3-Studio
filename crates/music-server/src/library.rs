@@ -74,6 +74,30 @@ fn generated_title(caption:&str)->String{
  if title.is_empty(){"Untitled track".into()}else{title}
 }
 
+/// What an image actually is, read off its first bytes.
+///
+/// Every picture format announces itself: a claim in a header or a filename is
+/// a claim, this is the fact.
+pub fn sniff_image_type(image:&[u8])->Option<&'static str>{
+ if image.starts_with(&[0xFF,0xD8,0xFF]){return Some("image/jpeg")}
+ if image.starts_with(&[0x89,b'P',b'N',b'G',0x0D,0x0A,0x1A,0x0A]){return Some("image/png")}
+ if image.len()>=12&&&image[..4]==b"RIFF"&&&image[8..12]==b"WEBP"{return Some("image/webp")}
+ None
+}
+
+#[cfg(test)]
+mod image_type_tests {
+    #[test]
+    fn every_format_is_recognised_by_its_own_bytes() {
+        assert_eq!(super::sniff_image_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(super::sniff_image_type(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]), Some("image/png"));
+        let mut webp = b"RIFF0000WEBP".to_vec();
+        webp.extend_from_slice(b"VP8 ");
+        assert_eq!(super::sniff_image_type(&webp), Some("image/webp"));
+        assert_eq!(super::sniff_image_type(b"not a picture"), None);
+    }
+}
+
 impl Library {
  /// The library lives in the same place as models and settings. Resolving it
     /// separately used to put the database under `<cwd>/data` whenever the
@@ -111,6 +135,10 @@ impl Library {
  /// them, so they are stored as plain media rather than in the request record.
  pub fn store_song_cover(&self,id:&str,image:&[u8],media_type:&str)->Result<Song>{
   if image.is_empty(){anyhow::bail!("cannot store an empty cover image")}
+  // The declared type is a claim, the magic numbers are the fact. A model that
+  // answered with a JPEG had it stored as `image/png`, and the tag inside the
+  // mp3 said PNG over JPEG bytes - players that trust the tag showed nothing.
+  let media_type=sniff_image_type(image).unwrap_or(media_type);
   let extension=match media_type.trim().to_ascii_lowercase().as_str(){
    "image/png"=>"png","image/jpeg"|"image/jpg"=>"jpg","image/webp"=>"webp",
    other=>anyhow::bail!("unsupported cover media type '{other}'; use PNG, JPEG or WebP"),
@@ -136,7 +164,18 @@ impl Library {
  pub fn cover_path_for_song(&self,song:&Song)->Option<(PathBuf,String)>{
   let filename=song.metadata.get("cover_filename")?.as_str()?;
   let media_type=song.metadata.get("cover_media_type").and_then(|v|v.as_str()).unwrap_or("image/png").to_owned();
-  self.media_file(filename).map(|path|(path,media_type))
+  let path=self.media_file(filename)?;
+  // Covers stored before the type was read off the bytes carry the wrong one
+  // in their record. The file itself still says what it is.
+  let media_type=Self::read_head(&path).and_then(|head|sniff_image_type(&head)).map(str::to_owned).unwrap_or(media_type);
+  Some((path,media_type))
+ }
+ fn read_head(path:&std::path::Path)->Option<Vec<u8>>{
+  use std::io::Read;
+  let mut file=fs::File::open(path).ok()?;
+  let mut head=[0u8;16];
+  let read=file.read(&mut head).ok()?;
+  Some(head[..read].to_vec())
  }
  /// Where media for this library lives. Stems are written here so they
  /// sit beside the track they came from.

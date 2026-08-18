@@ -311,6 +311,58 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
           </div>
 
           <div className="space-y-3 p-4">
+            {/* The ready-made sets, before the per-role choice: most people want
+                "the one my card can run", not five separate decisions. */}
+            {(catalog?.profiles ?? []).filter((profile) => profile.installable).length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{t('readyMadeSets')}</p>
+                <div className="space-y-2">
+                  {(catalog?.profiles ?? []).filter((profile) => profile.installable).map((profile) => {
+                    const missingHere = profile.components.filter((id) => !installedIds.includes(id));
+                    const active = chosenKey === [...profile.components].sort().join('|');
+                    // What the set is actually made of, role by role, instead of
+                    // a name cut off after twenty characters.
+                    const parts = profile.components
+                      .map((id) => catalog?.components.find((entry) => entry.id === id))
+                      .filter((component): component is Music3Component => Boolean(component))
+                      .map((component) => `${componentKindLabel(component.kind)} ${componentPrecision(component)}`);
+                    return (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        onClick={() => {
+                          const picked: Record<string, string> = {};
+                          for (const id of profile.components) {
+                            const component = catalog?.components.find((entry) => entry.id === id);
+                            if (component) picked[component.kind] = component.id;
+                          }
+                          setChoice(picked);
+                        }}
+                        className={`block w-full rounded-xl border p-3 text-left transition-colors ${
+                          active ? 'border-pink-400 bg-pink-500/10' : 'border-zinc-200 hover:border-pink-300 dark:border-white/10'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-zinc-900 dark:text-white">{profile.label}</span>
+                          {profile.recommended && (
+                            <span className="rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-pink-600 dark:text-pink-300">
+                              {t('recommendedBadge')}
+                            </span>
+                          )}
+                          <span className="ml-auto shrink-0 text-xs tabular-nums text-zinc-500">{bytes(profile.total_bytes)}</span>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-5 text-zinc-500 dark:text-zinc-400">{parts.join(' · ')}</p>
+                        <p className={`mt-1 text-[11px] font-medium ${missingHere.length === 0 ? 'text-emerald-600 dark:text-emerald-300' : 'text-zinc-500'}`}>
+                          {missingHere.length === 0
+                            ? t('installed')
+                            : `${t('toDownload')} ${bytes(selectedComponentBytes(catalog?.components || [], missingHere))}`}
+                        </p>
+                      </button>
+                    );
+                  })}                </div>
+              </div>
+            )}
+
             <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('pickOneQuantHint')}</p>
             {groups.map((group) => {
               const selectedId = choice[group.kind] || '';
@@ -322,7 +374,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                     <select
                       value={selectedId}
                       onChange={(event) => setChoice((current) => ({ ...current, [group.kind]: event.target.value }))}
-                      disabled={!!active}
+                      disabled={active?.status === 'downloading'}
                       className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 focus:border-pink-500 focus:outline-none disabled:opacity-50 dark:border-white/10 dark:bg-black/20 dark:text-white"
                     >
                       <option value="">{t('chooseComponent')}</option>

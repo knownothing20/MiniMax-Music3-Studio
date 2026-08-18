@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, RotateCcw, Save, Sparkles, Square, Wand2 } from 'lucide-react';
+import { karaokeReason } from '../services/karaoke';
+import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, RotateCcw, Save, Sparkles, Square, Wand2 } from 'lucide-react';
 import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { joinCaption, randomExample, splitCaption } from '../services/examples';
@@ -249,6 +250,37 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [catalog, setCatalog] = useState<EngineCatalog | null>(null);
   const [assistantReady, setAssistantReady] = useState(false);
   const [assisting, setAssisting] = useState<'all' | 'lyrics' | 'prompt' | null>(null);
+  // What the assistant is doing right now, and what it has written so far.
+  const [assistStage, setAssistStage] = useState<string | null>(null);
+  const [assistModel, setAssistModel] = useState<string | null>(null);
+  const [assistDraft, setAssistDraft] = useState('');
+  // What the assistant said the cover should show; sent with the request so the
+  // automatic cover uses it instead of the generic template.
+  const [coverPrompt, setCoverPrompt] = useState('');
+  // What the studio is doing to finished tracks: covers and karaoke timings run
+  // after generation, and used to run in complete silence.
+  const [activity, setActivity] = useState<Array<{ song_id: string; title: string; kind: string; state: string; detail?: string }>>([]);
+  useEffect(() => {
+    // Finished work changes the track on screen - a cover appears, timings
+    // arrive - so the library is told to reread it rather than waiting for the
+    // next thing that happens to reload the list.
+    let finished = '';
+    const read = () => void fetch('/v1/activity')
+      .then(response => response.json())
+      .then((body: { activity?: typeof activity }) => {
+        const entries = body.activity ?? [];
+        const done = entries.filter(entry => entry.state === 'done').map(entry => `${entry.song_id}:${entry.kind}`).join(',');
+        if (done !== finished) {
+          finished = done;
+          window.dispatchEvent(new CustomEvent('mm3:library-changed'));
+        }
+        setActivity(entries);
+      })
+      .catch(() => undefined);
+    read();
+    const timer = window.setInterval(read, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
   // A local model takes tens of seconds to answer. A spinner alone reads as a
   // hung button, so the panel counts the seconds out loud.
   const [assistSeconds, setAssistSeconds] = useState(0);
@@ -349,7 +381,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   };
 
   const buildRequest = () => {
-    const request: Music3Request & { title?: string; audio_codes?: string; models?: Record<string, string> } = {
+    const request: Music3Request & { title?: string; cover_prompt?: string; audio_codes?: string; models?: Record<string, string> } = {
       caption: caption.trim(),
       lyrics: lyrics.replace(/\r\n?/g, '\n').trim(),
       duration_seconds: Math.min(numberOrUndefined(duration) ?? 60, MAX_DURATION_SECONDS),
@@ -366,6 +398,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       mp3_bitrate: numberOrUndefined(mp3Bitrate) ?? 128,
     };
     if (name.trim()) request.title = name.trim();
+    if (coverPrompt.trim()) request.cover_prompt = coverPrompt.trim();
     if (audioCodes.trim()) request.audio_codes = audioCodes.trim();
     if (Object.keys(models).length === 5) request.models = models;
     return request;
@@ -419,20 +452,67 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     setAssisting(target);
     setError(null);
     try {
+      const payload = JSON.stringify({
+        target,
+        description: name.trim(),
+        instruction: assistInstruction.trim(),
+        lyrics: lyrics.trim(),
+        global_metadata: globalMetadata.trim(),
+        vocal_details: vocalDetails.trim(),
+        arrangement: arrangement.trim(),
+        duration_seconds: numberOrUndefined(duration) ?? 60,
+        instrumental,
+      });
+
+      // Watch the same request happen: the studio reports when it goes out,
+      // when the model starts answering, and then the text as it arrives. The
+      // draft appears in front of the user instead of after a minute of
+      // nothing.
+      setAssistStage('preparing');
+      setAssistDraft('');
+      let streamed = '';
+      const live = await fetch('/v1/assistant/write/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+      if (live.ok && live.body) {
+        const reader = live.body.getReader();
+        const decoder = new TextDecoder();
+        let carry = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          carry += decoder.decode(value, { stream: true });
+          let split = carry.indexOf('\n\n');
+          while (split !== -1) {
+            const frame = carry.slice(0, split).trim();
+            carry = carry.slice(split + 2);
+            split = carry.indexOf('\n\n');
+            if (!frame.startsWith('data:')) continue;
+            let event: { stage?: string; delta?: string; text?: string; error?: string; model?: string };
+            try {
+              event = JSON.parse(frame.slice(5).trim());
+            } catch {
+              continue;
+            }
+            if (event.error) throw new Error(event.error);
+            if (event.stage) setAssistStage(event.stage);
+            if (event.model) setAssistModel(event.model);
+            if (event.delta) {
+              streamed += event.delta;
+              setAssistDraft(streamed);
+            }
+          }
+        }
+      }
+
+      // The stream shows the work; the plain call returns the finished fields,
+      // already split into the panes this form has.
       const response = await fetch('/v1/assistant/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target,
-          description: name.trim(),
-          instruction: assistInstruction.trim(),
-          lyrics: lyrics.trim(),
-          global_metadata: globalMetadata.trim(),
-          vocal_details: vocalDetails.trim(),
-          arrangement: arrangement.trim(),
-          duration_seconds: numberOrUndefined(duration) ?? 60,
-          instrumental,
-        }),
+        body: payload,
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || String(response.status));
@@ -440,11 +520,22 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       if (typeof body?.global_metadata === 'string') setGlobalMetadata(body.global_metadata);
       if (typeof body?.vocal_details === 'string') setVocalDetails(body.vocal_details);
       if (typeof body?.arrangement === 'string') setArrangement(body.arrangement);
+      // The model has the words and the mood in front of it, so it names the
+      // track and says what its cover should show.
+      if (typeof body?.title === 'string' && body.title.trim()) setName(body.title.trim());
+      if (typeof body?.cover_prompt === 'string' && body.cover_prompt.trim()) setCoverPrompt(body.cover_prompt.trim());
+      // The assistant wrote the sections, so it knows how long they take; the
+      // form's 60 seconds is a default, not a decision anyone made.
+      if (typeof body?.duration_seconds === 'number' && body.duration_seconds >= 10) {
+        setDuration(String(Math.min(360, Math.round(body.duration_seconds))));
+      }
       setMode('studio');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setAssisting(null);
+      setAssistStage(null);
+      setAssistDraft('');
     }
   };
 
@@ -543,6 +634,43 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </Card>
           )}
 
+          {activity.filter(entry => entry.state !== 'done').slice(-3).map(entry => (
+            <div key={`${entry.song_id}-${entry.kind}`} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] dark:border-white/10 dark:bg-suno-card">
+              <div className="flex items-center gap-2">
+                {entry.state === 'running'
+                  ? <Loader2 size={12} className="animate-spin text-pink-500" />
+                  : <AlertTriangle size={12} className="text-amber-500" />}
+                <span className="font-semibold text-zinc-700 dark:text-zinc-200">
+                  {entry.kind === 'cover' ? t('activityCover') : t('activityKaraoke')}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-zinc-500">{entry.title}</span>
+              </div>
+              {entry.detail && <p className="mt-1 break-words text-[11px] leading-4 text-amber-600 dark:text-amber-300">{karaokeReason(t, entry.detail)}</p>}
+            </div>
+          ))}
+
+          {assisting !== null && (
+            <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-white/10 dark:bg-suno-card">
+              <div className="flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wide">
+                <span className="flex items-center gap-1.5 text-pink-600 dark:text-pink-300">
+                  <Loader2 size={12} className="animate-spin" />
+                  {assistStage === 'preparing' && t('assistStagePreparing')}
+                  {assistStage === 'sent' && t('assistStageSent')}
+                  {assistStage === 'writing' && t('assistStageWriting')}
+                  {assistStage === 'done' && t('assistStageDone')}
+                  {!assistStage && t('assistStagePreparing')}
+                </span>
+                <span className="tabular-nums text-zinc-400">{assistSeconds} {t('secondsShort')}</span>
+              </div>
+              {assistModel && <p className="mt-1 truncate text-[11px] text-zinc-500">{assistModel}</p>}
+              {assistDraft && (
+                <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-2 font-mono text-[11px] leading-4 text-zinc-600 dark:bg-black/30 dark:text-zinc-300">
+                  {assistDraft.slice(-1200)}
+                </pre>
+              )}
+            </div>
+          )}
+
           {/* Only for the icon buttons in the card headers: the big button
               already says it in words. */}
           {(assisting === 'lyrics' || assisting === 'prompt') && (
@@ -582,13 +710,13 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               className="w-full border-0 bg-transparent p-0 text-lg font-bold text-zinc-900 outline-none placeholder:text-zinc-300 dark:text-white dark:placeholder:text-zinc-600"
             />
             <p className="mb-3 mt-1 text-[11px] leading-4 text-zinc-500">{t('captionStructuredHint')}</p>
+            <div className="mb-3 border-b border-zinc-100 pb-3 dark:border-white/5">
+              <Switch checked={instrumental} onChange={setInstrumental} label={t('instrumental')} hint={t('instrumentalHint')} />
+            </div>
             <div className="space-y-2">
               <Pane label={t('globalMetadata')} value={globalMetadata} onChange={setGlobalMetadata} placeholder={t('globalMetadataPlaceholder')} />
               <Pane label={t('vocalDetails')} value={vocalDetails} onChange={setVocalDetails} placeholder={t('vocalDetailsPlaceholder')} />
               <Pane label={t('arrangementSection')} value={arrangement} onChange={setArrangement} placeholder={t('arrangementPlaceholder')} />
-            </div>
-            <div className="mt-3 border-t border-zinc-100 pt-3 dark:border-white/5">
-              <Switch checked={instrumental} onChange={setInstrumental} label={t('instrumental')} hint={t('instrumentalHint')} />
             </div>
           </Card>
 

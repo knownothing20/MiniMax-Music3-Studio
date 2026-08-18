@@ -271,9 +271,12 @@ pub fn request_for(
                 "stream": false,
             }),
         ),
+        // A cover is square. Without asking, image models answer in their own
+        // habit - the first covers came back 1408x768 and every card cropped
+        // them to a strip.
         Capability::CoverArt => (
             IMAGES_PATH,
-            json!({ "model": model.id, "prompt": prompt }),
+            json!({ "model": model.id, "prompt": prompt, "size": "1024x1024" }),
         ),
         Capability::SpeechToText => bail!(
             "use stt_request_for with base64 audio; a text prompt is not a valid OpenRouter transcription input"
@@ -523,7 +526,8 @@ mod tests {
 
         let request = request_for(&catalog, Capability::CoverArt, "catalog/image", "retro album cover").unwrap();
         assert_eq!(request.path, IMAGES_PATH);
-        assert_eq!(request.body, json!({"model":"catalog/image","prompt":"retro album cover"}));
+        // A cover is asked for square: every image model takes 1024x1024.
+        assert_eq!(request.body, json!({"model":"catalog/image","prompt":"retro album cover","size":"1024x1024"}));
     }
 
     #[test]

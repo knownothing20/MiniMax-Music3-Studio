@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { hasSungLines, karaokeReason } from '../services/karaoke';
 import { Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { openExternal } from '../services/externalLinks';
@@ -66,6 +67,7 @@ const MenuDivider: React.FC = () => (
 /// Karaoke timings for one track, made on demand. The menu asks the service
 /// whether karaoke is configured at all; with it off nothing is shown.
 function useKaraoke(song: Song, onSongUpdate?: (song: Song) => void) {
+    const { t: translate } = useI18n();
     const [ready, setReady] = useState(false);
     const [busy, setBusy] = useState(false);
 
@@ -85,7 +87,7 @@ function useKaraoke(song: Song, onSongUpdate?: (song: Song) => void) {
                 body: JSON.stringify({}),
             });
             const body = await response.json().catch(() => null);
-            if (!response.ok) throw new Error(body?.error || String(response.status));
+            if (!response.ok) throw new Error(karaokeReason(translate, body?.error) || String(response.status));
             onSongUpdate?.({ ...song, lrcContent: body.lrc as string });
         } finally {
             setBusy(false);
@@ -242,7 +244,7 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
 
             {/* Karaoke: only offered once it is switched on in Settings, and
                 only for a track that has both audio and written lyrics. */}
-            {karaokeReady && song.audioUrl && song.lyrics?.trim() && (
+            {karaokeReady && song.audioUrl && hasSungLines(song.lyrics) && (
                 <MenuItem
                     icon={karaokeBusy ? <Loader2 size={14} className="animate-spin" /> : <Mic2 size={14} />}
                     label={karaokeBusy ? t('karaokeMaking') : song.lrcContent ? t('karaokeReady') : t('karaokeMake')}

@@ -18,6 +18,12 @@ use serde_json::Value;
 
 /// The caption contract, transcribed from MiniMax's official demo so the three
 /// fields carry exactly the labelled structure the model expects.
+/// The two extras every draft carries: a name for the track and a sentence the
+/// image model can draw from.
+const EXTRA: &str = "title: a short song title, two to five words, no quotation marks, in the language of the lyrics. cover_prompt: one sentence describing a cover image for this track - a scene, not a poster; no text, no lettering, no logos. duration_seconds: how long a track of this genre and arrangement normally runs, in seconds, between 30 and 360.";
+
+const VALIDATION: &str = "Before answering, check your own draft: every explicit user constraint kept, an instrumental request still instrumental, vocal gender not contradicted, every section tag present in its own section, no lyric line quoted or summarised, no song title inside the caption fields, no invented exact BPM or key, and no sentence copied from a reference. Fix what fails, then answer.";
+
 const CAPTION_CONTRACT: &str = r#"The three caption fields follow the exact labeled style the model was trained on, and the rules below are MiniMax's own, from the music-caption-rewriter skill they publish with the model.
 
 Be concrete and musical: describe an energy arc and instrument lifecycles, never a static equipment list or decorative adjectives. Preserve every explicit user constraint - an instrumental request stays instrumental, and a required vocal gender, tempo limit, required instrument or exclusion is never reversed. Do not invent a precise key, BPM, vocal gender or production technique when a broader description is sufficient; use a range or a qualitative tempo instead. Never quote, paraphrase or summarise a lyric line inside the caption, and never include a song title or track id. Total caption length roughly 250-450 English words. Write in English unless the user explicitly asks for another language.
@@ -78,10 +84,22 @@ pub struct AssistDraft {
     pub vocal_details: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arrangement: Option<String>,
+    /// A name for the track. The model has the words and the mood in front of
+    /// it; asking the user to invent one afterwards is asking twice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What the cover should show, in one sentence, ready for an image model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_prompt: Option<String>,
+    /// How long the song it just wrote should be. The model laid out the
+    /// sections, so it is the one that knows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<u32>,
 }
 
 /// The system prompt and the JSON keys the answer must carry.
 pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]) {
+    let references = references_for(request);
     match request.target {
         AssistTarget::Lyrics => (
             format!(
@@ -96,7 +114,8 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
             format!(
                 "You write the structured caption for MiniMax Music 3, a lyrics+description music generation model.\n\
                  Given a sound instruction and/or lyrics, produce global_metadata, vocal_details and arrangement. Build the arrangement timeline around the lyric section tags when lyrics are provided. {CAPTION_CONTRACT}\n\
-                 Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement."
+                 Also write {EXTRA}\n\
+                 Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds."
             ),
             &["global_metadata", "vocal_details", "arrangement"],
         ),
@@ -106,7 +125,9 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
                  Given a song description and a target duration, produce:\n\
                  1. {LYRICS_RULES}\n\
                  2-4. global_metadata, vocal_details, arrangement — a structured caption. {CAPTION_CONTRACT}\n\
-                 Answer with ONLY a JSON object with keys: lyrics, global_metadata, vocal_details, arrangement."
+                 5-6. {EXTRA}\n\
+                 Answer with ONLY a JSON object with keys: lyrics, global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds.
+                 {VALIDATION}{references}"
             ),
             &["lyrics", "global_metadata", "vocal_details", "arrangement"],
         ),
@@ -158,11 +179,28 @@ pub fn user_message(request: &AssistRequest) -> String {
             if brief.is_empty() { "(none — describe a sound that fits the lyrics)" } else { brief },
             request.lyrics.trim(),
         ),
-        AssistTarget::All => format!(
-            "Song description: {}\nTarget duration: {} seconds.{instrumental}",
-            if brief.is_empty() { "(none — choose something musical and specific)" } else { brief },
-            request.duration_seconds.round() as i64,
-        ),
+        AssistTarget::All => {
+            // Whatever the user already wrote is material, not noise: it goes to
+            // the model so the rest is built around it instead of replacing it.
+            // Empty fields are simply not mentioned.
+            let mut carried = String::new();
+            let mut carry = |label: &str, value: &str| {
+                let value = value.trim();
+                if !value.is_empty() {
+                    carried.push_str(&format!("
+{label} (the user wrote this - keep it, build around it):
+{value}"));
+                }
+            };
+            carry("Lyrics", &request.lyrics);
+            carry("Global metadata", &request.global_metadata);
+            carry("Vocal details", &request.vocal_details);
+            carry("Arrangement", &request.arrangement);
+            format!(
+                "Song description: {}{carried}{instrumental}",
+                if brief.is_empty() { "(none - choose something musical and specific)" } else { brief },
+            )
+        }
     }
 }
 
@@ -187,6 +225,14 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
         global_metadata: field("global_metadata"),
         vocal_details: field("vocal_details"),
         arrangement: field("arrangement"),
+        title: field("title"),
+        cover_prompt: field("cover_prompt"),
+        // Accepted as a number or as the string a model sometimes sends, and
+        // kept inside what the engine can render.
+        duration_seconds: value
+            .get("duration_seconds")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str().and_then(|text| text.trim().parse().ok())))
+            .map(|seconds| seconds.clamp(10, 360) as u32),
     })
 }
 
@@ -275,6 +321,68 @@ pub fn content_of(response: &Value) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The skill is 6 MB on disk and none of it may travel: only the routed
+    /// reference captions do, and there are at most three.
+    #[test]
+    fn the_prompt_stays_small_enough_to_send() {
+        let request = super::AssistRequest {
+            target: super::AssistTarget::All,
+            description: String::new(),
+            instruction: "symphonic metal with orchestral choirs, female vocal".into(),
+            lyrics: String::new(),
+            global_metadata: String::new(),
+            vocal_details: String::new(),
+            arrangement: String::new(),
+            duration_seconds: 60.0,
+            instrumental: false,
+        };
+        let (system, _) = super::instructions(&request);
+        println!("system prompt: {} characters, {} reference blocks", system.len(), system.matches("--- reference").count());
+        assert!(system.len() < 24_000, "the prompt grew to {} characters", system.len());
+        assert!(system.matches("--- reference").count() <= 3);
+    }
+
+    /// The skill's own reference captions were selected and then never used:
+    /// the routing existed, the prompt did not carry it.
+    #[test]
+    fn the_caption_prompt_carries_the_skill_references() {
+        let request = super::AssistRequest {
+            target: super::AssistTarget::All,
+            description: String::new(),
+            instruction: "a dark synthwave night drive, female vocal".into(),
+            lyrics: String::new(),
+            global_metadata: String::new(),
+            vocal_details: String::new(),
+            arrangement: String::new(),
+            duration_seconds: 60.0,
+            instrumental: false,
+        };
+        let (system, _) = super::instructions(&request);
+        assert!(system.contains("Reference captions from MiniMax"), "the skill's references are missing from the prompt");
+        assert!(system.contains("Global Metadata"), "a reference caption is not in the prompt");
+    }
+
+    /// The form's default was quoted into the prompt, and every answer came
+    /// back as sixty seconds. Nothing may put a length in front of the model
+    /// when it is writing the whole song.
+    #[test]
+    fn the_whole_song_request_carries_no_target_length() {
+        let request = super::AssistRequest {
+            target: super::AssistTarget::All,
+            description: String::new(),
+            instruction: "club progressive house".into(),
+            lyrics: String::new(),
+            global_metadata: String::new(),
+            vocal_details: String::new(),
+            arrangement: String::new(),
+            duration_seconds: 60.0,
+            instrumental: false,
+        };
+        let message = super::user_message(&request);
+        assert!(!message.contains("60"), "the prompt still carries the default: {message}");
+        assert!(!message.to_lowercase().contains("duration"), "the prompt still names a duration: {message}");
+    }
+
     use super::*;
 
     /// The published rules must reach the model itself, whichever provider is

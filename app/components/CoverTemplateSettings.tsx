@@ -30,28 +30,32 @@ export const CoverTemplateSettings: React.FC = () => {
   const [templates, setTemplates] = useState<CoverTemplate[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Draw a cover as soon as a track is finished, the way karaoke times itself.
+  const [auto, setAuto] = useState(true);
   const [preview, setPreview] = useState('');
 
   useEffect(() => {
     void fetch('/v1/cover-templates')
       .then(response => response.json())
-      .then((body: { templates?: CoverTemplate[]; default_id?: string | null }) => {
+      .then((body: { templates?: CoverTemplate[]; default_id?: string | null; auto?: boolean }) => {
         setTemplates(body.templates ?? []);
+        if (typeof body.auto === 'boolean') setAuto(body.auto);
         setDefaultId(body.default_id ?? body.templates?.[0]?.id ?? null);
         setEditingId(current => current ?? body.default_id ?? body.templates?.[0]?.id ?? null);
       })
       .catch(() => setTemplates([]));
   }, []);
 
-  const save = useCallback(async (next: CoverTemplate[], nextDefault: string | null) => {
+  const save = useCallback(async (next: CoverTemplate[], nextDefault: string | null, nextAuto?: boolean) => {
     setTemplates(next);
     setDefaultId(nextDefault);
+    if (typeof nextAuto === 'boolean') setAuto(nextAuto);
     await fetch('/v1/cover-templates', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ templates: next, default_id: nextDefault }),
+      body: JSON.stringify({ templates: next, default_id: nextDefault, auto: nextAuto ?? auto }),
     }).catch(() => undefined);
-  }, []);
+  }, [auto]);
 
   const editing = useMemo(() => templates.find(entry => entry.id === editingId) ?? null, [templates, editingId]);
 
@@ -87,6 +91,19 @@ export const CoverTemplateSettings: React.FC = () => {
   return (
     <div className="max-w-2xl space-y-5">
       <p className="text-sm text-zinc-500 dark:text-zinc-400">{t('coverTemplatesHint')}</p>
+
+      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
+        <input
+          type="checkbox"
+          checked={auto}
+          onChange={event => void save(templates, defaultId, event.target.checked)}
+          className="mt-0.5 h-4 w-4 accent-pink-500"
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-zinc-900 dark:text-white">{t('coverAuto')}</span>
+          <span className="mt-0.5 block text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('coverAutoHint')}</span>
+        </span>
+      </label>
 
       <div className="flex flex-wrap gap-2">
         {templates.map(entry => (

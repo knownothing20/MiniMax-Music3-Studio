@@ -74,6 +74,7 @@ pub const MODEL: Asset = Asset {
     bytes: 136_428_532,
     unzip_into: None,
     marker: "",
+    pick: &[],
     vram_gb: Some(2),
     note: "Six stems: drums, bass, other, vocals, guitar, piano. MIT-licensed, runs on the studio's ONNX Runtime.",
 };
@@ -126,6 +127,13 @@ pub struct Stem {
     pub samples: Vec<f32>,
 }
 
+/// What a finished run has to say about itself.
+pub struct Separated {
+    pub stems: Vec<Stem>,
+    /// True when the graphics card actually did the work.
+    pub used_gpu: bool,
+}
+
 /// Runs the model over a whole track.
 ///
 /// `progress` is called with a fraction between 0 and 1 after each segment, so
@@ -137,7 +145,7 @@ pub fn separate(
     overlap: f64,
     on_gpu: bool,
     mut progress: impl FnMut(f64),
-) -> Result<Vec<Stem>> {
+) -> Result<Separated> {
     if audio.is_empty() {
         bail!("nothing to separate: the track decoded to no audio");
     }
@@ -148,12 +156,19 @@ pub fn separate(
     // Ask for the card, and say so if it is not there rather than quietly
     // spending ten times as long on the processor.
     let mut builder = Session::builder().context("prepare an ONNX session")?;
+    let mut used_gpu = false;
     if on_gpu {
+        // `error_on_failure` matters: without it the runtime accepts the
+        // provider, quietly runs on the processor anyway, and the only clue is
+        // that the fans never spin up.
         match builder.clone().with_execution_providers([
-            ort::execution_providers::CUDAExecutionProvider::default().build(),
+            ort::ep::CUDA::default().build().error_on_failure(),
         ]) {
-            Ok(with_cuda) => builder = with_cuda,
-            Err(error) => eprintln!("the CUDA provider did not register, falling back to the processor: {error}"),
+            Ok(with_cuda) => {
+                builder = with_cuda;
+                used_gpu = true;
+            }
+            Err(error) => eprintln!("the card provider did not register, falling back to the processor: {error}"),
         }
     }
     let mut session = builder
@@ -221,11 +236,14 @@ pub fn separate(
         }
     }
 
-    Ok(sums
-        .into_iter()
-        .enumerate()
-        .map(|(index, samples)| Stem { name: STEMS[index], samples })
-        .collect())
+    Ok(Separated {
+        stems: sums
+            .into_iter()
+            .enumerate()
+            .map(|(index, samples)| Stem { name: STEMS[index], samples })
+            .collect(),
+        used_gpu,
+    })
 }
 
 /// A segment's gain curve: full in the middle, fading in and out across the

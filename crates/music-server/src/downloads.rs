@@ -42,6 +42,10 @@ pub struct Asset {
     /// companion archive would look installed as soon as its neighbour was,
     /// because both land in the same directory.
     pub marker: &'static str,
+    /// When set, only these files are taken out of the archive, by name, over
+    /// range requests - the rest is never downloaded. NVIDIA's libraries come
+    /// in archives several times larger than the parts anyone uses.
+    pub pick: &'static [&'static str],
     /// Roughly how much VRAM the asset wants; informational only.
     pub vram_gb: Option<u32>,
     pub note: &'static str,
@@ -96,6 +100,10 @@ impl Downloader {
     /// A model is installed when its size matches exactly; a runtime when its
     /// own marker file is present in the directory it unpacks into.
     pub fn is_installed(&self, asset: &Asset) -> bool {
+        if !asset.pick.is_empty() {
+            let destination = self.root.join("runtime").join(asset.unzip_into.unwrap_or("."));
+            return asset.pick.iter().all(|name| destination.join(name).is_file());
+        }
         if let Some(flavour) = asset.unzip_into {
             let marker = asset.marker.to_ascii_lowercase();
             return fs::read_dir(self.runtime_dir(flavour))
@@ -155,6 +163,30 @@ impl Downloader {
         let http = self.http.clone();
         let progress = self.progress.clone();
         tokio::spawn(async move {
+            // An asset that names its files never downloads the archive: the
+            // wanted entries are read straight out of it over range requests.
+            if !asset.pick.is_empty() {
+                let destination = root.join("runtime").join(asset.unzip_into.unwrap_or("."));
+                let reporter = progress.clone();
+                let outcome = tokio::task::spawn_blocking(move || {
+                    crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |written| {
+                        if let Ok(mut guard) = reporter.try_lock() {
+                            if let Some(active) = guard.as_mut() {
+                                active.downloaded_bytes = written;
+                            }
+                        }
+                    })
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))
+                .and_then(|inner| inner);
+                let mut guard = progress.lock().await;
+                if let Some(active) = guard.as_mut() {
+                    active.done = true;
+                    active.error = outcome.err().map(|error| error.to_string());
+                }
+                return;
+            }
             let outcome = fetch(&http, asset, &target, &progress).await;
             let mut guard = progress.lock().await;
             let error = match outcome {
@@ -191,6 +223,16 @@ async fn fetch(
     if offset > asset.bytes {
         fs::remove_file(&part).ok();
         offset = 0;
+    }
+    // A part file that is already the whole file needs publishing, not another
+    // request: asking for the range after the last byte answers 416, which
+    // read as a failed download and left the file sitting there for ever.
+    if offset == asset.bytes {
+        fs::rename(&part, target).with_context(|| format!("publish {}", target.display()))?;
+        if let Some(active) = progress.lock().await.as_mut() {
+            active.downloaded_bytes = offset;
+        }
+        return Ok(());
     }
 
     let mut request = http.get(asset.url);
@@ -237,6 +279,9 @@ async fn fetch(
 /// Unpacks a release zip. Entries are flattened into `destination` because the
 /// releases nest their binaries one or two directories deep.
 pub fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
+    // Packages ship every architecture they support; only this one belongs
+    // here, and flattening the rest would overwrite it with an ARM build.
+    const FOREIGN: [&str; 4] = ["arm64", "win-x86", "linux", "osx"];
     fs::create_dir_all(destination).with_context(|| format!("create {}", destination.display()))?;
     let file = fs::File::open(archive).with_context(|| format!("open {}", archive.display()))?;
     let mut zip = zip::ZipArchive::new(file).with_context(|| format!("read {}", archive.display()))?;
@@ -245,7 +290,12 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
         if entry.is_dir() {
             continue;
         }
-        let Some(name) = entry.enclosed_name().and_then(|path| path.file_name().map(|name| name.to_owned())) else {
+        let Some(path) = entry.enclosed_name() else { continue };
+        let inside = path.to_string_lossy().to_ascii_lowercase();
+        if FOREIGN.iter().any(|other| inside.contains(other)) {
+            continue;
+        }
+        let Some(name) = path.file_name().map(|name| name.to_owned()) else {
             continue;
         };
         let target = destination.join(name);
@@ -284,6 +334,7 @@ mod tests {
             bytes: 64,
             unzip_into: None,
             marker: "",
+            pick: &[],
             vram_gb: None,
             note: "",
         }

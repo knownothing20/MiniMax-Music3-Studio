@@ -26,6 +26,12 @@ pub fn auto_title(caption: &str, lyrics: &str, instrumental: bool) -> String {
             return trim_title(line);
         }
     }
+    // The genre is the part of a description worth putting on a card: a caption
+    // opens with measurements, and "bpm is 180" is a fact about the track, not
+    // a name for it.
+    if let Some(genre) = crate::tagging::genre_from_caption(caption) {
+        return trim_title(&genre);
+    }
     let described = strip_labels(caption);
     if !described.is_empty() {
         return trim_title(&described);
@@ -66,6 +72,12 @@ fn is_chorus_marker(line: &str) -> bool {
     lowered.starts_with("chorus") || lowered.starts_with("припев") || lowered.starts_with("hook")
 }
 
+/// Whether anything is sung at all: an instrumental carries its section markers
+/// and nothing else.
+pub fn has_sung_lines(lyrics: &str) -> bool {
+    first_sung_line(lyrics).is_some()
+}
+
 /// The first line of the lyrics that is words rather than a `[chorus]` marker.
 fn first_sung_line(lyrics: &str) -> Option<&str> {
     lyrics
@@ -98,6 +110,14 @@ fn strip_labels(caption: &str) -> String {
     let known: HashSet<&str> = LABELS.iter().copied().collect();
     let mut rest = caption.trim();
     loop {
+        // A heading stands alone on its line and carries no colon, so the loop
+        // below never recognised it and "Global Metadata" led the title.
+        if let Some(line_end) = rest.find('\n') {
+            if known.contains(rest[..line_end].trim().to_lowercase().as_str()) {
+                rest = rest[line_end + 1..].trim_start();
+                continue;
+            }
+        }
         let Some(colon) = rest.find(':') else { break };
         let (head, tail) = rest.split_at(colon);
         let candidate = head.trim().trim_start_matches('[').trim_end_matches(']').to_lowercase();
@@ -214,5 +234,29 @@ mod tests {
     #[test]
     fn nothing_to_go_on() {
         assert_eq!(auto_title("", "[intro]\n[outro]", false), "Untitled");
+    }
+
+    /// The library showed a track named after the caption's own opening line,
+    /// heading and measurements and all.
+    #[test]
+    fn an_instrumental_is_named_after_its_music_not_its_heading() {
+        let caption = concat!(
+            "Global Metadata\n",
+            "Basic Attributes: bpm is 140-160. Melodic Death Metal / Gothenburg Sound. ",
+            "Global Emotional Progression: bleak."
+        );
+        let title = super::auto_title(caption, "", true);
+        assert_eq!(title, "Melodic Death Metal / Gothenburg Sound");
+        assert!(!title.contains("Global Metadata"));
+        assert!(!title.contains("bpm"));
+    }
+
+    /// An instrumental carries its section markers and nothing else, and the
+    /// studio used to send it to the recogniser anyway.
+    #[test]
+    fn an_instrumental_has_nothing_sung_in_it() {
+        assert!(!has_sung_lines(concat!("[intro]\n\n", "[instrumental]\n\n", "[chorus]\n\n", "[outro]")));
+        assert!(!has_sung_lines(""));
+        assert!(has_sung_lines(concat!("[chorus]\n", "дождь по крыше")));
     }
 }

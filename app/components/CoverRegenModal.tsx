@@ -73,14 +73,21 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
       .then((settings: { configured?: boolean }) => setKeyConfigured(settings.configured === true))
       .catch(() => setKeyConfigured(false));
 
-    void fetch('/v1/openrouter/catalog')
-      .then(response => response.json())
-      .then((body: { models?: CatalogModel[] }) => {
-        const covers = (body.models ?? []).filter(model => model.capabilities.includes('cover_art'));
-        setModels(covers);
-        setModelId(current => current || covers[0]?.id || '');
-      })
-      .catch(() => setModels([]));
+    // The model is the one chosen for covers on the provider page; picking the
+    // first of four hundred was how this window ended up using a different
+    // model from the one the settings showed.
+    void Promise.all([
+      fetch('/v1/openrouter/catalog').then(response => response.json()).catch(() => null),
+      fetch('/v1/configuration').then(response => response.json()).catch(() => null),
+    ]).then(([catalog, configuration]) => {
+      const covers = ((catalog?.models ?? []) as CatalogModel[]).filter(model => model.capabilities.includes('cover_art'));
+      setModels(covers);
+      const chosen = (configuration?.selections ?? []).find(
+        (selection: { capability: string; cloud_model: string | null }) => selection.capability === 'cover_art',
+      )?.cloud_model;
+      const suggested = catalog?.suggested?.cover_art as string | undefined;
+      setModelId(current => current || chosen || suggested || covers[0]?.id || '');
+    });
   }, []);
 
   useEffect(() => {

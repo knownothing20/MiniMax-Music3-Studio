@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
+import { TRACK_ARTIST } from '../services/studio';
 import { Song } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Download, Heart, MoreVertical, Volume2, VolumeX, Maximize2, Repeat1, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -206,7 +207,7 @@ export const Player: React.FC<PlayerProps> = ({
                                     {currentSong.title}
                                 </h2>
                                 <p className="text-sm text-zinc-500 dark:text-white/60 truncate mt-1">
-                                    {currentSong.creator || 'Unknown Artist'}
+                                    {currentSong.creator || TRACK_ARTIST}
                                 </p>
                             </div>
                             <button
@@ -369,7 +370,7 @@ export const Player: React.FC<PlayerProps> = ({
                                 {currentSong.title}
                             </h4>
                             <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                                {currentSong.creator || 'Unknown Artist'}
+                                {currentSong.creator || TRACK_ARTIST}
                             </p>
                         </div>
                     </div>
@@ -454,7 +455,7 @@ export const Player: React.FC<PlayerProps> = ({
                                     {currentSong.title}
                                 </h2>
                                 <p className="text-base lg:text-lg text-zinc-500 dark:text-white/60 truncate mt-2">
-                                    {currentSong.creator || 'Unknown Artist'}
+                                    {currentSong.creator || TRACK_ARTIST}
                                 </p>
                             </div>
 

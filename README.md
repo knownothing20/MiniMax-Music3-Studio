@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.png" alt="" width="112" height="112" />
+
 # MiniMax Music3 Studio
 
 **Full-length AI music on your own GPU. One executable — no Python, no Node.js, no launcher.**
@@ -54,6 +56,11 @@ ask it to.
 - **Add cloud capabilities when you want them.** Speech-to-text, a caption/lyrics
   assistant, cover art and cloud music can each independently use OpenRouter, chosen from
   the live model catalog. Local stays the default.
+- **Split a finished track into six stems** — drums, bass, other, vocals, guitar and
+  piano — with HT-Demucs on the GPU, or on the CPU when you prefer. The model is an
+  optional download like everything else.
+- **Export files that carry their own data** — MP3s are written with ID3v2.4: title,
+  artist, album, genre, tempo, the lyrics and the cover art.
 - **Choose your own quality/VRAM trade-off** in the model manager. Nothing downloads by
   itself.
 
@@ -61,13 +68,17 @@ ask it to.
 
 | | |
 |---|---|
-| ![Library](docs/screenshots/en-02-library.png) | ![Studio tools](docs/screenshots/en-03-tools.png) |
-| Your library — every track with the settings that made it | Studio tools — engine state, packages, transcription, log |
-| ![Settings](docs/screenshots/en-04-settings.png) | ![Models](docs/screenshots/en-05-models.png) |
-| Settings, by subject rather than by one long list | Models — one quantisation per role, switchable once installed |
+| ![A finished track](docs/screenshots/en-02-player.png) | ![Studio tools](docs/screenshots/en-03-tools.png) |
+| A finished track — cover, timed lyrics, the request that made it | Studio tools — six-stem separation on the GPU, transcription, editor |
+| ![Models](docs/screenshots/en-04-models.png) | ![Providers](docs/screenshots/en-05-providers.png) |
+| Model sets — one quantisation per role, switchable once installed | Every capability runs where you say, local or OpenRouter |
+| ![Cover art](docs/screenshots/en-06-cover.png) | ![Writing a track](docs/screenshots/en-01-create.png) |
+| Cover art — large preview, prompt templates filled from the track | Writing a track — the caption as a document, every parameter a slider |
 
-The same screens in [Русский](docs/screenshots), [中文](docs/screenshots), [日本語](docs/screenshots) and [한국어](docs/screenshots)
-are on the [project page](https://timoncool.github.io/MiniMax-Music3-Studio/).
+The same six screens are in the interface language you read: [Русский](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ru),
+[中文](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=zh), [日本語](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ja),
+[한국어](https://timoncool.github.io/MiniMax-Music3-Studio/?lang=ko) — on the project page, or in
+[docs/screenshots](docs/screenshots).
 
 ## Models
 
@@ -170,5 +181,5 @@ the ACE sources live in their own repository. MiniMax Music3 weights are governe
 own community license — commercial use must display the MiniMax-Music3 name and implement
 the safeguards that license requires.
 
-Engineering detail, verified behaviour and the current gap list live in
-[HANDOFF.md](HANDOFF.md).
+What changed and when is in [CHANGELOG.md](CHANGELOG.md). Engineering detail, verified
+behaviour and the current gap list live in [HANDOFF.md](HANDOFF.md).

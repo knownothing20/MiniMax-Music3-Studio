@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { TRACK_ARTIST } from '../services/studio';
 import { Song } from '../types';
 import { Heart, Share2, Play, Pause, MoreHorizontal, X, Copy, Wand2, MoreVertical, Download, Repeat, Video, Music, Link as LinkIcon, Sparkles, Globe, Lock, Trash2, Edit3, Layers, ChevronDown, ClipboardCopy, ImagePlus, Loader2, Mic2 } from 'lucide-react';
 import { updateNativeSong } from '../services/nativeLibrary';
@@ -322,14 +323,11 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
 
                         <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white shadow-sm ring-2 ring-white dark:ring-black">
-                                {song.creator ? song.creator[0].toUpperCase() : 'A'}
+                                M3
                             </div>
                             <div className="flex flex-col">
-                                <span
-                                    onClick={() => song.creator && onNavigateToProfile?.(song.creator)}
-                                    className="text-sm font-semibold text-zinc-900 dark:text-white hover:underline cursor-pointer"
-                                >
-                                    {song.creator || t('anonymous')}
+                                <span className="text-sm font-semibold text-zinc-900 dark:text-white">
+                                    {song.creator || TRACK_ARTIST}
                                 </span>
                                 <p className="text-xs text-zinc-500">{t('created')} {new Date(song.createdAt).toLocaleDateString()}</p>
                             </div>

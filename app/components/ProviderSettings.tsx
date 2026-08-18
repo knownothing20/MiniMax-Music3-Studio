@@ -111,6 +111,22 @@ export const ProviderSettings: React.FC = () => {
     void loadCatalog(false);
   }, [load, loadCatalog]);
 
+  // A suggestion shown in the select is not a choice anyone made: until it is
+  // saved, the capability has no model and the feature refuses to run while the
+  // panel looks configured. Write it down once, so what is shown is what is
+  // used.
+  useEffect(() => {
+    if (selections.length === 0 || Object.keys(suggested).length === 0) return;
+    const filled = selections.map(selection =>
+      selection.execution_mode === 'open_router' && !selection.cloud_model && suggested[selection.capability]
+        ? { ...selection, cloud_model: suggested[selection.capability] as string }
+        : selection,
+    );
+    if (filled.some((selection, index) => selection.cloud_model !== selections[index].cloud_model)) {
+      void persist(filled);
+    }
+  }, [selections, suggested]);
+
   const localEnginesFor = useCallback(
     (capability: CapabilityId) =>
       engines.filter(engine => engine.execution_mode === 'local' && engine.capabilities.includes(capability)),
@@ -121,6 +137,32 @@ export const ProviderSettings: React.FC = () => {
     (capability: CapabilityId) => models.filter(model => model.capabilities.includes(capability)),
     [models],
   );
+
+  const installLocal = async (capability: CapabilityId) => {
+    setBusy('install');
+    setError(null);
+    try {
+      const endpoint =
+        capability === 'speech_to_text' ? '/v1/karaoke/install'
+        : capability === 'prompt_enhancement' ? '/v1/assistant/runtime/install'
+        : null;
+      if (!endpoint) return;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Installing the local engine failed (${response.status})`);
+      }
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not install the local engine.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const persist = async (next: ProviderSelection[]) => {
     setSelections(next);
@@ -259,7 +301,10 @@ export const ProviderSettings: React.FC = () => {
                 <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{t(CAPABILITY_KEY[selection.capability])}</span>
                 <div className="flex rounded-lg border border-zinc-200 p-0.5 dark:border-white/10">
                   {(['local', 'open_router'] as const).map(mode => {
-                    const disabled = mode === 'local' ? !hasLocal : !cloudReady;
+                    // Only a capability with no local implementation at all
+                    // stays out of reach; "not installed yet" is a thing to
+                    // fix here, not a reason to lock the button.
+                    const disabled = mode === 'local' ? local.length === 0 : !cloudReady;
                     return (
                       <button
                         key={mode}
@@ -283,6 +328,19 @@ export const ProviderSettings: React.FC = () => {
               </div>
 
               <div className="mt-2.5">
+                {selection.mode === 'local' && local.length > 0 && !local.some(engine => engine.installed) && (
+                  <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2">
+                    <span className="min-w-0 truncate text-xs text-amber-700 dark:text-amber-200">{local[0].display_name}</span>
+                    <button
+                      type="button"
+                      onClick={() => void installLocal(selection.capability)}
+                      disabled={busy === 'install'}
+                      className="shrink-0 rounded-lg bg-amber-500/20 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-500/30 disabled:opacity-50 dark:text-amber-100"
+                    >
+                      {busy === 'install' ? <Loader2 size={13} className="animate-spin" /> : t('installLocalEngine')}
+                    </button>
+                  </div>
+                )}
                 {selection.mode === 'local' ? (
                   hasLocal ? (
                     <select

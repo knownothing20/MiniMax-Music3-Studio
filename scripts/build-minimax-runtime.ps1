@@ -9,10 +9,21 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# git, cmake and the compiler all report progress on stderr. With the output
+# redirected to a log, PowerShell treats every one of those lines as a
+# terminating error, so the build died on "Cloning into ...". Every native call
+# below checks $LASTEXITCODE, which is the actual verdict.
+$PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
+$ErrorActionPreference = 'Continue'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $engineSource = Get-Content -Raw (Join-Path $repoRoot 'engines\minimaxmusic-cpp-source.json') | ConvertFrom-Json
-$engineWorktree = Join-Path $env:TEMP "minimaxmusic.cpp-$($engineSource.commit)"
+# Windows still refuses paths past 260 characters, and the engine's own build
+# tree is deep. A full commit hash under %TEMP% used up the budget before cmake
+# had written a single object, so the checkout gets a short home; set
+# MM3_ENGINE_BUILD_ROOT to move it to a shorter drive root if even that is tight.
+$engineBuildRoot = if ($env:MM3_ENGINE_BUILD_ROOT) { $env:MM3_ENGINE_BUILD_ROOT } else { $env:TEMP }
+$engineWorktree = Join-Path $engineBuildRoot "mm3-$($engineSource.commit.Substring(0, 8))"
 
 function Test-CudaToolchain {
     $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue

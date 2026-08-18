@@ -17,9 +17,11 @@ if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
 if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY)) {
     throw 'TAURI_UPDATER_PUBKEY must contain the matching public key.'
 }
-if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
-    throw 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD must be set so Tauri never waits for an interactive signing prompt.'
-}
+# A password is only needed for an encrypted signing key. Windows cannot hold an
+# empty environment variable at all - assigning '' deletes it - so demanding this
+# variable made a release with an unencrypted key impossible to build. Tauri asks
+# for a password only when the key is actually encrypted, and the build below
+# fails loudly if signing does not happen.
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $desktopRoot = Join-Path $repoRoot 'desktop'
@@ -36,8 +38,15 @@ try {
     # in the first-run model manager and are never downloaded at launch.
     # The studio is a single executable: the service is compiled into the
     # desktop binary, so there is no second program to build, ship or launch.
+    # A native program writing to stderr is not a failure, but with the error
+    # preference on Stop and the output redirected to a log, PowerShell turns
+    # every cargo warning into a terminating error. Exit codes are the truth
+    # here, so they are checked directly.
+    $ErrorActionPreference = 'Continue'
     cargo test --workspace
+    if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
     & (Join-Path $PSScriptRoot 'build-minimax-runtime.ps1') -OutputDirectory $engineResourceRoot -RuntimeBackend $RuntimeBackend -CudaArchitecture universal
+    if ($LASTEXITCODE -ne 0) { throw "the engine runtime build failed with exit code $LASTEXITCODE" }
 
     $config = Get-Content -Raw $templatePath
     $config = $config.Replace('__TAURI_UPDATER_PUBKEY__', $env:TAURI_UPDATER_PUBKEY)
@@ -52,6 +61,7 @@ try {
         else {
             npm exec tauri build -- --config $releaseConfigPath --bundles $BundleTarget
         }
+        if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
     }
     finally {
         Pop-Location

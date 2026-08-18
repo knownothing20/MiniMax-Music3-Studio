@@ -124,16 +124,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex min-w-0 items-center gap-3">
             {/* The studio mark: three ascending bars in the accent ramp, the
                 same shape as the application icon. */}
-            <button type="button" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] bg-gradient-to-b from-orange-500 via-pink-500 to-purple-600 shadow-lg transition-transform hover:scale-105" onClick={() => onNavigate('create')} title="MiniMax Music 3 Studio">
-              <svg viewBox="0 0 32 32" className="h-5 w-5" aria-hidden="true">
-                <g fill="#ffffff" fillOpacity="0.95">
-                  <rect x="8.1" y="11.5" width="3.4" height="9" rx="1.7" />
-                  <rect x="14.3" y="7.4" width="3.4" height="17.2" rx="1.7" />
-                  <rect x="20.5" y="9.6" width="3.4" height="12.8" rx="1.7" />
-                </g>
-              </svg>
+            <button type="button" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] shadow-lg transition-transform hover:scale-105" onClick={() => onNavigate('create')} title="MiniMax Music 3 Studio">
+              {/* The application's own icon, so the window and the taskbar
+                  show the same mark. */}
+              <img src="/brand/m3.png" alt="" className="h-10 w-10 rounded-[11px]" />
             </button>
-            {isOpen && <span className="min-w-0 truncate text-sm font-bold text-zinc-900 dark:text-white" title="MiniMax Music 3 Studio">MiniMax Music 3 Studio</span>}
+            {isOpen && (
+              <span className="min-w-0 text-[13px] font-bold leading-[1.15] text-zinc-900 dark:text-white" title="MiniMax Music 3 Studio">
+                MiniMax Music 3
+              </span>
+            )}
           </div>
           {onToggle && (
             <button type="button" onClick={onToggle} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-black dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white" title={isOpen ? t('collapseSidebar') : t('expandSidebar')}>
