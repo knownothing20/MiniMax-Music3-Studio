@@ -175,6 +175,40 @@ impl ModelManager {
             .unwrap_or_else(|_| status_snapshot(PathBuf::from("."), None, None))
     }
 
+    /// Deletes the files of the named components, freeing the disk they take.
+    ///
+    /// Downloading is undoable only if the user can also undo it. Ten gigabytes
+    /// of weights with no way to remove them from inside the studio is how
+    /// people end up hunting through their profile folder by hand.
+    pub async fn remove(&self, component_ids: &[String]) -> Result<RemovalReport> {
+        if self.state.read().await.active.as_ref().is_some_and(|job| matches!(job.status, DownloadStatus::Downloading)) {
+            bail!("a model download is running; cancel it before removing files");
+        }
+        let catalog = components();
+        let mut removed = Vec::new();
+        let mut freed_bytes = 0u64;
+        for id in component_ids {
+            let component = catalog
+                .iter()
+                .find(|component| component.id == *id)
+                .with_context(|| format!("unknown component '{id}'"))?;
+            let path = self.root.join(&component.filename);
+            let size = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    freed_bytes += size;
+                    removed.push(component.id.to_string());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).with_context(|| format!("remove {}", path.display())),
+            }
+            // A half-finished download of the same component is just as much
+            // disk as the finished one.
+            let _ = fs::remove_file(self.root.join(format!("{}.part", component.filename)));
+        }
+        Ok(RemovalReport { removed, freed_bytes })
+    }
+
     pub async fn install(&self, request: InstallRequest) -> Result<DownloadJob> {
         let mut selection = resolve_install(request)?;
         fs::create_dir_all(&self.root)
@@ -393,6 +427,14 @@ fn persist_state_file(path: &Path, state: &PersistentState) -> Result<()> {
 /// as the Tauri shell. The environment variable remains the explicit override
 /// for development and a user-managed model library.
 fn default_model_root() -> PathBuf {
+    // A portable copy sets the studio's data root to its own folder, and the
+    // models are the largest thing the studio owns: resolving them separately
+    // would put ten gigabytes on the system drive while everything else stayed
+    // beside the executable.
+    if let Some(root) = crate::studio_data_root() {
+        return root.join("models").join("minimaxmusic-cpp");
+    }
+
     #[cfg(windows)]
     {
         if let Some(root) = env::var_os("LOCALAPPDATA").or_else(|| env::var_os("APPDATA")) {
@@ -414,6 +456,13 @@ fn default_model_root() -> PathBuf {
     }
 
     env::temp_dir().join("minimax-music3-studio/models/minimaxmusic-cpp")
+}
+
+/// What a removal actually did.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemovalReport {
+    pub removed: Vec<String>,
+    pub freed_bytes: u64,
 }
 
 #[derive(Debug, Clone)]

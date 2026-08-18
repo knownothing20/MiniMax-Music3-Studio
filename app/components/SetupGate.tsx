@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Download, Loader2, Square, X } from 'lucide-react';
+import { Check, ChevronDown, Download, FolderOpen, Loader2, Square, Trash2, X } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import {
   componentKindLabel,
@@ -43,6 +43,8 @@ type SetupStatus = {
   recommended_profile_id: string;
   active: DownloadJob | null;
   installed_components: string[];
+  data_directory?: string | null;
+  portable?: boolean;
 };
 
 type Profile = {
@@ -71,7 +73,7 @@ const errorMessage = async (response: Response) => {
 };
 
 /** One optional capability, with its own catalogue and its own endpoints. */
-const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: string; installUrl: string }> = ({ title, purpose, statusUrl, installUrl }) => {
+const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: string; installUrl: string; removeUrl?: string }> = ({ title, purpose, statusUrl, installUrl, removeUrl }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<OptionalStatus | null>(null);
   const [open, setOpen] = useState(false);
@@ -123,7 +125,25 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
                   <div className="flex shrink-0 items-center gap-2">
                     <span className="text-xs tabular-nums text-zinc-500">{bytes(asset.bytes)}</span>
                     {asset.installed ? (
-                      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-300">{t('installed')}</span>
+                      <>
+                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-300">{t('installed')}</span>
+                        {removeUrl && (
+                          <button
+                            type="button"
+                            onClick={() => void fetch(removeUrl, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ asset_id: asset.id }),
+                            }).then(() => load())}
+                            disabled={Boolean(status?.active_download && !status.active_download.done)}
+                            title={t('removeDownloaded')}
+                            className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-500 hover:border-rose-400 hover:text-rose-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-400"
+                          >
+                            <Trash2 size={13} />
+                            {t('remove')}
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <button
                         type="button"
@@ -263,6 +283,20 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
     else await refresh().catch(() => undefined);
   };
 
+  // Ten gigabytes arrived on request; they leave on request too, without
+  // anyone having to find the folder by hand.
+  const removeComponents = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    setError(null);
+    const response = await fetch('/setup/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!response.ok) setError(await errorMessage(response));
+    else await refresh().catch(() => undefined);
+  };
+
   const cancel = async () => {
     await fetch('/setup/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => undefined);
     await refresh().catch(() => undefined);
@@ -352,11 +386,26 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                           <span className="ml-auto shrink-0 text-xs tabular-nums text-zinc-500">{bytes(profile.total_bytes)}</span>
                         </div>
                         <p className="mt-1 text-[11px] leading-5 text-zinc-500 dark:text-zinc-400">{parts.join(' · ')}</p>
-                        <p className={`mt-1 text-[11px] font-medium ${missingHere.length === 0 ? 'text-emerald-600 dark:text-emerald-300' : 'text-zinc-500'}`}>
-                          {missingHere.length === 0
-                            ? t('installed')
-                            : `${t('toDownload')} ${bytes(selectedComponentBytes(catalog?.components || [], missingHere))}`}
-                        </p>
+                        <div className="mt-1 flex items-center justify-between gap-2">
+                          <p className={`text-[11px] font-medium ${missingHere.length === 0 ? 'text-emerald-600 dark:text-emerald-300' : 'text-zinc-500'}`}>
+                            {missingHere.length === 0
+                              ? t('installed')
+                              : `${t('toDownload')} ${bytes(selectedComponentBytes(catalog?.components || [], missingHere))}`}
+                          </p>
+                          {missingHere.length === 0 && (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              onClick={(event) => { event.stopPropagation(); void removeComponents(profile.components); }}
+                              onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); void removeComponents(profile.components); } }}
+                              title={t('removeDownloaded')}
+                              className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-500 hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-400"
+                            >
+                              <Trash2 size={12} />
+                              {t('remove')}
+                            </span>
+                          )}
+                        </div>
                       </button>
                     );
                   })}                </div>
@@ -385,13 +434,43 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                       ))}
                     </select>
                   </label>
-                  <span className={`mb-2 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${isInstalled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-zinc-200/70 text-zinc-500 dark:bg-white/10 dark:text-zinc-400'}`}>
-                    {isInstalled ? t('installed') : t('missingBadge')}
-                  </span>
+                  <div className="mb-2 flex shrink-0 items-center gap-2">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isInstalled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-zinc-200/70 text-zinc-500 dark:bg-white/10 dark:text-zinc-400'}`}>
+                      {isInstalled ? t('installed') : t('missingBadge')}
+                    </span>
+                    {isInstalled && (
+                      <button
+                        type="button"
+                        onClick={() => void removeComponents([selectedId])}
+                        disabled={active?.status === 'downloading'}
+                        title={t('removeDownloaded')}
+                        className="inline-flex items-center rounded-lg border border-zinc-300 p-1 text-zinc-500 hover:border-rose-400 hover:text-rose-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-400"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
             {!chosenIds && <p className="text-xs text-amber-600 dark:text-amber-300">{t('incompleteSet')}</p>}
+            {/* Where the weights actually are. People asked for this after
+                hunting through their profile folder for ten gigabytes. */}
+            {status?.data_directory && (
+              <div className="mt-2 rounded-lg border border-zinc-200 p-3 dark:border-white/10">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{t('dataFolder')}</p>
+                <p className="mt-1 break-all font-mono text-[11px] text-zinc-600 dark:text-zinc-300">{status.data_directory}</p>
+                {status.portable && <p className="mt-1 text-[11px] leading-4 text-emerald-600 dark:text-emerald-300">{t('portableFolder')}</p>}
+                <button
+                  type="button"
+                  onClick={() => void fetch('/v1/open-data-directory', { method: 'POST' })}
+                  className="mt-2 inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+                >
+                  <FolderOpen size={13} />
+                  {t('openFolder')}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -464,6 +543,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               purpose={t('karaokeOptionalPurpose')}
               statusUrl="/v1/karaoke/status"
               installUrl="/v1/karaoke/install"
+              removeUrl="/v1/karaoke/remove"
             />
           </div>
         </div>

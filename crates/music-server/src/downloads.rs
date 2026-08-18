@@ -137,6 +137,57 @@ impl Downloader {
             .collect()
     }
 
+    /// Deletes an installed asset, whatever shape it took on disk.
+    ///
+    /// A single file is a file; a runtime is a directory of unpacked libraries;
+    /// a picked set is the named files inside one. Anything half-downloaded goes
+    /// with it - a `.part` occupies exactly as much disk as a finished file.
+    pub fn remove(&self, asset: &Asset) -> Result<u64> {
+        // A free function rather than a closure: the running total is read while
+        // the directory walk below is still adding to it.
+        fn drop_file(path: PathBuf) -> Result<u64> {
+            match fs::metadata(&path) {
+                Ok(meta) => {
+                    let size = meta.len();
+                    fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+                    Ok(size)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error).with_context(|| format!("inspect {}", path.display())),
+            }
+        }
+
+        let mut freed = 0u64;
+
+        if !asset.pick.is_empty() {
+            let destination = self.root.join("runtime").join(asset.unzip_into.unwrap_or("."));
+            for name in asset.pick {
+                freed += drop_file(destination.join(name))?;
+            }
+        } else if let Some(flavour) = asset.unzip_into {
+            let directory = self.runtime_dir(flavour);
+            if let Ok(entries) = fs::read_dir(&directory) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            freed += meta.len();
+                        }
+                    }
+                }
+            }
+            match fs::remove_dir_all(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).with_context(|| format!("remove {}", directory.display())),
+            }
+        } else {
+            freed += drop_file(self.path_of(asset))?;
+        }
+
+        freed += drop_file(self.path_of(asset).with_extension("part"))?;
+        Ok(freed)
+    }
+
     pub async fn active(&self) -> Option<DownloadProgress> {
         self.progress.lock().await.clone()
     }

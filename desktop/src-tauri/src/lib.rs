@@ -22,6 +22,14 @@ const STUDIO_DATA_DIRECTORY: &str = "MiniMax Music3 Studio";
 /// to choose either of those. Environment overrides remain authoritative for
 /// portable/development installations.
 fn studio_data_directory() -> PathBuf {
+    // A portable copy keeps everything it owns beside itself: models, the
+    // library, media, logs and settings. Nothing is written into AppData, so
+    // deleting the folder deletes the studio, and carrying the folder to
+    // another machine carries the whole studio with it.
+    if is_portable() {
+        return executable_directory().join("data");
+    }
+
     #[cfg(windows)]
     {
         if let Some(root) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
@@ -50,6 +58,19 @@ fn studio_data_directory() -> PathBuf {
 /// engine, so both always refer to one model library.
 fn configure_studio_runtime_paths() {
     let data_root = studio_data_directory();
+
+    // Temporary files count as leaving traces too: the engine, the downloader
+    // and ffmpeg all write through the system temporary directory, and a
+    // portable copy has no business filling the system drive with them.
+    if is_portable() {
+        let temporary = executable_directory().join("temp");
+        let _ = std::fs::create_dir_all(&temporary);
+        for variable in ["TEMP", "TMP"] {
+            unsafe {
+                std::env::set_var(variable, &temporary);
+            }
+        }
+    }
     if std::env::var_os("MINIMAX_MUSIC_MODELS_ROOT").is_none() {
         unsafe {
             std::env::set_var(

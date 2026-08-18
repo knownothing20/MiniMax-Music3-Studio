@@ -492,6 +492,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/assistant/runtime/stop", post(assistant_runtime_stop))
         .route("/v1/karaoke/status", get(karaoke_status).put(update_karaoke_settings))
         .route("/v1/karaoke/install", post(karaoke_install))
+        .route("/v1/karaoke/remove", post(karaoke_remove))
         .route("/v1/library/songs/{id}/karaoke", post(create_song_karaoke).delete(delete_song_karaoke))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
@@ -504,6 +505,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/separation/status", get(separation_status))
         .route("/v1/separation/settings", get(read_separation_settings).put(write_separation_settings))
         .route("/v1/separation/install", post(install_separation_model))
+        .route("/v1/separation/remove", post(remove_separation_model))
         .route("/v1/library/songs/{id}/stems", get(read_stems).post(start_separation))
         .route("/v1/library/songs/{id}/stems/{stem}", get(read_stem_audio))
         .route("/v1/library/songs/{id}/cover/auto", post(draw_cover_now))
@@ -521,6 +523,8 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/setup/status", get(setup_status))
         .route("/setup/catalog", get(setup_catalog))
         .route("/setup/download", post(setup_download))
+        .route("/setup/remove", post(setup_remove))
+        .route("/v1/open-data-directory", post(open_data_directory))
         .route("/setup/select", post(setup_select))
         .route("/setup/cancel", post(setup_cancel))
         .route("/v1/local-models/music", get(local_music_model_catalog))
@@ -2097,11 +2101,33 @@ async fn compose_setup_status(state: &AppState, manager_status: model_manager::M
         fields.insert("hardware".into(), serde_json::to_value(presets::hardware()).unwrap_or(Value::Null));
         fields.insert("engine_options".into(), serde_json::to_value(*state.engine_options.read().await).unwrap_or(Value::Null));
         fields.insert("effective_max_batch".into(), Value::from(state.engine_options.read().await.effective_max_batch()));
+        // Where everything the studio owns actually lives. People complained
+        // they could not find the ten gigabytes afterwards, let alone delete
+        // them; the model root is already reported, this is the folder that
+        // holds it along with the library, the media and the logs.
+        fields.insert(
+            "data_directory".into(),
+            studio_data_root().map(|root| Value::String(root.display().to_string())).unwrap_or(Value::Null),
+        );
+        fields.insert("portable".into(), Value::Bool(is_portable_installation()));
         fields.insert("ready".into(), Value::Bool(selected_set_ready));
         fields.insert("first_run".into(), Value::Bool(!selected_set_ready));
         if selected_set_ready { fields.insert("download_pending".into(), Value::from(0_u64)); }
     }
     status
+}
+
+/// Whether this copy keeps everything beside its own executable.
+///
+/// The desktop shell decides it by the marker file next to the binary and then
+/// hands the service the data root; the service reports it so the interface can
+/// say "this folder is the whole studio" rather than sending people hunting
+/// through AppData.
+fn is_portable_installation() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|directory| directory.join("portable.flag")))
+        .is_some_and(|marker| marker.is_file())
 }
 
 /// Recent native engine output. This is the only progress detail upstream
@@ -2303,6 +2329,32 @@ async fn update_karaoke_settings(
     *state.lyrics_sync_config.write().await = request.clone();
     let _ = persist_studio_settings(&state).await;
     Ok(Json(state.lyrics_sync.status(&request).await))
+}
+
+/// Frees the disk a karaoke recogniser takes.
+async fn karaoke_remove(
+    State(state): State<AppState>,
+    Json(request): Json<AssistantAssetRequest>,
+) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
+    let asset = lyrics_sync::asset(&request.asset_id)
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, format!("unknown karaoke asset: {}", request.asset_id)))?;
+    state
+        .lyrics_sync
+        .downloader()
+        .remove(asset)
+        .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
+    let config = state.lyrics_sync_config.read().await.clone();
+    Ok(Json(state.lyrics_sync.status(&config).await))
+}
+
+/// Frees the disk the stem separation model takes.
+async fn remove_separation_model(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let freed = state
+        .separator
+        .downloader()
+        .remove(&separation::MODEL)
+        .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "freed_bytes": freed })))
 }
 
 async fn karaoke_install(
@@ -2758,6 +2810,44 @@ async fn setup_status(State(state): State<AppState>) -> Json<Value> {
     let target = effective_install_target(&state).await;
     let manager_status = state.model_manager.status(target).await;
     Json(compose_setup_status(&state, manager_status).await)
+}
+
+/// Frees the disk a set of components takes.
+///
+/// The studio downloads ten gigabytes on request; it must be able to give them
+/// back on request too, without sending anyone to hunt through a profile folder.
+async fn setup_remove(
+    State(state): State<AppState>,
+    Json(request): Json<SetupDownloadRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let report = state
+        .model_manager
+        .remove(&request.ids)
+        .await
+        .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "removed": report.removed,
+        "freed_bytes": report.freed_bytes,
+    })))
+}
+
+/// Opens the studio's own folder in the system file manager.
+///
+/// Saying where the ten gigabytes are is half an answer; the other half is
+/// getting there without retyping a path from a settings screen.
+async fn open_data_directory() -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let Some(root) = studio_data_root() else {
+        return Err(api_error(StatusCode::NOT_FOUND, "the studio has no data directory".into()));
+    };
+    let _ = std::fs::create_dir_all(&root);
+    #[cfg(windows)]
+    let opened = std::process::Command::new("explorer.exe").arg(&root).spawn();
+    #[cfg(target_os = "macos")]
+    let opened = std::process::Command::new("open").arg(&root).spawn();
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let opened = std::process::Command::new("xdg-open").arg(&root).spawn();
+    opened.map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "opened": root.display().to_string() })))
 }
 
 async fn setup_catalog(State(state): State<AppState>) -> Json<model_manager::Catalog> {
