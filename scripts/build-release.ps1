@@ -11,11 +11,35 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Where the signing material is kept, said here rather than in a document
+# nobody opens: this is the message a person sees when they try to cut a
+# release without it.
+$whereTheKeyIs = @'
+The updater signing key is kept in two places:
+
+  * GitHub repository secrets of timoncool/MiniMax-Music3-Studio -
+    TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD and
+    TAURI_UPDATER_PUBKEY. Copy them out with:
+        gh secret list -R timoncool/MiniMax-Music3-Studio
+    (values cannot be read back - use the local copy below, or the workflow).
+
+  * On the release machine: %USERPROFILE%\.tauri\mm3-release.key and its .pub.
+
+Set them for a manual build:
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw "$env:USERPROFILE\.tauri\mm3-release.key").Trim()
+    $env:TAURI_UPDATER_PUBKEY      = (Get-Content -Raw "$env:USERPROFILE\.tauri\mm3-release.key.pub").Trim()
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<the password stored in the secret above>"
+
+The public half must also match tauri.conf.json, or every update is rejected.
+Lose the private key and automatic updates end for everyone already running the
+studio: a new key means a new installer, installed by hand.
+'@
+
 if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
-    throw 'TAURI_SIGNING_PRIVATE_KEY must contain the updater private key.'
+    throw "TAURI_SIGNING_PRIVATE_KEY must contain the updater private key.`n`n$whereTheKeyIs"
 }
 if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY)) {
-    throw 'TAURI_UPDATER_PUBKEY must contain the matching public key.'
+    throw "TAURI_UPDATER_PUBKEY must contain the matching public key.`n`n$whereTheKeyIs"
 }
 # A password is only needed for an encrypted signing key. Windows cannot hold an
 # empty environment variable at all - assigning '' deletes it - so demanding this
