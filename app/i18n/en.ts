@@ -1298,6 +1298,7 @@ export const en = {
     assistantDisabled: 'Off',
     assistantLocal: 'Local server',
     assistantHint: 'Optional. Music3 needs no language model - its own LM emits audio codes, and the form is written by hand. A text model only helps draft the caption and lyrics.',
+    setUpAssistant: 'Set up the assistant',
     assistantBaseUrl: 'Base URL',
     assistantModel: 'Model name',
     assistantLocalHint: 'Any OpenAI-compatible server: llama.cpp llama-server, LM Studio or Ollama. Nothing is downloaded or started for you.',

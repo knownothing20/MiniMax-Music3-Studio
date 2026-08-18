@@ -1293,6 +1293,7 @@ export const ko = {
     assistantDisabled: '끄기',
     assistantLocal: '로컬 서버',
     assistantHint: '선택 사항입니다. Music3 는 언어 모델이 필요 없습니다. 자체 LM 이 오디오 코드를 출력하고 폼은 직접 작성합니다. 텍스트 모델은 설명과 가사 초안용입니다.',
+    setUpAssistant: '어시스턴트 설정',
     assistantBaseUrl: '기본 URL',
     assistantModel: '모델 이름',
     assistantLocalHint: 'OpenAI 호환 서버면 됩니다: llama.cpp 의 llama-server, LM Studio, Ollama. 자동으로 내려받거나 실행하지 않습니다.',

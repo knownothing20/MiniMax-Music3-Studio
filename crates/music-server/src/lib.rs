@@ -224,7 +224,11 @@ struct SetupSelectRequest {
 
 #[derive(Debug, Deserialize)]
 struct SetupDownloadRequest {
-    #[serde(default)]
+    // The panel calls this field `component_ids`. Reading only `ids` meant a
+    // download request arrived empty, and an empty request quietly fell back to
+    // the default set - which is how pressing "download" on the 11.9 GB set
+    // started fetching the 26.6 GB one.
+    #[serde(default, alias = "component_ids")]
     ids: Vec<String>,
     profile_id: Option<String>,
 }
@@ -1631,9 +1635,22 @@ async fn configuration(State(state): State<AppState>) -> Json<StudioConfiguratio
 
 async fn update_configuration(
     State(state): State<AppState>,
-    Json(configuration): Json<StudioConfiguration>,
+    Json(update): Json<StudioConfiguration>,
 ) -> Json<StudioConfiguration> {
-    *state.configuration.write().await = configuration.clone();
+    // A page that changes one capability sends one selection. Storing the
+    // request verbatim then erased every other choice - which is how a studio
+    // with a downloaded engine started answering "the local music engine is not
+    // configured" after the assistant was pointed at a local model.
+    let configuration = {
+        let mut stored = state.configuration.write().await;
+        for selection in update.selections {
+            match stored.selections.iter_mut().find(|existing| existing.capability == selection.capability) {
+                Some(existing) => *existing = selection,
+                None => stored.selections.push(selection),
+            }
+        }
+        stored.clone()
+    };
 
     // The choice has to reach the code that does the work, or the button is
     // decoration. Speech-to-text is done by the karaoke stack, and the writing
@@ -2373,6 +2390,14 @@ async fn assistant_runtime_install(
     Ok(Json(state.assistant_runtime.status().await))
 }
 
+/// How much room the local model gets.
+///
+/// The prompt alone is around 3200 tokens - the caption contract plus the three
+/// reference captions the MiniMax skill selects - and a full answer is another
+/// 700 to 1200. Eight thousand left almost no headroom for a long lyric, and a
+/// model that runs out mid-JSON produces an answer nothing can parse.
+const ASSISTANT_CONTEXT: u32 = 16384;
+
 async fn assistant_runtime_start(
     State(state): State<AppState>,
     Json(request): Json<AssistantModelRequest>,
@@ -2380,9 +2405,9 @@ async fn assistant_runtime_start(
     let own_file = request.model_path.clone().unwrap_or_default();
     let reasoning = state.assistant.read().await.reasoning_effort.clone();
     let base_url = if own_file.trim().is_empty() {
-        state.assistant_runtime.start(&request.model_id, 8192, reasoning.as_deref()).await
+        state.assistant_runtime.start(&request.model_id, ASSISTANT_CONTEXT, reasoning.as_deref()).await
     } else {
-        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192, reasoning.as_deref()).await
+        state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), ASSISTANT_CONTEXT, reasoning.as_deref()).await
     }
     .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(Json(serde_json::json!({ "base_url": base_url, "model_id": request.model_id, "model_path": own_file })))
@@ -2628,7 +2653,7 @@ async fn assistant_write_stream(
             "No writing assistant is configured. The manual form does not need one.".into(),
         ));
     }
-    let (system, _required) = assistant::instructions(&request);
+    let (system, required) = assistant::instructions(&request);
     let user = assistant::user_message(&request);
 
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(64);
@@ -2658,9 +2683,9 @@ async fn assistant_write_stream(
                 let id = config.managed_model.clone().unwrap_or_default();
                 let reasoning = config.reasoning_effort.clone();
                 let started = if own_file.trim().is_empty() {
-                    state.assistant_runtime.start(&id, 8192, reasoning.as_deref()).await
+                    state.assistant_runtime.start(&id, ASSISTANT_CONTEXT, reasoning.as_deref()).await
                 } else {
-                    state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), 8192, reasoning.as_deref()).await
+                    state.assistant_runtime.start_path(std::path::Path::new(own_file.trim()), ASSISTANT_CONTEXT, reasoning.as_deref()).await
                 };
                 match started {
                     Ok(base) => (base, if own_file.trim().is_empty() { id } else { "local-model".to_string() }, None),
@@ -2677,7 +2702,11 @@ async fn assistant_write_stream(
             ),
         };
 
-        let mut body = assistant::chat_body_full(&model, &system, &user, config.reasoning_effort.as_deref(), None);
+        // A local llama-server enforces the shape while it samples, so the
+        // answer cannot come back as prose or as a list where a string belongs.
+        let schema = matches!(config.provider, AssistantProvider::Managed | AssistantProvider::Local)
+            .then(|| assistant::draft_schema(&required));
+        let mut body = assistant::chat_body_constrained(&model, &system, &user, config.reasoning_effort.as_deref(), None, schema);
         body["stream"] = Value::Bool(true);
 
         emit(sender.clone(), serde_json::json!({ "stage": "sent", "model": model })).await;
@@ -2799,7 +2828,15 @@ async fn assistant_write(
             };
             let sent = reqwest::Client::new()
                 .post(format!("{}/chat/completions", base.trim_end_matches('/')))
-                .json(&assistant::chat_body(&model, &system, &user))
+                .json(&assistant::chat_body_constrained(
+                    &model,
+                    &system,
+                    &user,
+                    None,
+                    None,
+                    matches!(config.provider, AssistantProvider::Managed | AssistantProvider::Local)
+                        .then(|| assistant::draft_schema(&required)),
+                ))
                 .timeout(std::time::Duration::from_secs(180))
                 .send()
                 .await
@@ -3638,6 +3675,18 @@ fn mm_request_from(request: &CreateMusicJobRequest, selected_profile_id: Option<
             let all_explicit = [models.lm_model.as_deref(), models.depth_model.as_deref(), models.cond_model.as_deref(), models.dit_model.as_deref(), models.vae_model.as_deref()]
                 .iter().all(|value| value.is_some_and(|value| !value.trim().is_empty()));
             if !all_explicit { return Err("advanced model selection must explicitly provide all five MM3 component filenames".into()); }
+            // A job carries the names of the weights it wants. A replayed or
+            // queued one can name a set that has since been removed, and the
+            // engine then spends a minute loading nothing before failing. The
+            // files are checked here, while there is still someone to tell.
+            if let Some(manager) = manager {
+                let root = manager.models_directory();
+                for name in [models.lm_model.as_deref(), models.depth_model.as_deref(), models.cond_model.as_deref(), models.dit_model.as_deref(), models.vae_model.as_deref()].into_iter().flatten() {
+                    if !root.join(name).is_file() {
+                        return Err(format!("this request names a model file that is no longer on disk: {name}. Choose a set in Settings - Models and try again."));
+                    }
+                }
+            }
             models
         }
         None => {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { karaokeReason } from '../services/karaoke';
-import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, RotateCcw, Save, Sparkles, Square, Wand2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, RotateCcw, Save, Sparkles, Square, Wand2 , Settings2 } from 'lucide-react';
 import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { joinCaption, randomExample, splitCaption } from '../services/examples';
@@ -333,10 +333,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   }, [setup?.engine_ready]);
 
   useEffect(() => {
-    void fetch('/v1/assistant/status')
+    // Asked once at mount, the panel kept saying "configure the assistant"
+    // long after the assistant had been configured. It is asked again while it
+    // is not ready, and whenever the settings are closed.
+    const read = () => void fetch('/v1/assistant/status')
       .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
       .then((body: { available?: boolean }) => setAssistantReady(body.available === true))
       .catch(() => setAssistantReady(false));
+    read();
+    const timer = window.setInterval(read, 5000);
+    window.addEventListener('mm3:settings-changed', read);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('mm3:settings-changed', read);
+    };
   }, []);
 
   useEffect(() => {
@@ -609,6 +619,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             <Card title={t('songIdea')}>
               <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantNeedsModel')}</p>
               <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantHint')}</p>
+              {/* Telling someone to go to Settings without a way to get there
+                  is half an instruction. */}
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'providers' }))}
+                className="mt-3 inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+              >
+                <Settings2 size={13} />
+                {t('setUpAssistant')}
+              </button>
             </Card>
           )}
 

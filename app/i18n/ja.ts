@@ -1293,6 +1293,7 @@ export const ja = {
     assistantDisabled: 'オフ',
     assistantLocal: 'ローカルサーバー',
     assistantHint: '任意です。Music3 に言語モデルは不要で、内部 LM は音声コードを出力し、フォームは手入力できます。テキストモデルは説明と歌詞の下書き用です。',
+    setUpAssistant: 'アシスタントを設定',
     assistantBaseUrl: 'ベース URL',
     assistantModel: 'モデル名',
     assistantLocalHint: 'OpenAI 互換サーバーなら何でも: llama.cpp の llama-server、LM Studio、Ollama。自動でダウンロードや起動は行いません。',

@@ -1293,6 +1293,7 @@ export const zh = {
     assistantDisabled: '关闭',
     assistantLocal: '本地服务器',
     assistantHint: '可选。Music3 无需语言模型——其自带 LM 输出音频码，表单可手写。文本模型只用于起草描述与歌词。',
+    setUpAssistant: '设置助手',
     assistantBaseUrl: '基础 URL',
     assistantModel: '模型名称',
     assistantLocalHint: '任何兼容 OpenAI 的服务器：llama.cpp 的 llama-server、LM Studio 或 Ollama。不会自动下载或启动任何东西。',

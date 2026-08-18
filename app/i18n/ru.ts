@@ -1297,6 +1297,7 @@ export const ru = {
     assistantDisabled: 'Выключен',
     assistantLocal: 'Локальный сервер',
     assistantHint: 'Необязательно. Music3 не нужна языковая модель — его собственная LM выдаёт аудиокоды, а форма заполняется вручную. Текстовая модель нужна только чтобы набросать описание и текст.',
+    setUpAssistant: 'Настроить ассистента',
     assistantBaseUrl: 'Базовый URL',
     assistantModel: 'Название модели',
     assistantLocalHint: 'Любой OpenAI-совместимый сервер: llama-server из llama.cpp, LM Studio или Ollama. Ничего не скачивается и не запускается само.',

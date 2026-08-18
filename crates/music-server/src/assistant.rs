@@ -36,7 +36,7 @@ arrangement: the song as a section-by-section timeline: "Instrument Lifecycle De
 
 /// The lyric rules, likewise transcribed: the tag vocabulary and the structure
 /// sizing are what keep the sung result aligned with the requested length.
-const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, use [instrumental] sections with no words."#;
+const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, use [instrumental] sections with no words. Write the lyrics in the language the user wrote their request in: a Russian idea gets Russian lyrics, a Japanese one Japanese. The caption fields stay English - that is what the engine reads - but nobody asked for an English song."#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -212,8 +212,29 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
     if end <= start {
         bail!("the assistant returned no JSON object");
     }
-    let value: Value = serde_json::from_str(&content[start..=end]).context("the assistant returned invalid JSON")?;
-    let field = |key: &str| value.get(key).and_then(Value::as_str).map(|text| text.trim().to_owned()).filter(|text| !text.is_empty());
+    let value: Value = serde_json::from_str(&content[start..=end]).with_context(|| {
+        // Naming the failure without showing the answer leaves nothing to act
+        // on: the interesting part is what the model actually wrote.
+        let sample: String = content.chars().take(220).collect();
+        format!("the assistant returned invalid JSON. It answered: {sample}")
+    })?;
+    // A model answers with what it finds natural: a string for the caption, and
+    // very often an array of lines for the lyrics. Both are the same lyric.
+    let field = |key: &str| -> Option<String> {
+        let text = match value.get(key)? {
+            Value::String(text) => text.trim().to_owned(),
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .collect::<Vec<_>>()
+                .join("
+")
+                .trim()
+                .to_owned(),
+            _ => return None,
+        };
+        (!text.is_empty()).then_some(text)
+    };
 
     for key in required {
         if field(key).is_none() {
@@ -233,6 +254,34 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
             .get("duration_seconds")
             .and_then(|value| value.as_u64().or_else(|| value.as_str().and_then(|text| text.trim().parse().ok())))
             .map(|seconds| seconds.clamp(10, 360) as u32),
+    })
+}
+
+/// The shape the answer must have, as a schema the server can enforce.
+///
+/// llama-server turns this into grammar rules and applies them while sampling,
+/// so a local model cannot answer with prose, with a fenced block, or with a
+/// list where a string belongs - the three ways it used to come back unusable.
+pub fn draft_schema(required: &[&str]) -> Value {
+    // A minimum length, not just a type: "required" only forces the key to be
+    // present, and a model that answers with an empty string satisfies that
+    // while leaving the field blank on screen.
+    let text = serde_json::json!({ "type": "string", "minLength": 40 });
+    let lyric = serde_json::json!({ "type": "string", "minLength": 20 });
+    let short = serde_json::json!({ "type": "string", "minLength": 3 });
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "lyrics": lyric,
+            "global_metadata": text,
+            "vocal_details": text,
+            "arrangement": text,
+            "title": short,
+            "cover_prompt": short,
+            "duration_seconds": { "type": "number" },
+        },
+        "required": required,
+        "additionalProperties": false,
     })
 }
 
@@ -265,6 +314,19 @@ pub fn chat_body_full(
     effort: Option<&str>,
     defaults: Option<&Value>,
 ) -> Value {
+    chat_body_constrained(model, system, user, effort, defaults, None)
+}
+
+/// The same request, with the answer's shape enforced where the server can do
+/// it. Asking politely for JSON in the prompt is a hope; a schema is a rule.
+pub fn chat_body_constrained(
+    model: &str,
+    system: &str,
+    user: &str,
+    effort: Option<&str>,
+    defaults: Option<&Value>,
+    schema: Option<Value>,
+) -> Value {
     let mut body = serde_json::json!({
         "model": model,
         "messages": [
@@ -293,6 +355,10 @@ pub fn chat_body_full(
         // response small and the parser looking in one place.
         body["reasoning"] = serde_json::json!({ "effort": effort, "exclude": true });
     }
+    if let Some(schema) = schema {
+        body["response_format"] = serde_json::json!({ "type": "json_schema", "schema": schema });
+    }
+
     body
 }
 
@@ -469,5 +535,44 @@ mod tests {
     fn a_missing_required_field_is_an_error_rather_than_a_blank_pane() {
         assert!(parse_draft("{\"lyrics\": \"x\"}", &["global_metadata"]).is_err());
         assert!(parse_draft("no json here", &["lyrics"]).is_err());
+    }
+
+    /// Gemma writes lyrics as a list of lines about as often as it writes them
+    /// as one string, and both are the same song.
+    #[test]
+    fn lyrics_may_arrive_as_a_list_of_lines() {
+        let answer = r#"{"lyrics": ["[intro]", "[verse]", "neon on the wet road"], "global_metadata": "g", "vocal_details": "v", "arrangement": "a"}"#;
+        let draft = super::parse_draft(answer, &["lyrics"]).expect("a list of lines is a lyric");
+        assert_eq!(draft.lyrics.as_deref(), Some("[intro]
+[verse]
+neon on the wet road"));
+    }
+
+    /// A Russian idea used to come back as an English song: the caption rule
+    /// ("write in English") had quietly swallowed the lyrics as well.
+    #[test]
+    fn the_lyrics_follow_the_language_of_the_request() {
+        let request = super::AssistRequest {
+            target: super::AssistTarget::All,
+            description: String::new(),
+            instruction: "панк-рок про ёжика в бункере".into(),
+            lyrics: String::new(),
+            global_metadata: String::new(),
+            vocal_details: String::new(),
+            arrangement: String::new(),
+            duration_seconds: 60.0,
+            instrumental: false,
+        };
+        let (system, _) = super::instructions(&request);
+        assert!(system.contains("language the user wrote their request in"));
+    }
+
+    /// "required" alone let the model answer with an empty string and still
+    /// satisfy the schema, which is how a blank description came back.
+    #[test]
+    fn the_schema_asks_for_content_not_just_a_key() {
+        let schema = super::draft_schema(&["global_metadata"]);
+        assert_eq!(schema["properties"]["global_metadata"]["minLength"], 40);
+        assert_eq!(schema["required"][0], "global_metadata");
     }
 }

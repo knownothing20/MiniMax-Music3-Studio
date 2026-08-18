@@ -151,6 +151,11 @@ impl ModelManager {
         })
     }
 
+    /// Where the weights live, for anything that needs to check a file exists.
+    pub fn models_directory(&self) -> &Path {
+        &self.root
+    }
+
     pub fn catalog(&self) -> Catalog {
         Catalog {
             engine_id: ENGINE_ID,
@@ -205,6 +210,20 @@ impl ModelManager {
             // A half-finished download of the same component is just as much
             // disk as the finished one.
             let _ = fs::remove_file(self.root.join(format!("{}.part", component.filename)));
+        }
+        // A remembered download resumes on the next start. Deleting the files
+        // without forgetting the job is how twenty-six gigabytes came back by
+        // themselves after being removed.
+        {
+            let mut state = self.state.write().await;
+            let resumes_removed = state
+                .active
+                .as_ref()
+                .is_some_and(|job| job.component_ids.iter().any(|id| component_ids.contains(id)));
+            if resumes_removed {
+                state.active = None;
+                let _ = persist_state_file(&self.state_path, &state);
+            }
         }
         Ok(RemovalReport { removed, freed_bytes })
     }
@@ -477,6 +496,12 @@ fn resolve_install(request: InstallRequest) -> Result<ResolvedInstall> {
     if request.profile_id.is_some() && !request.component_ids.is_empty() {
         bail!("select either a complete profile or an advanced component set, not both");
     }
+    // An empty request is a mistake, not an instruction to download the default
+    // set. Silently substituting a profile turned a field-name mismatch into
+    // twenty-six gigabytes nobody asked for.
+    if request.profile_id.is_none() && request.component_ids.is_empty() {
+        bail!("nothing was selected to download: name a profile or the components");
+    }
     let profiles = profiles();
     let profile = request.profile_id.unwrap_or_else(|| recommended_profile().into());
     let (profile_id, ids) = if request.component_ids.is_empty() {
@@ -661,10 +686,24 @@ mod tests {
 
     #[test]
     fn recommended_profile_is_a_complete_runnable_set() {
-        let selected = resolve_install(InstallRequest { profile_id: None, component_ids: vec![] }).unwrap();
+        let selected = resolve_install(InstallRequest {
+            profile_id: Some(recommended_profile().into()),
+            component_ids: vec![],
+        })
+        .unwrap();
         assert_eq!(selected.profile_id.as_deref(), Some(recommended_profile()));
         assert_eq!(selected.components.len(), 5);
         validate_complete_set(&selected.components).unwrap();
+    }
+
+    /// An empty request used to mean "download the default set", so a request
+    /// that lost its field on the way turned into a 26 GB download of a set
+    /// nobody had chosen.
+    #[test]
+    fn an_empty_request_downloads_nothing() {
+        let error = resolve_install(InstallRequest { profile_id: None, component_ids: vec![] })
+            .expect_err("an empty request is a mistake, not a default");
+        assert!(error.to_string().contains("nothing was selected"));
     }
 
     #[test]

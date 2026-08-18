@@ -3,6 +3,51 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## 2026-08-19 — 1.3.1
+
+### Added
+
+- **A portable copy keeps everything inside its own folder** — models, the
+  library, media, logs, settings, temporary files and the WebView cache all sit
+  beside the executable. Nothing is written into the user profile, so deleting
+  the folder deletes the studio.
+- **Downloads can be undone** — every ready-made set, every per-role
+  quantisation and every optional model has a remove button beside the one that
+  fetched it, and the panel shows the folder they live in with a button that
+  opens it.
+- **A local model fetches itself on first use** — choosing Parakeet or Whisper
+  is the instruction to use it, so the first track that needs timings downloads
+  the model, reporting real percentages, and then does the work.
+
+### Changed
+
+- The engine now dies with the studio however the studio ends — a job object
+  ties the process tree together, so a force-closed window no longer leaves the
+  engine holding the graphics card.
+- The local writing assistant is constrained by a JSON schema at the sampling
+  level, and its context doubled to 16384 tokens. It could previously answer
+  with prose, with a fenced block, with a list where a string belonged, or run
+  out of room mid-answer.
+- Lyrics are written in the language of the request. The rule that keeps the
+  caption English - the engine reads it - had been swallowing the song too.
+- Cover art and cloud transcription stay silent without a key instead of
+  reporting a failure nobody can act on.
+
+### Fixed
+
+- A settings page that changed one capability erased every other choice, which
+  is how a studio with a downloaded engine started answering "the local music
+  engine is not configured" and queueing jobs forever.
+- The download panel sent `component_ids` while the service read `ids`, so
+  pressing download on the 11.9 GB set fetched the 26.6 GB one. An empty
+  request is now refused outright rather than falling back to a default.
+- Removing weights left the download that would resume them in the studio's
+  state, so deleted files came back by themselves on the next start.
+- A job that names weights no longer on disk is refused with an explanation
+  instead of being sent to the engine, which spent a minute loading nothing.
+- The window recovers on its own when the service takes a moment longer to
+  start, instead of leaving a browser connection error on screen for good.
+
 ## 2026-08-18
 
 ### Added
