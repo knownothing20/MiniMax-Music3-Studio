@@ -1,4 +1,5 @@
 mod auto_title;
+mod tagging;
 mod cover_prompt;
 mod providers;
 mod assistant;
@@ -20,7 +21,7 @@ use anyhow::Context;
 use futures_util::StreamExt;
 
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     body::Body,
     http::{header, HeaderMap, StatusCode},
     routing::{get, post},
@@ -56,6 +57,8 @@ struct AppState {
     lyrics_sync_config: Arc<RwLock<lyrics_sync::LyricsSyncConfig>>,
     /// Saved cover looks, filled in from whichever track a cover is for.
     cover_templates: Arc<RwLock<Vec<cover_prompt::CoverTemplate>>>,
+    /// The look a new cover starts from, chosen in Settings.
+    cover_template_default: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -238,6 +241,8 @@ struct PersistedStudioSettings {
     selected_component_ids: Option<Vec<String>>,
     #[serde(default)]
     cover_templates: Option<Vec<cover_prompt::CoverTemplate>>,
+    #[serde(default)]
+    cover_template_default: Option<String>,
 }
 
 #[derive(Default)]
@@ -410,6 +415,9 @@ pub async fn serve() -> anyhow::Result<()> {
                 .filter(|templates| !templates.is_empty())
                 .unwrap_or_else(cover_prompt::default_templates),
         )),
+        cover_template_default: Arc::new(RwLock::new(
+            persisted.as_ref().and_then(|settings| settings.cover_template_default.clone()),
+        )),
         selected_profile_id: Arc::new(RwLock::new(selected_profile_id)),
         selected_component_ids: Arc::new(RwLock::new(selected_component_ids)),
         settings_path,
@@ -478,6 +486,10 @@ pub async fn serve() -> anyhow::Result<()> {
             get(music_job_status).post(cancel_music_job),
         )
         .with_state(state.clone())
+        // Covers and imported audio are megabytes, not kilobytes. The default
+        // two-megabyte cap rejected a generated cover by dropping the
+        // connection, which reaches the interface as "Failed to fetch".
+        .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
@@ -574,6 +586,9 @@ struct StoreCoverRequest {
 #[derive(Debug, Deserialize)]
 struct CoverTemplatesRequest {
     templates: Vec<cover_prompt::CoverTemplate>,
+    /// Which of them a new cover starts from. `None` leaves it as it was.
+    #[serde(default)]
+    default_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -593,6 +608,7 @@ struct RenderCoverPromptRequest {
 async fn read_cover_templates(State(state): State<AppState>) -> Json<Value> {
     Json(serde_json::json!({
         "templates": state.cover_templates.read().await.clone(),
+        "default_id": state.cover_template_default.read().await.clone(),
         "placeholders": ["title", "style", "lyrics", "excerpt", "duration"],
     }))
 }
@@ -603,10 +619,15 @@ async fn write_cover_templates(
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let templates = if request.templates.is_empty() { cover_prompt::default_templates() } else { request.templates };
     *state.cover_templates.write().await = templates.clone();
+    // A default that names a template nobody kept is worse than none.
+    let default_id = request
+        .default_id
+        .filter(|id| !id.trim().is_empty() && templates.iter().any(|entry| entry.id == *id));
+    *state.cover_template_default.write().await = default_id.clone();
     persist_studio_settings(&state)
         .await
         .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    Ok(Json(serde_json::json!({ "templates": templates })))
+    Ok(Json(serde_json::json!({ "templates": templates, "default_id": default_id })))
 }
 
 /// The prompt a template turns into for one track, exactly as it would be sent.
@@ -651,6 +672,39 @@ async fn library_cover(State(state): State<AppState>, Path(id): Path<String>) ->
         .expect("valid cover response"))
 }
 
+
+/// Writes ID3 tags onto a stored MP3 from what the library knows about it.
+///
+/// Called after a track is stored, after its cover changes and after it is
+/// renamed. Failure is logged and never fails the request: an untagged track
+/// still plays, a lost one does not.
+async fn tag_stored_song(state: &AppState, song_id: &str) {
+    let Ok(Some(song)) = state.library.get_song(song_id) else { return };
+    // `audio_path` is a full path, not a filename: resolve it the way playback
+    // does, or tagging silently skips every track.
+    let Some(audio_path) = state.library.media_path_for_song(&song) else { return };
+    if audio_path.extension().and_then(|value| value.to_str()).map(str::to_lowercase).as_deref() != Some("mp3") {
+        return;
+    }
+    let cover = state
+        .library
+        .cover_path_for_song(&song)
+        .and_then(|(path, media_type)| std::fs::read(path).ok().map(|bytes| (media_type.to_string(), bytes)));
+    let tags = tagging::TrackTags {
+        title: song.title.clone(),
+        album: "MiniMax Music3 Studio".to_string(),
+        // The engine is the performer here; the studio is the label.
+        artist: "MiniMax Music 3".to_string(),
+        genre: tagging::genre_from_caption(&song.caption),
+        lyrics: Some(song.lyrics.clone()).filter(|value| !value.trim().is_empty()),
+        bpm: tagging::bpm_from_caption(&song.caption),
+        cover,
+    };
+    if let Err(error) = tagging::write_mp3_tags(&audio_path, &tags) {
+        eprintln!("could not tag {}: {error}", audio_path.display());
+    }
+}
+
 async fn store_library_cover(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -660,11 +714,13 @@ async fn store_library_cover(
     let image = STANDARD
         .decode(request.image_base64.trim())
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, format!("cover image is not valid base64: {error}")))?;
-    state
+    let song = state
         .library
         .store_song_cover(&id, &image, &request.media_type)
-        .map(Json)
-        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    // The cover belongs in the file too, not only beside it.
+    tag_stored_song(&state, &id).await;
+    Ok(Json(song))
 }
 
 async fn create_library_song(State(state):State<AppState>,Json(input):Json<library::SongInput>)->Result<(StatusCode,Json<library::Song>),(StatusCode,Json<ApiError>)>{state.library.create_song(input).map(|s|(StatusCode::CREATED,Json(s))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))}
@@ -683,7 +739,12 @@ async fn import_library_audio(State(state): State<AppState>, mut multipart: Mult
     let song = state.library.import_audio_song(library::AudioImportInput { title, caption, lyrics, metadata: serde_json::json!({"imported_filename": filename, "duration_seconds": duration}), generation_settings: Value::Null, engine_id: "imported-audio".into(), profile_id: None, source: "audio_import".into(), audio_extension: extension, audio }).map_err(|e| api_error(StatusCode::BAD_REQUEST, e.to_string()))?.song;
     Ok((StatusCode::CREATED, Json(song)))
 }
-async fn update_library_song(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<library::SongInput>)->Result<Json<library::Song>,(StatusCode,Json<ApiError>)>{state.library.update_song(&id,input).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))?.map(Json).ok_or_else(||api_error(StatusCode::NOT_FOUND,"Song not found".into()))}
+async fn update_library_song(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<library::SongInput>)->Result<Json<library::Song>,(StatusCode,Json<ApiError>)>{
+    let song = state.library.update_song(&id,input).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))?.ok_or_else(||api_error(StatusCode::NOT_FOUND,"Song not found".into()))?;
+    // A rename is a title change, and the file carries the title.
+    tag_stored_song(&state, &id).await;
+    Ok(Json(song))
+}
 async fn delete_library_song(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,(StatusCode,Json<ApiError>)>{if state.library.delete_song(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?{Ok(StatusCode::NO_CONTENT)}else{Err(api_error(StatusCode::NOT_FOUND,"Song not found".into()))}}
 async fn library_playlists(State(state):State<AppState>)->Result<Json<Vec<library::Playlist>>,(StatusCode,Json<ApiError>)>{state.library.list_playlists().map(Json).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))}
 async fn create_library_playlist(State(state):State<AppState>,Json(input):Json<library::PlaylistInput>)->Result<(StatusCode,Json<library::Playlist>),(StatusCode,Json<ApiError>)>{state.library.create_playlist(input).map(|p|(StatusCode::CREATED,Json(p))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))}
@@ -1175,6 +1236,7 @@ async fn persist_studio_settings(state: &AppState) -> anyhow::Result<()> {
         selected_profile_id: state.selected_profile_id.read().await.clone(),
         selected_component_ids: state.selected_component_ids.read().await.clone(),
         cover_templates: Some(state.cover_templates.read().await.clone()),
+        cover_template_default: state.cover_template_default.read().await.clone(),
     };
     if let Some(parent) = state.settings_path.parent() { fs::create_dir_all(parent)?; }
     let temporary = state.settings_path.with_extension("json.part");
@@ -1997,6 +2059,8 @@ async fn run_openrouter_music_generation(state: AppState, job_id: String, stream
             replay_request: None, audio_codes: None, engine_id: "openrouter".into(), profile_id: None,
             source: "openrouter_generation".into(), audio_extension: "wav", audio,
         })?;
+        // A track goes into the library carrying its own name, style and words.
+        tag_stored_song(&state, &imported_song.song.id).await;
         Ok::<CompletedSong, anyhow::Error>(CompletedSong { id: imported_song.song.id.clone(), audio_url: format!("/v1/library/media/{}", imported_song.song.id), song: imported_song.song })
     }.await;
     let mut jobs = state.jobs.write().await;
@@ -2106,6 +2170,7 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
             audio_extension: extension, audio: track.audio,
         })?;
         let audio_url = format!("/v1/library/media/{}", imported_song.song.id);
+        tag_stored_song(&state, &imported_song.song.id).await;
         imported.push(CompletedSong { id: imported_song.song.id.clone(), song: imported_song.song, audio_url });
     }
     Ok(imported)
@@ -2584,6 +2649,7 @@ mod tests {
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),
             cover_templates: Some(cover_prompt::default_templates()),
+            cover_template_default: Some("photographic".into()),
         };
         let restored: PersistedStudioSettings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert!(restored.lyrics_sync.available());

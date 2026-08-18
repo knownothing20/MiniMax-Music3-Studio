@@ -83,7 +83,16 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
   useEffect(() => {
     void fetch('/v1/cover-templates')
       .then(response => response.json())
-      .then((body: { templates?: CoverTemplate[] }) => setTemplates(body.templates ?? []))
+      .then((body: { templates?: CoverTemplate[]; default_id?: string | null }) => {
+        const list = body.templates ?? [];
+        setTemplates(list);
+        // Whatever was chosen in Settings is where a new cover starts.
+        const chosen = list.find(entry => entry.id === body.default_id);
+        if (chosen) {
+          setTemplateId(chosen.id);
+          setTemplateText(chosen.template);
+        }
+      })
       .catch(() => setTemplates([]));
   }, []);
 
@@ -176,7 +185,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-zinc-900" onClick={event => event.stopPropagation()}>
+      <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-zinc-900" onClick={event => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-white/10">
           <h3 className="flex items-center gap-2 text-base font-bold text-zinc-900 dark:text-white">
             <ImageIcon size={18} className="text-pink-500" /> {t('coverArt')}
@@ -263,7 +272,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
                 <textarea
                   value={templateText}
                   onChange={event => setTemplateText(event.target.value)}
-                  rows={3}
+                  rows={6}
                   placeholder={t('coverPromptTemplatePlaceholder')}
                   className={CONTROL + ' resize-none'}
                 />
@@ -314,11 +323,13 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
               </div>
             )}
 
+            {/* The prompt is the work here, so it gets the room: ten lines,
+                and the user can drag it taller still. */}
             <textarea
               value={prompt}
               onChange={event => setPrompt(event.target.value)}
-              rows={3}
-              className={`${CONTROL} mt-2 resize-none`}
+              rows={10}
+              className={`${CONTROL} mt-2 min-h-[220px] resize-y font-mono text-[13px] leading-5`}
             />
             <button
               type="button"

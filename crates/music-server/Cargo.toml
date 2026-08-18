@@ -21,6 +21,7 @@ futures-util.workspace = true
 include_dir.workspace = true
 music-core = { path = "../music-core" }
 music-engine = { path = "../music-engine" }
+id3 = "1.17"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

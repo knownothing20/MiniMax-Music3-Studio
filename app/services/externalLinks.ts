@@ -47,6 +47,9 @@ function fallback(url: string): void {
 
 /** Sends every external link click to the system browser. Call once. */
 export function installExternalLinkHandler(): void {
+  // Capture, not bubble: dialogs stop propagation on their own container to
+  // keep a click inside from closing them, and that also hid every link in
+  // Settings and the news panel from a listener on the document.
   document.addEventListener('click', (event) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return;
     const anchor = (event.target as HTMLElement | null)?.closest?.('a');
@@ -54,5 +57,5 @@ export function installExternalLinkHandler(): void {
     if (!href || !/^https?:\/\//i.test(href)) return;
     event.preventDefault();
     void openExternal(href);
-  });
+  }, true);
 }

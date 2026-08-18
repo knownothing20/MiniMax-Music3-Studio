@@ -2046,6 +2046,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "id3"
+version = "1.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24993fcabcbc07c8ac076a8e62db8593d1a5c4dbe81d57e531d2b7cb7f737380"
+dependencies = [
+ "bitflags 2.13.1",
+ "byteorder",
+ "flate2",
+]
+
+[[package]]
 name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2684,6 +2695,7 @@ dependencies = [
  "base64 0.22.1",
  "fs2",
  "futures-util",
+ "id3",
  "include_dir",
  "music-core",
  "music-engine",

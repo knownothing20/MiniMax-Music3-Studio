@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Boxes, Cloud, Cpu, Github, Info, Mic2, Monitor, PenLine, User as UserIcon, X } from 'lucide-react';
+import { Boxes, Cloud, Cpu, Github, Image as ImageIcon, Info, Mic2, Monitor, PenLine, User as UserIcon, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
@@ -8,6 +8,7 @@ import { EngineSettings } from './EngineSettings';
 import { AssistantSettings } from './AssistantSettings';
 import { KaraokeSettings } from './KaraokeSettings';
 import { SetupGate } from './SetupGate';
+import { CoverTemplateSettings } from './CoverTemplateSettings';
 
 /**
  * Settings.
@@ -19,7 +20,7 @@ import { SetupGate } from './SetupGate';
  * runs in the cloud, the two optional extras, and the interface.
  */
 
-type SectionId = 'account' | 'models' | 'engine' | 'cloud' | 'assistant' | 'karaoke' | 'interface' | 'about';
+type SectionId = 'account' | 'models' | 'engine' | 'cloud' | 'assistant' | 'covers' | 'karaoke' | 'interface' | 'about';
 
 const INPUT =
   'w-full rounded-lg border-2 border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-white';
@@ -55,6 +56,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
     { id: 'engine', label: t('localEngine'), hint: t('engineSectionHint'), icon: <Cpu size={16} /> },
     { id: 'cloud', label: t('providers'), hint: t('cloudSectionHint'), icon: <Cloud size={16} /> },
     { id: 'assistant', label: t('assistantSection'), hint: t('assistantOptionalPurpose'), icon: <PenLine size={16} /> },
+    { id: 'covers', label: t('coversSection'), hint: t('coversSectionHint'), icon: <ImageIcon size={16} /> },
     { id: 'karaoke', label: t('karaokeSection'), hint: t('karaokeOptionalPurpose'), icon: <Mic2 size={16} /> },
     { id: 'interface', label: t('appearance'), hint: t('interfaceSectionHint'), icon: <Monitor size={16} /> },
     { id: 'about', label: t('about'), hint: t('aboutSectionHint'), icon: <Info size={16} /> },
@@ -128,6 +130,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
 
             {/* The same chooser as the first run, because it is the same
                 decision - only now nothing is waiting on it. */}
+            {section === 'covers' && <CoverTemplateSettings />}
             {section === 'models' && <div className="-m-6"><SetupGate mode="settings" /></div>}
             {section === 'engine' && <EngineSettings />}
             {section === 'cloud' && <ProviderSettings />}
