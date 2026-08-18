@@ -2568,6 +2568,7 @@ version = "0.1.0"
 dependencies = [
  "music-engine",
  "music-server",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
