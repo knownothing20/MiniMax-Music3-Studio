@@ -1357,6 +1357,8 @@ export const ja = {
     karaokeNoRecogniser: '認識モデルが選ばれていません。設定の「モデル」で選択してください。',
     karaokeInstrumental: 'この曲には歌詞がないため、タイミングを付けられません。',
     karaokeNoMatch: '音声からこの歌詞の言葉が聞き取れませんでした。歌詞がこの曲のものか確認するか、設定で別の認識モデルをお試しください。',
+    karaokeDownloading: '必要な認識モデルをダウンロード中です。完了後に歌詞のタイミングを作ります。',
+    karaokeModelMissing: '選ばれた認識モデルをダウンロードできませんでした。接続を確認するか、設定で別のものを選んでください。',
     assistStagePreparing: 'リクエストを準備中',
     assistStageSent: 'モデルに送信しました',
     assistStageWriting: 'モデルが書いています',

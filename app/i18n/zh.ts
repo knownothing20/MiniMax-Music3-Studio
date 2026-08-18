@@ -1357,6 +1357,8 @@ export const zh = {
     karaokeNoRecogniser: '尚未选择识别模型。请在设置的「模型」中选择。',
     karaokeInstrumental: '这首曲目没有歌词，无法生成时间轴。',
     karaokeNoMatch: '识别模型没有在音频中听到这段歌词。请确认歌词与曲目一致，或在设置中换一个识别模型。',
+    karaokeDownloading: '正在下载所需的识别模型，随后生成歌词时间轴。',
+    karaokeModelMissing: '所选识别模型下载失败。请检查网络，或在设置中另选一个。',
     assistStagePreparing: '正在准备请求',
     assistStageSent: '已发送给模型',
     assistStageWriting: '模型正在生成',

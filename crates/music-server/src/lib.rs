@@ -1125,9 +1125,86 @@ async fn read_activity(State(state): State<AppState>) -> Json<Value> {
     Json(serde_json::json!({ "activity": state.activity.read().await.clone() }))
 }
 
+/// Downloads whatever the chosen local recogniser is missing, then waits for it.
+///
+/// Choosing Parakeet or Whisper in the settings is the instruction to use it;
+/// making the user then find a download button for it is a second instruction
+/// nobody asked for. The first track that needs timings fetches the model and
+/// carries on.
+async fn ensure_local_recogniser(state: &AppState, config: &lyrics_sync::LyricsSyncConfig, song_id: &str) -> bool {
+    let ready = |state: &AppState| match config.provider {
+        lyrics_sync::AsrProvider::Parakeet => state.lyrics_sync.parakeet_ready(),
+        lyrics_sync::AsrProvider::Whisper => {
+            state.lyrics_sync.whisper_binary().is_some() && state.lyrics_sync.whisper_model_ready(config)
+        }
+        _ => true,
+    };
+    if ready(state) {
+        return true;
+    }
+
+    let missing: Vec<&'static lyrics_sync::Asset> = match config.provider {
+        lyrics_sync::AsrProvider::Parakeet => lyrics_sync::PARAKEET_ASSET_IDS
+            .iter()
+            .filter_map(|id| lyrics_sync::asset(id))
+            .filter(|asset| !state.lyrics_sync.downloader().is_installed(asset))
+            .collect(),
+        lyrics_sync::AsrProvider::Whisper => ["whisper-cuda", "whisper-cpu"]
+            .iter()
+            .filter_map(|id| lyrics_sync::asset(id))
+            .take(1)
+            .chain(config.whisper_model.as_deref().and_then(lyrics_sync::asset))
+            .filter(|asset| !state.lyrics_sync.downloader().is_installed(asset))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if missing.is_empty() {
+        return ready(state);
+    }
+
+    let title = state.library.get_song(song_id).ok().flatten().map(|song| song.title).unwrap_or_default();
+    note_activity(state, song_id, &title, "karaoke", "running", Some("karaoke.downloading".into())).await;
+    for asset in missing {
+        if let Err(error) = state.lyrics_sync.downloader().install(asset).await {
+            eprintln!("could not fetch the karaoke model {}: {error}", asset.id);
+            note_activity(state, song_id, &title, "karaoke", "failed", Some(error.to_string())).await;
+            return false;
+        }
+        // The downloader runs one file at a time in the background; the timings
+        // wait for it rather than starting against half a model. The wait is
+        // reported with real numbers: a spinner that says "downloading" for ten
+        // minutes without moving is indistinguishable from one that is stuck.
+        loop {
+            let Some(progress) = state.lyrics_sync.downloader().active().await else { break };
+            if progress.done {
+                break;
+            }
+            let percent = if progress.total_bytes > 0 {
+                (progress.downloaded_bytes * 100 / progress.total_bytes).min(100)
+            } else {
+                0
+            };
+            note_activity(state, song_id, &title, "karaoke", "running", Some(format!("karaoke.downloading {percent}%"))).await;
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        }
+    }
+    ready(state)
+}
+
 async fn time_lyrics_for(state: AppState, song_id: String) {
     let config = state.lyrics_sync_config.read().await.clone();
     if !config.enabled || config.provider == lyrics_sync::AsrProvider::None {
+        return;
+    }
+    // The cloud recogniser is the one case that cannot be fixed from here: a key
+    // is the user's to add, and announcing a failure they cannot act on is
+    // noise. A local recogniser is different - if its model is not on disk yet,
+    // choosing it is the instruction to fetch it, so the first use downloads it
+    // and then does the work.
+    if config.provider == lyrics_sync::AsrProvider::OpenRouter && credentials::openrouter_api_key().is_none() {
+        return;
+    }
+    if !ensure_local_recogniser(&state, &config, &song_id).await {
         return;
     }
     let Ok(Some(song)) = state.library.get_song(&song_id) else { return };
@@ -1196,6 +1273,12 @@ async fn time_lyrics_for(state: AppState, song_id: String) {
 
 async fn draw_cover_for(state: AppState, song_id: String) {
     if !*state.cover_auto.read().await {
+        return;
+    }
+    // Drawing a cover needs a cloud key. Without one there is nothing to try,
+    // and announcing a failure the user cannot act on is noise: the track keeps
+    // the placeholder artwork the library already shows.
+    if credentials::openrouter_api_key().is_none() {
         return;
     }
     let title = state.library.get_song(&song_id).ok().flatten().map(|song| song.title).unwrap_or_default();
@@ -2385,6 +2468,12 @@ async fn create_song_karaoke(
     let config = state.lyrics_sync_config.read().await.clone();
     if !config.available() {
         return Err(api_error(StatusCode::CONFLICT, "karaoke.off".into()));
+    }
+    // Pressing the button on a track is the instruction to time it. If the
+    // chosen local recogniser is not on disk yet, that is a download to start,
+    // not a refusal to hand back.
+    if !ensure_local_recogniser(&state, &config, &id).await {
+        return Err(api_error(StatusCode::CONFLICT, "karaoke.model-missing".into()));
     }
     let song = state
         .library

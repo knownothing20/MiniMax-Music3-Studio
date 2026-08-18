@@ -17,11 +17,17 @@ const REASONS: Record<string, string> = {
     'karaoke.no-recogniser': 'karaokeNoRecogniser',
     'karaoke.instrumental': 'karaokeInstrumental',
     'karaoke.no-match': 'karaokeNoMatch',
+    'karaoke.downloading': 'karaokeDownloading',
+    'karaoke.model-missing': 'karaokeModelMissing',
 };
 
 /** The reason in words, or whatever the server said if it is not one of ours. */
 export const karaokeReason = (t: (key: string) => string, reason?: string | null): string | undefined => {
     if (!reason) return undefined;
-    const key = REASONS[reason.trim()];
-    return key ? t(key) : reason;
+    // A reason can carry a number - "karaoke.downloading 37%" - so the strip
+    // shows progress instead of a word that never moves.
+    const [code, ...rest] = reason.trim().split(' ');
+    const key = REASONS[code];
+    if (!key) return reason;
+    return rest.length > 0 ? `${t(key)} ${rest.join(' ')}` : t(key);
 };

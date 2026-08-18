@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use parakeet_rs::Transcriber;
 
-use crate::downloads::{Asset, AssetKind, Downloader};
+pub use crate::downloads::Asset;
+use crate::downloads::{AssetKind, Downloader};
 
 /// Which recogniser produces the timings.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +342,11 @@ impl LyricsSync {
             && PARAKEET_ASSET_IDS
                 .iter()
                 .all(|id| asset(id).is_some_and(|asset| self.downloader.is_installed(asset)))
+    }
+
+    /// Whether the Whisper model the configuration names is actually on disk.
+    pub fn whisper_model_ready(&self, config: &LyricsSyncConfig) -> bool {
+        self.whisper_model_path(config).is_some_and(|path| path.is_file())
     }
 
     pub fn parakeet_dir(&self) -> PathBuf {

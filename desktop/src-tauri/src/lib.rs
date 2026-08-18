@@ -153,8 +153,23 @@ fn start_service() -> Result<(), String> {
                     return;
                 }
             };
-            if let Err(error) = runtime.block_on(music_server::serve()) {
-                eprintln!("studio service stopped: {error}");
+            // Closing the studio and opening it again leaves the previous
+            // process holding the port for a moment. Giving up on the first
+            // refusal left the window on a browser error page with no way back
+            // except restarting the application.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                match runtime.block_on(music_server::serve()) {
+                    Ok(()) => return,
+                    Err(error) if Instant::now() < deadline => {
+                        eprintln!("studio service could not start yet: {error}");
+                        std::thread::sleep(Duration::from_millis(400));
+                    }
+                    Err(error) => {
+                        eprintln!("studio service stopped: {error}");
+                        return;
+                    }
+                }
             }
         })
         .map_err(|error| format!("could not start the studio service thread: {error}"))?;
@@ -257,6 +272,13 @@ pub fn run() {
     // The native engine is started only by the setup gate after a complete
     // verified profile is present. This keeps first launch download-free and
     // avoids starting a runtime against partial weights.
+    // Whatever ends this process - the window, Task Manager, a crash - takes
+    // the engine with it. Without this the engine outlived a force-killed
+    // studio, holding the graphics card and the port it listens on.
+    if !music_engine::process_group::bind_children_to_this_process() {
+        eprintln!("this process could not create its own job object; the engine is stopped by the supervisor only");
+    }
+
     configure_studio_runtime_paths();
 
     if let Err(error) = start_service() {
@@ -287,6 +309,33 @@ pub fn run() {
         .setup(move |app| {
             if updater_configured {
                 spawn_update_check(app.handle().clone(), is_portable());
+            }
+            // The webview starts loading the moment the window exists, and the
+            // service can finish binding a fraction of a second later. That is
+            // enough for the browser to keep its own connection error on screen
+            // for good - checking readiness once here is not enough, because the
+            // race is already lost by then. So the page is reloaded whenever it
+            // is still empty, for the first half minute of the session.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    use tauri::Manager as _;
+                    if !wait_until_ready(Duration::from_secs(90)) {
+                        return;
+                    }
+                    let started = Instant::now();
+                    while started.elapsed() < Duration::from_secs(30) {
+                        std::thread::sleep(Duration::from_millis(700));
+                        for (_, window) in handle.webview_windows() {
+                            // Reload only while nothing has rendered: reloading
+                            // a working studio would throw away what the user
+                            // already has on screen.
+                            let _ = window.eval(
+                                "if (!document.getElementById('root') || !document.getElementById('root').firstElementChild) { window.location.reload(); }",
+                            );
+                        }
+                    }
+                });
             }
             Ok(())
         })

@@ -1357,6 +1357,8 @@ export const ko = {
     karaokeNoRecogniser: '인식 모델이 선택되지 않았습니다. 설정의 「모델」에서 선택하세요.',
     karaokeInstrumental: '이 트랙에는 가사가 없어 타이밍을 만들 수 없습니다.',
     karaokeNoMatch: '오디오에서 이 가사의 단어를 듣지 못했습니다. 가사가 이 트랙의 것인지 확인하거나 설정에서 다른 인식 모델을 사용해 보세요.',
+    karaokeDownloading: '필요한 인식 모델을 내려받는 중입니다. 끝나면 가사 타이밍을 만듭니다.',
+    karaokeModelMissing: '선택한 인식 모델을 내려받지 못했습니다. 연결을 확인하거나 설정에서 다른 것을 선택하세요.',
     assistStagePreparing: '요청 준비 중',
     assistStageSent: '모델에 전송됨',
     assistStageWriting: '모델이 작성 중',

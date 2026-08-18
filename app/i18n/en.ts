@@ -1362,6 +1362,8 @@ export const en = {
     karaokeNoRecogniser: 'No recogniser is chosen. Pick one in Settings, under Models.',
     karaokeInstrumental: 'This track has no words - there is nothing to time.',
     karaokeNoMatch: 'The recogniser heard no words from these lyrics in the audio. Check that the lyrics belong to this track, or try another recogniser in Settings.',
+    karaokeDownloading: 'Downloading the recogniser it needs, then timing the lyrics.',
+    karaokeModelMissing: 'The chosen recogniser could not be downloaded. Check the connection, or pick another one in Settings.',
     assistStagePreparing: 'Preparing the request',
     assistStageSent: 'Sent to the model',
     assistStageWriting: 'The model is writing',
