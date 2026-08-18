@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Check, Download, Loader2, Mic2 } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
-import { refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
+import { loadNativeOpenRouterCatalog, refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
 /**
  * Karaoke timings.
@@ -67,6 +67,12 @@ export const KaraokeSettings: React.FC = () => {
     const body: KaraokeStatus = await response.json();
     setStatus(body);
     return body;
+  }, []);
+
+  useEffect(() => {
+    void loadNativeOpenRouterCatalog()
+      .then((models) => setCatalog(models.filter((model) => model.capabilities.includes('speech_to_text'))))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {

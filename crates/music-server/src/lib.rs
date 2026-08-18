@@ -448,15 +448,6 @@ pub async fn serve() -> anyhow::Result<()> {
     // The provider catalog is public and small; reading it once at startup
     // means the settings panel is right the first time it is opened, instead
     // of after the user presses a refresh button.
-    {
-        let state = state.clone();
-        tokio::spawn(async move {
-            if let Err(error) = catalog_for(&state).await {
-                eprintln!("the OpenRouter catalog could not be read at startup: {error}");
-            }
-        });
-    }
-
     // Start the engine as soon as a complete set is installed. It takes about
     // three seconds; making the user press a button for it - or worse, wait
     // without knowing what for - is the studio being lazy on their time.
@@ -817,6 +808,31 @@ async fn openrouter_catalog(State(state): State<AppState>) -> Json<Value> {
 }
 
 
+
+/// Where the provider catalog is kept between runs.
+fn openrouter_catalog_path() -> Option<PathBuf> {
+    studio_data_root().map(|root| root.join("openrouter-catalog.json"))
+}
+
+/// Reads the catalog saved by the last refresh. Nothing here touches the
+/// network: the studio refreshes when a key is connected and when the user
+/// asks, and lives off this file the rest of the time.
+fn load_cached_catalog() -> Option<providers::openrouter::CapabilityCatalog> {
+    let path = openrouter_catalog_path()?;
+    let body = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
+fn save_cached_catalog(catalog: &providers::openrouter::CapabilityCatalog) {
+    let Some(path) = openrouter_catalog_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(body) = serde_json::to_string(catalog) {
+        let _ = std::fs::write(path, body);
+    }
+}
+
 /// The capability catalog, fetched if this process has not got it yet.
 ///
 /// The catalog lives in memory, so it is empty after every restart. Telling
@@ -825,6 +841,12 @@ async fn openrouter_catalog(State(state): State<AppState>) -> Json<Value> {
 /// another screen entirely.
 async fn catalog_for(state: &AppState) -> Result<providers::openrouter::CapabilityCatalog, String> {
     if let Some(catalog) = state.openrouter_catalog.read().await.catalog.clone() {
+        return Ok(catalog);
+    }
+    // The last refresh, read from disk. A restart should not cost a request.
+    if let Some(catalog) = load_cached_catalog() {
+        let mut cached = state.openrouter_catalog.write().await;
+        cached.catalog = Some(catalog.clone());
         return Ok(catalog);
     }
     let client = reqwest::Client::new();
@@ -847,6 +869,7 @@ async fn catalog_for(state: &AppState) -> Result<providers::openrouter::Capabili
     let images = fetch(providers::openrouter::IMAGE_MODELS_PATH).await.unwrap_or_default();
     let parsed = providers::openrouter::CapabilityCatalog::parse_merged(&general, &[&transcription, &images])
     .map_err(|error| format!("OpenRouter catalog parse failed: {error}"))?;
+    save_cached_catalog(&parsed);
     let mut cached = state.openrouter_catalog.write().await;
     cached.catalog = Some(parsed.clone());
     cached.refreshed_at = Some(chrono_like_timestamp());
@@ -878,6 +901,7 @@ async fn refresh_openrouter_catalog(State(state): State<AppState>) -> Result<Jso
     .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog parse failed: {error}")))?;
     let refreshed_at = chrono_like_timestamp();
     let models = parsed.models.clone();
+    save_cached_catalog(&parsed);
     let mut cached = state.openrouter_catalog.write().await;
     cached.catalog = Some(parsed);
     cached.refreshed_at = Some(refreshed_at.clone());
@@ -1490,7 +1514,19 @@ async fn assistant_write(
             let authenticated = providers::openrouter::authenticated_request_for(providers::openrouter::OpenRouterRequest {
                 method: providers::openrouter::HttpMethod::Post,
                 path: providers::openrouter::CHAT_COMPLETIONS_PATH,
-                body: assistant::chat_body_with_reasoning(&model, &system, &user, config.reasoning_effort.as_deref()),
+                // Whatever this model publishes for itself; the studio's own
+                // temperature is only for models that publish nothing.
+                body: assistant::chat_body_full(
+                    &model,
+                    &system,
+                    &user,
+                    config.reasoning_effort.as_deref(),
+                    catalog_now
+                        .as_ref()
+                        .and_then(|catalog| catalog.models.iter().find(|entry| entry.id == model))
+                        .map(|entry| serde_json::to_value(&entry.defaults).unwrap_or(Value::Null))
+                        .as_ref(),
+                ),
             })
             .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
             execute_openrouter_json(authenticated.request)
@@ -1516,14 +1552,29 @@ async fn openrouter_settings() -> Json<Value> {
 }
 
 async fn update_openrouter_settings(
+    State(state): State<AppState>,
     Json(request): Json<OpenRouterSettingsRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let source = credentials::store_openrouter_api_key(request.api_key.as_deref())
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+
+    // Connecting a key is the moment to learn what it can reach. After this
+    // the catalog is served from the cache on disk until the user asks for a
+    // refresh, so the studio never goes to the network on its own again.
+    let mut refreshed = false;
+    if source.is_some() {
+        {
+            let mut cached = state.openrouter_catalog.write().await;
+            cached.catalog = None;
+        }
+        refreshed = catalog_for(&state).await.is_ok();
+    }
+
     Ok(Json(serde_json::json!({
         "configured": source.is_some(),
         "source": source,
         "environment_variable": credentials::OPENROUTER_ENV_VAR,
+        "catalog_refreshed": refreshed,
     })))
 }
 

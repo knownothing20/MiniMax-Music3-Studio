@@ -203,15 +203,45 @@ pub fn chat_body(model: &str, system: &str, user: &str) -> Value {
 /// has no such parameter, so nothing is sent there and the model decides for
 /// itself; its thinking is read back out of `reasoning_content` either way.
 pub fn chat_body_with_reasoning(model: &str, system: &str, user: &str, effort: Option<&str>) -> Value {
+    chat_body_full(model, system, user, effort, None)
+}
+
+/// The request as it goes out, with the model's own sampling when it has any.
+///
+/// OpenRouter publishes `default_parameters` per model, and 83 of them fill it
+/// in. Sending one hardcoded temperature to every model overrides what the
+/// model asks for; the studio's own value is only a fallback for models that
+/// publish nothing.
+pub fn chat_body_full(
+    model: &str,
+    system: &str,
+    user: &str,
+    effort: Option<&str>,
+    defaults: Option<&Value>,
+) -> Value {
     let mut body = serde_json::json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
-        "temperature": 0.8,
         "stream": false,
     });
+
+    let mut published = false;
+    if let Some(Value::Object(map)) = defaults {
+        for (key, value) in map {
+            if value.is_null() {
+                continue;
+            }
+            body[key] = value.clone();
+            published = true;
+        }
+    }
+    if !published {
+        // Nothing published: a little warmth, because these are lyrics.
+        body["temperature"] = Value::from(0.8);
+    }
     if let Some(effort) = effort.filter(|value| !value.trim().is_empty() && *value != "off") {
         // The draft is what is wanted, not the thinking: exclude keeps the
         // response small and the parser looking in one place.

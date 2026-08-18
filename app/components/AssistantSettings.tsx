@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Download, Loader2, PenLine, Square } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
-import { refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
+import { loadNativeOpenRouterCatalog, refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
 /**
  * The optional writing assistant.
@@ -73,6 +73,14 @@ export const AssistantSettings: React.FC = () => {
   const [catalog, setCatalog] = useState<NativeOpenRouterModel[]>([]);
   const [busy, setBusy] = useState<'save' | 'catalog' | null>(null);
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+
+  // The catalog is already there; asking the user to press refresh to see it
+  // is the program making them do its work.
+  useEffect(() => {
+    void loadNativeOpenRouterCatalog()
+      .then((models) => setCatalog(models.filter((model) => model.capabilities.includes('prompt_enhancement'))))
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     void fetch('/v1/assistant/status')

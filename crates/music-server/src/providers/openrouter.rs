@@ -65,6 +65,27 @@ pub struct ModelsResponse {
     pub data: Vec<RemoteModel>,
 }
 
+/// Sampling a model publishes for itself, in OpenRouter's `default_parameters`.
+/// Sending one hardcoded temperature to every model overrides what the model
+/// asks for; 83 of them fill this in.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct ModelDefaults {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<i64>,
+    pub frequency_penalty: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    pub repetition_penalty: Option<f64>,
+}
+
+impl ModelDefaults {
+    /// True when the model published nothing at all.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoteModel {
     pub id: String,
@@ -79,6 +100,8 @@ pub struct RemoteModel {
     pub pricing: Option<ModelPricing>,
     #[serde(default)]
     pub architecture: ModelArchitecture,
+    #[serde(default)]
+    pub default_parameters: ModelDefaults,
 }
 
 /// Prices are decimal strings in the upstream API. Preserve that representation
@@ -108,8 +131,11 @@ pub struct ModelArchitecture {
 /// User-facing model metadata derived exclusively from the current OpenRouter
 /// catalog. `capabilities` means *eligible by declared I/O modalities*, not a
 /// guarantee that the model provides a particular product feature.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct CatalogModel {
+    /// What this model says its own sampling should be.
+    #[serde(default)]
+    pub defaults: ModelDefaults,
     pub id: String,
     pub name: String,
     pub description: Option<String>,
@@ -135,6 +161,7 @@ impl CatalogModel {
             output_modalities: normalized(model.architecture.output_modalities),
             supported_parameters: normalized(model.supported_parameters),
             pricing: model.pricing,
+            defaults: model.default_parameters,
             capabilities,
         }
     }
@@ -144,7 +171,7 @@ impl CatalogModel {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct CapabilityCatalog {
     pub models: Vec<CatalogModel>,
 }

@@ -39,6 +39,16 @@ async function jsonRequest<T>(path: string, body?: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/// Reads the catalog the service already holds, fetching it there if this is
+/// the first ask. Every panel calls this on mount so nobody has to press
+/// "refresh" to see the models that exist.
+export async function loadNativeOpenRouterCatalog(): Promise<NativeOpenRouterModel[]> {
+  const response = await fetch('/v1/openrouter/catalog');
+  if (!response.ok) throw await responseError(response);
+  const body = await response.json() as CatalogResponse;
+  return body.models ?? [];
+}
+
 export async function refreshNativeOpenRouterCatalog(): Promise<NativeOpenRouterModel[]> {
   const response = await jsonRequest<CatalogResponse>('/v1/openrouter/catalog/refresh');
   return response.models ?? [];

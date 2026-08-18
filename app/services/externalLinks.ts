@@ -12,24 +12,36 @@
  */
 
 type Opener = { openUrl?: (url: string) => Promise<void> };
+type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 
-function opener(): Opener | null {
-  const tauri = (window as unknown as { __TAURI__?: { opener?: Opener } }).__TAURI__;
-  return tauri?.opener ?? null;
+function bridge(): { opener?: Opener; core?: { invoke?: Invoke } } | null {
+  return (window as unknown as { __TAURI__?: { opener?: Opener; core?: { invoke?: Invoke } } }).__TAURI__ ?? null;
 }
 
 /** True inside the desktop shell. */
 export function isDesktop(): boolean {
-  return Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__);
+  return Boolean(bridge());
 }
 
 /** Opens one URL wherever it belongs. */
 export async function openExternal(url: string): Promise<void> {
-  const open = opener()?.openUrl;
+  const tauri = bridge();
+  // Two ways in, because which one exists depends on how the shell is built:
+  // the plugin's own binding, or the command behind it.
+  const open = tauri?.opener?.openUrl;
   if (open) {
-    await open(url).catch(() => window.open(url, '_blank', 'noopener'));
+    await open(url).catch(() => fallback(url));
     return;
   }
+  const invoke = tauri?.core?.invoke;
+  if (invoke) {
+    await invoke('plugin:opener|open_url', { url }).catch(() => fallback(url));
+    return;
+  }
+  fallback(url);
+}
+
+function fallback(url: string): void {
   window.open(url, '_blank', 'noopener');
 }
 
