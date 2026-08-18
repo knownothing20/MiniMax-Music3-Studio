@@ -13,9 +13,11 @@ use serde_json::{json, Value};
 
 pub const API_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const MODELS_PATH: &str = "/models";
-/// The recognisers are published only under this filter; the plain listing
-/// omits every one of them.
+/// Whole families are published only under their own filter; the plain listing
+/// omits them. Recognisers were missing entirely, and only eleven of the
+/// forty-five image models showed up.
 pub const TRANSCRIPTION_MODELS_PATH: &str = "/models?output_modalities=transcription";
+pub const IMAGE_MODELS_PATH: &str = "/models?output_modalities=image";
 pub const CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 pub const TRANSCRIPTIONS_PATH: &str = "/audio/transcriptions";
 pub const IMAGES_PATH: &str = "/images";
@@ -164,17 +166,21 @@ impl CapabilityCatalog {
         Ok(Self::from_models_response(response))
     }
 
-    /// Merges the transcription listing into the general one. OpenRouter
-    /// publishes recognisers only behind `output_modalities=transcription`, so
-    /// a catalog built from the plain listing alone knows of no model that can
-    /// return timings.
-    pub fn parse_merged(general: &str, transcription: &str) -> Result<Self> {
+    /// Merges the per-modality listings into the general one. A catalog built
+    /// from the plain listing alone knows of no model that can return timings,
+    /// and of a quarter of the image models.
+    pub fn parse_merged(general: &str, extras: &[&str]) -> Result<Self> {
         let mut catalog = Self::parse(general)?;
-        let extra: ModelsResponse = serde_json::from_str(transcription).context("invalid OpenRouter transcription models response")?;
-        let known: std::collections::BTreeSet<String> = catalog.models.iter().map(|model| model.id.clone()).collect();
-        for model in Self::from_models_response(extra).models {
-            if !known.contains(&model.id) {
-                catalog.models.push(model);
+        let mut known: std::collections::BTreeSet<String> = catalog.models.iter().map(|model| model.id.clone()).collect();
+        for body in extras {
+            if body.trim().is_empty() {
+                continue;
+            }
+            let Ok(extra) = serde_json::from_str::<ModelsResponse>(body) else { continue };
+            for model in Self::from_models_response(extra).models {
+                if known.insert(model.id.clone()) {
+                    catalog.models.push(model);
+                }
             }
         }
         catalog.models.sort_by(|left, right| left.id.cmp(&right.id));
@@ -290,6 +296,44 @@ pub fn authenticated_request_for(request: OpenRouterRequest) -> Result<Authentic
 /// Construct the JSON request specified by OpenRouter's `/audio/transcriptions`
 /// endpoint. Audio bytes are supplied by the media layer and must not be put
 /// into the provider profile.
+
+/// A sensible model for a capability, so adding a key is enough to start.
+///
+/// Picking a model out of four hundred is not a decision a user should have to
+/// make before hearing anything. These are ordered preferences, checked
+/// against the live catalog, and every one of them is a model that actually
+/// does the job: Whisper for transcription because only the Whisper family
+/// returns timings, an image model that takes a plain prompt, and a fast,
+/// inexpensive text model for the writing assistant. Anything chosen by the
+/// user always wins over this.
+pub fn suggested_model(catalog: &CapabilityCatalog, capability: Capability) -> Option<String> {
+    const PREFERENCES: &[(Capability, &[&str])] = &[
+        (
+            Capability::SpeechToText,
+            &["openai/whisper-large-v3-turbo", "openai/whisper-large-v3", "openai/whisper-1"],
+        ),
+        (
+            Capability::CoverArt,
+            &["google/gemini-3.1-flash-image", "google/gemini-2.5-flash-image", "openai/gpt-5-image-mini"],
+        ),
+        (
+            Capability::PromptEnhancement,
+            &["google/gemini-3.1-flash-lite", "google/gemini-2.5-flash", "anthropic/claude-haiku-4.5", "deepseek/deepseek-chat"],
+        ),
+        (Capability::MusicGeneration, &["google/lyria-3-pro-preview", "google/lyria-3-clip-preview"]),
+    ];
+
+    let preferred = PREFERENCES.iter().find(|(entry, _)| *entry == capability).map(|(_, list)| *list)?;
+    for id in preferred {
+        if catalog.models_for(capability).any(|model| model.id == *id) {
+            return Some((*id).to_string());
+        }
+    }
+    // Nothing preferred is available: the first model that declares the
+    // capability is still better than asking the user to guess.
+    catalog.models_for(capability).next().map(|model| model.id.clone())
+}
+
 pub fn stt_request_for(
     catalog: &CapabilityCatalog,
     model_id: &str,

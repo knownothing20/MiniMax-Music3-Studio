@@ -445,6 +445,18 @@ pub async fn serve() -> anyhow::Result<()> {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
+    // The provider catalog is public and small; reading it once at startup
+    // means the settings panel is right the first time it is opened, instead
+    // of after the user presses a refresh button.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = catalog_for(&state).await {
+                eprintln!("the OpenRouter catalog could not be read at startup: {error}");
+            }
+        });
+    }
+
     // Start the engine as soon as a complete set is installed. It takes about
     // three seconds; making the user press a button for it - or worse, wait
     // without knowing what for - is the studio being lazy on their time.
@@ -796,8 +808,12 @@ async fn apply_engine_preset(
 }
 
 async fn openrouter_catalog(State(state): State<AppState>) -> Json<Value> {
-    let catalog = state.openrouter_catalog.read().await;
-    Json(serde_json::json!({ "models": catalog.catalog.as_ref().map(|catalog| &catalog.models), "refreshed_at": catalog.refreshed_at }))
+    // Fetch it if this process has not yet: an empty answer here made every
+    // capability read "no model in the refreshed catalog", which is a lie -
+    // the catalog had simply never been read.
+    let models = catalog_for(&state).await.ok().map(|catalog| catalog.models);
+    let refreshed_at = state.openrouter_catalog.read().await.refreshed_at.clone();
+    Json(serde_json::json!({ "models": models, "refreshed_at": refreshed_at }))
 }
 
 
@@ -828,11 +844,8 @@ async fn catalog_for(state: &AppState) -> Result<providers::openrouter::Capabili
         .await
         .map_err(|error| format!("OpenRouter catalog request failed: {error}"))?;
     let transcription = fetch(providers::openrouter::TRANSCRIPTION_MODELS_PATH).await.unwrap_or_default();
-    let parsed = if transcription.trim().is_empty() {
-        providers::openrouter::CapabilityCatalog::parse(&general)
-    } else {
-        providers::openrouter::CapabilityCatalog::parse_merged(&general, &transcription)
-    }
+    let images = fetch(providers::openrouter::IMAGE_MODELS_PATH).await.unwrap_or_default();
+    let parsed = providers::openrouter::CapabilityCatalog::parse_merged(&general, &[&transcription, &images])
     .map_err(|error| format!("OpenRouter catalog parse failed: {error}"))?;
     let mut cached = state.openrouter_catalog.write().await;
     cached.catalog = Some(parsed.clone());
@@ -860,11 +873,8 @@ async fn refresh_openrouter_catalog(State(state): State<AppState>) -> Result<Jso
     // The recognisers live behind their own filter; without this second call
     // the catalog contains no model that can return timings.
     let transcription = fetch(providers::openrouter::TRANSCRIPTION_MODELS_PATH).await.unwrap_or_default();
-    let parsed = if transcription.trim().is_empty() {
-        providers::openrouter::CapabilityCatalog::parse(&general)
-    } else {
-        providers::openrouter::CapabilityCatalog::parse_merged(&general, &transcription)
-    }
+    let images = fetch(providers::openrouter::IMAGE_MODELS_PATH).await.unwrap_or_default();
+    let parsed = providers::openrouter::CapabilityCatalog::parse_merged(&general, &[&transcription, &images])
     .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter catalog parse failed: {error}")))?;
     let refreshed_at = chrono_like_timestamp();
     let models = parsed.models.clone();
@@ -1375,8 +1385,14 @@ async fn karaoke_words_from_openrouter(
     language: Option<&str>,
 ) -> anyhow::Result<Vec<(f64, String)>> {
     use base64::Engine as _;
-    let model = config.openrouter_model.clone().unwrap_or_default();
     let catalog = catalog_for(state).await.map_err(|error| anyhow::anyhow!(error))?;
+    let model = config
+        .openrouter_model
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        // Only the Whisper family returns timings, and that is what karaoke is.
+        .or_else(|| providers::openrouter::suggested_model(&catalog, Capability::SpeechToText))
+        .unwrap_or_default();
     let bytes = std::fs::read(audio)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let format = std::path::Path::new(audio)
@@ -1457,7 +1473,14 @@ async fn assistant_write(
                 .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("invalid assistant response: {error}")))?
         }
         AssistantProvider::OpenRouter => {
-            let model = config.openrouter_model.clone().unwrap_or_default();
+            let catalog_now = catalog_for(&state).await.ok();
+            let model = config
+                .openrouter_model
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                // Adding a key should be enough to start writing.
+                .or_else(|| catalog_now.as_ref().and_then(|catalog| providers::openrouter::suggested_model(catalog, Capability::PromptEnhancement)))
+                .unwrap_or_default();
             let catalog = catalog_for(&state)
         .await
         .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;

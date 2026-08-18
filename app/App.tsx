@@ -108,14 +108,16 @@ function AppContent() {
   const leftPanel = useResizablePanel('create', 420, 320, 600);
   const rightPanel = useResizablePanel('details', 400, 320, 600, 'right');
   const [nativeSetupReady, setNativeSetupReady] = useState(false);
-  // Whether the five components are on disk. It decides which screen the user
-  // sees while the studio is not ready: a download page or a short wait.
-  const [nativeModelsReady, setNativeModelsReady] = useState(false);
+  // Which of the three situations the studio is in. It starts unknown, and
+  // unknown must not look like "nothing is installed": showing the download
+  // page for a second on every launch is how a ready studio was made to look
+  // like a bill.
+  const [nativeModels, setNativeModels] = useState<'unknown' | 'missing' | 'installed'>('unknown');
   useEffect(() => {
     const read = () => void fetch('/setup/status')
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
       .then((status: { ready?: boolean; engine_ready?: boolean }) => {
-        setNativeModelsReady(status.ready === true);
+        setNativeModels(status.ready === true ? 'installed' : 'missing');
         if (status.ready && status.engine_ready) setNativeSetupReady(true);
       })
       .catch(() => undefined);
@@ -1224,9 +1226,12 @@ function AppContent() {
         // through. They used to be the same page, which made a running studio
         // look like it owed 26 GB.
         if (!nativeSetupReady) {
-          return nativeModelsReady
-            ? <EngineStarting onReady={() => setNativeSetupReady(true)} />
-            : <SetupGate onReady={() => setNativeSetupReady(true)} />;
+          // Until the studio has answered, and while the engine is coming up,
+          // this is a wait - not a decision. The download page appears only
+          // when components are genuinely missing.
+          return nativeModels === 'missing'
+            ? <SetupGate onReady={() => setNativeSetupReady(true)} />
+            : <EngineStarting onReady={() => setNativeSetupReady(true)} />;
         }
         return (
           <div className="relative flex h-full min-h-0 min-w-0 w-full overflow-hidden">
