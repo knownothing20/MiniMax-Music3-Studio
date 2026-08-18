@@ -237,6 +237,17 @@ condition encoder, DiT, vocoder. A single quant is not an installation.
 Nothing is ever downloaded automatically. The recommendation is a selection
 only; the user starts the download.
 
+## Releases
+
+1.3.0 is published: signed NSIS installer, MSI, portable archive and a
+`latest.json` the studio really fetches (verified: the `releases/latest`
+endpoint answers 200 with version 1.3.0 and the installer's own URL).
+
+The engine in it is built with `GGML_NATIVE=OFF`, which is what covers other
+people's cards: PTX for Turing and Ampere, device code for the RTX 30, 40 and
+50 series. CUDA 13 dropped Maxwell, Pascal and Volta, so GTX 10 series and
+older cannot run this build at all - the readme and the site say so.
+
 ## Packaging
 
 `npm --prefix desktop run build` produces the single executable. The release
@@ -245,12 +256,27 @@ next to the application, and emits NSIS, MSI, a portable archive with a
 `portable.flag`, and a `latest.json` built from the real signed artifact.
 Model weights are never in the installer.
 
-**External blocker:** no signing material is available in this environment, so
-no signed installer or updater manifest was produced. The script fails fast and
-says which variable is missing (verified: it stops on
-`TAURI_SIGNING_PRIVATE_KEY`). With `TAURI_SIGNING_PRIVATE_KEY`,
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and `TAURI_UPDATER_PUBKEY` set, the
-remaining acceptance path is a clean machine:
+### Signing material
+
+The updater key pair lives in two places and nowhere else:
+
+* **GitHub repository secrets** - `TAURI_SIGNING_PRIVATE_KEY`,
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and `TAURI_UPDATER_PUBKEY`. This is the
+  copy that survives a lost machine, and the one a workflow would use.
+* `%USERPROFILE%\.tauri\mm3-release.key` and its `.pub` on the release machine,
+  for building by hand.
+
+The public half is also in `tauri.conf.json`; the three must match or the
+updater rejects every download. Losing the private key ends automatic updates
+for everyone already running the studio - a new key means a new installer,
+installed by hand.
+
+The first key generated for this project was encrypted with a password nobody
+recorded. Tauri then waited on an interactive prompt inside a background build
+and the release simply hung; that is why the current key was regenerated before
+1.3.0, while no release existed to break.
+
+With those variables set, the remaining acceptance path is a clean machine:
 
 ```text
 install → first launch with no weights → choose and download a profile
