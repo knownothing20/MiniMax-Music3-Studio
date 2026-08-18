@@ -171,6 +171,18 @@ pub const ASSETS: &[Asset] = &[
         note: "Token table.",
     },
     Asset {
+        id: "onnxruntime-cuda",
+        label: "ONNX Runtime 1.24.2 · CUDA",
+        kind: AssetKind::Runtime,
+        url: "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-win-x64-gpu-1.24.2.zip",
+        relative_path: "runtime/onnxruntime-cuda.zip",
+        bytes: 280_819_000,
+        unzip_into: Some("onnx-cuda"),
+        marker: "onnxruntime_providers_cuda.dll",
+        vram_gb: Some(2),
+        note: "Runs the separator on an NVIDIA card instead of the processor. Needs CUDA 12.",
+    },
+    Asset {
         id: "onnxruntime",
         label: "ONNX Runtime 1.24.2",
         kind: AssetKind::Runtime,
@@ -183,6 +195,16 @@ pub const ASSETS: &[Asset] = &[
         note: "Parakeet runs on this; it is loaded at run time, not linked in.",
     },
 ];
+
+/// Which build of the ONNX Runtime to load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnnxFlavour {
+    /// The graphics card if its runtime is installed, otherwise the processor.
+    Auto,
+    Cuda,
+    Cpu,
+}
 
 /// Every Parakeet file, because the model is useless without all of them.
 pub const PARAKEET_ASSET_IDS: [&str; 5] =
@@ -248,8 +270,24 @@ impl LyricsSync {
     /// `ort` loads this at run time; linking it would tie the build to one
     /// toolchain and one machine's libraries.
     pub fn onnxruntime_library(&self) -> Option<PathBuf> {
-        let candidate = self.downloader.runtime_dir("onnx").join("onnxruntime.dll");
-        candidate.is_file().then_some(candidate)
+        self.onnxruntime_library_of(OnnxFlavour::Auto)
+    }
+
+    /// The runtime to load, by name rather than by hope: the CUDA build and the
+    /// processor build sit in their own directories, and "auto" prefers the one
+    /// that uses the graphics card.
+    pub fn onnxruntime_library_of(&self, flavour: OnnxFlavour) -> Option<PathBuf> {
+        let cuda = self.downloader.runtime_dir("onnx-cuda").join("onnxruntime.dll");
+        let cpu = self.downloader.runtime_dir("onnx").join("onnxruntime.dll");
+        match flavour {
+            OnnxFlavour::Cuda => cuda.is_file().then_some(cuda),
+            OnnxFlavour::Cpu => cpu.is_file().then_some(cpu),
+            OnnxFlavour::Auto => cuda.is_file().then_some(cuda).or_else(|| cpu.is_file().then_some(cpu)),
+        }
+    }
+
+    pub fn has_cuda_runtime(&self) -> bool {
+        self.downloader.runtime_dir("onnx-cuda").join("onnxruntime.dll").is_file()
     }
 
     fn whisper_model_path(&self, config: &LyricsSyncConfig) -> Option<PathBuf> {

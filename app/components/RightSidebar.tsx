@@ -7,8 +7,8 @@ import { useI18n } from '../context/I18nContext';
 import { openExternal } from '../services/externalLinks';
 import { apiUrl } from '../services/apiBase';
 import { SongDropdownMenu } from './SongDropdownMenu';
-import { StemsModal } from './StemsModal';
 import { AlbumCover } from './AlbumCover';
+import { openStems } from '../services/openStems';
 
 interface RightSidebarProps {
     song: Song | null;
@@ -83,8 +83,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
     const { user } = useAuth();
     const { t } = useI18n();
     const [showMenu, setShowMenu] = useState(false);
-    // Stems open over the sidebar, on the track it is showing.
-    const [stemsOpen, setStemsOpen] = useState(false);
     const [isOwner, setIsOwner] = useState(false);
     const [tagsExpanded, setTagsExpanded] = useState(false);
     const [copiedStyle, setCopiedStyle] = useState(false);
@@ -314,12 +312,11 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                     onClose={() => setShowMenu(false)}
                                     isOwner={isOwner}
                                     onReusePrompt={() => onReuse?.(song)}
-                                    onSeparateStems={() => setStemsOpen(true)}
+                                    onSeparateStems={() => openStems(song)}
                                     onReplayMusic={song.nativeReplayAvailable ? () => onReplayMusic?.(song) : undefined}
                                     onDelete={() => onDelete?.(song)}
                                     onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                 />
-                                {stemsOpen && <StemsModal song={song} onClose={() => setStemsOpen(false)} />}
                             </div>
                         </div>
 

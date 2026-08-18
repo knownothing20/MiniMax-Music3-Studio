@@ -798,7 +798,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
           </div>
 
           <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-            <span>{t('profile')}: <b className="text-zinc-700 dark:text-zinc-200">{profileLabel}</b></span>
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'models' }))}
+              className="text-left hover:text-pink-500"
+              title={t('changeProfileHint')}
+            >
+              {t('profile')}: <b className="text-zinc-700 underline decoration-dotted underline-offset-2 dark:text-zinc-200">{profileLabel}</b>
+            </button>
             <button type="button" onClick={() => void refreshSetup().catch(() => undefined)} className="hover:text-pink-500">{t('refresh')}</button>
           </div>
           {setup?.hardware?.reason && <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>}

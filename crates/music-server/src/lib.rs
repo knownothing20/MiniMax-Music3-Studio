@@ -550,6 +550,14 @@ async fn library_song(State(state): State<AppState>,Path(id):Path<String>)->Resu
 async fn library_media(State(state): State<AppState>, Path(song_id): Path<String>, headers: HeaderMap) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let song = state.library.get_song(&song_id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?.ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
     let path = state.library.media_path_for_song(&song).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song audio is not available in the studio media library".into()))?;
+    // Tracks made before the studio tagged anything have no ID3 at all, and a
+    // download of one lands in a player as an untitled file. Tag it on the way
+    // out, once: the check is three bytes.
+    if path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase).as_deref() == Some("mp3")
+        && tokio::fs::read(&path).await.map(|bytes| bytes.get(..3) != Some(b"ID3")).unwrap_or(false)
+    {
+        tag_stored_song(&state, &song_id).await;
+    }
     let bytes = tokio::fs::read(&path).await.map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("read song audio: {error}")))?;
     let content_type = match path.extension().and_then(|extension| extension.to_str()).map(|extension| extension.to_ascii_lowercase()).as_deref() {
         Some("mp3") => "audio/mpeg",
@@ -699,6 +707,13 @@ async fn separation_assets(State(state): State<AppState>) -> Json<Value> {
             "installed": state.separator.is_installed(),
         },
         {
+            "id": "onnxruntime-cuda",
+            "label": "ONNX Runtime 1.24.2 · CUDA",
+            "bytes": 280_819_000u64,
+            "note": "Runs the separator on an NVIDIA card instead of the processor. Needs CUDA 12.",
+            "installed": state.lyrics_sync.has_cuda_runtime(),
+        },
+        {
             "id": "onnxruntime",
             "label": "ONNX Runtime 1.24.2",
             "bytes": 74_075_355,
@@ -726,6 +741,12 @@ async fn install_separation_asset(
             let separator = state.separator.clone();
             tokio::spawn(async move { let _ = separator.downloader().install(&separation::MODEL).await; });
         }
+        "onnxruntime-cuda" => {
+            let sync = state.lyrics_sync.clone();
+            let asset = lyrics_sync::asset("onnxruntime-cuda")
+                .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "the CUDA runtime is not in the catalogue".into()))?;
+            tokio::spawn(async move { let _ = sync.downloader().install(asset).await; });
+        }
         "onnxruntime" => {
             let sync = state.lyrics_sync.clone();
             let asset = lyrics_sync::asset("onnxruntime")
@@ -752,7 +773,7 @@ async fn write_separation_settings(
     } else {
         config.stems.iter().filter(|stem| separation::STEMS.contains(&stem.as_str())).cloned().collect()
     };
-    let stored = separation::SeparationConfig { stems, overlap: config.sane_overlap() };
+    let stored = separation::SeparationConfig { runtime: config.runtime, stems, overlap: config.sane_overlap() };
     *state.separation_config.write().await = stored.clone();
     persist_studio_settings(&state)
         .await
@@ -771,6 +792,7 @@ async fn separation_status(State(state): State<AppState>) -> Json<Value> {
             "installed": state.separator.is_installed(),
         },
         "runtime_installed": runtime.is_some(),
+        "cuda_runtime_installed": state.lyrics_sync.has_cuda_runtime(),
         "ready": state.separator.ready(runtime.as_deref()),
         "stems": separation::STEMS,
         "download": state.separator.downloader().active().await,
@@ -806,6 +828,7 @@ async fn read_stems(State(state): State<AppState>, Path(id): Path<String>) -> Js
 async fn read_stem_audio(
     State(state): State<AppState>,
     Path((id, stem)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     if !separation::STEMS.contains(&stem.as_str()) {
         return Err(api_error(StatusCode::BAD_REQUEST, format!("unknown stem {stem}")));
@@ -814,11 +837,31 @@ async fn read_stem_audio(
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|_| api_error(StatusCode::NOT_FOUND, "this track has no such stem yet".into()))?;
-    Ok(axum::response::Response::builder()
-        .header(header::CONTENT_TYPE, "audio/wav")
-        .header(header::CONTENT_LENGTH, bytes.len())
-        .body(Body::from(bytes))
-        .expect("valid stem response"))
+    // Without range support a player cannot seek: it can only start at zero and
+    // wait. The library's own audio has answered ranges from the beginning;
+    // stems were served whole, which is why dragging their position did
+    // nothing.
+    let total = bytes.len();
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_single_byte_range(value, total));
+    let response = if let Some((start, end)) = range {
+        axum::response::Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, "audio/wav")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+            .header(header::CONTENT_LENGTH, end - start + 1)
+            .body(Body::from(bytes[start..=end].to_vec()))
+    } else {
+        axum::response::Response::builder()
+            .header(header::CONTENT_TYPE, "audio/wav")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_LENGTH, total)
+            .body(Body::from(bytes))
+    };
+    Ok(response.expect("valid stem response"))
 }
 
 /// Separates one track into stems, in the background, reporting progress.
@@ -829,10 +872,14 @@ async fn start_separation(
     if state.separation_run.read().await.as_ref().is_some_and(|run| !run.done) {
         return Err(api_error(StatusCode::CONFLICT, "a track is already being separated".into()));
     }
+    let wanted_runtime = state.separation_config.read().await.runtime;
     let runtime = state
         .lyrics_sync
-        .onnxruntime_library()
+        .onnxruntime_library_of(wanted_runtime)
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "the ONNX Runtime is not installed yet".into()))?;
+    // Whether this run can use the card at all: the CUDA provider lives in the
+    // CUDA build of the runtime and nowhere else.
+    let on_gpu = runtime.parent().is_some_and(|parent| parent.join("onnxruntime_providers_cuda.dll").is_file());
     if !state.separator.is_installed() {
         return Err(api_error(StatusCode::BAD_REQUEST, "the separation model is not installed yet".into()));
     }
@@ -864,7 +911,7 @@ async fn start_separation(
         let outcome = (|| -> anyhow::Result<Vec<String>> {
             let audio = audio_pcm::decode_stereo_44k(&audio_path)?;
             let handle = tokio::runtime::Handle::current();
-            let stems = separation::separate(&model, &audio, separation::STEMS.len(), overlap, |fraction| {
+            let stems = separation::separate(&model, &audio, separation::STEMS.len(), overlap, on_gpu, |fraction| {
                 let state = background.clone();
                 handle.spawn(async move {
                     if let Some(run) = state.separation_run.write().await.as_mut() {

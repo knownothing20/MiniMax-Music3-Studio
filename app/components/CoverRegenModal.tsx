@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Image as ImageIcon, Loader2, Sparkles, Upload, X } from 'lucide-react';
+import { AlertTriangle, Image as ImageIcon, Loader2, Maximize2, Sparkles, Upload, X } from 'lucide-react';
 import { Song } from '../types';
 import { AlbumCover } from './AlbumCover';
+import { ImageLightbox } from './ImageLightbox';
 import { apiUrl } from '../services/apiBase';
 import { useI18n } from '../context/I18nContext';
 
@@ -61,6 +62,8 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
   const [editingTemplate, setEditingTemplate] = useState(false);
   const [preview, setPreview] = useState<{ dataUrl: string; base64: string; mediaType: string } | null>(null);
   const [busy, setBusy] = useState<'generate' | 'save' | null>(null);
+  // The cover, as big as the screen allows.
+  const [zoomed, setZoomed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
@@ -185,7 +188,7 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-zinc-900" onClick={event => event.stopPropagation()}>
+      <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-zinc-900" onClick={event => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-white/10">
           <h3 className="flex items-center gap-2 text-base font-bold text-zinc-900 dark:text-white">
             <ImageIcon size={18} className="text-pink-500" /> {t('coverArt')}
@@ -195,33 +198,41 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
           </button>
         </div>
 
-        <div className="space-y-4 p-5">
-          <div className="flex gap-4">
-            <div className="h-28 w-28 shrink-0 overflow-hidden rounded-xl">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+          {/* The result is the point of this window, so it gets the middle of
+              it: a large square, and a click to see it at full size. */}
+          <div className="flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => { if (preview?.dataUrl || song.coverUrl) setZoomed(true); }}
+              className="group relative aspect-square w-full max-w-[360px] overflow-hidden rounded-2xl border border-zinc-200 dark:border-white/10"
+              title={t('coverOpenLarge')}
+            >
               <AlbumCover seed={song.id} size="full" coverUrl={preview?.dataUrl || song.coverUrl} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-zinc-900 dark:text-white">{song.title}</p>
-              <p className="mt-0.5 line-clamp-2 text-xs text-zinc-500">{song.style}</p>
-              <button
-                type="button"
-                onClick={() => fileInput.current?.click()}
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-200"
-              >
-                <Upload size={13} /> {t('useImageFile')}
-              </button>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="hidden"
-                onChange={event => {
-                  const file = event.target.files?.[0];
-                  if (file) void pickFile(file);
-                  event.target.value = '';
-                }}
-              />
-            </div>
+              <span className="pointer-events-none absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-lg bg-black/60 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                <Maximize2 size={12} /> {t('coverOpenLarge')}
+              </span>
+            </button>
+
+            <p className="mt-3 w-full truncate text-center text-sm font-semibold text-zinc-900 dark:text-white">{song.title}</p>
+            <button
+              type="button"
+              onClick={() => fileInput.current?.click()}
+              className="mt-2 inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-200"
+            >
+              <Upload size={13} /> {t('useImageFile')}
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={event => {
+                const file = event.target.files?.[0];
+                if (file) void pickFile(file);
+                event.target.value = '';
+              }}
+            />
           </div>
 
           <div className="rounded-xl border border-zinc-200 p-3 dark:border-white/10">
@@ -362,6 +373,9 @@ export const CoverRegenModal: React.FC<CoverRegenModalProps> = ({ song, onClose,
           </button>
         </div>
       </div>
+      {zoomed && (preview?.dataUrl || song.coverUrl) && (
+        <ImageLightbox src={(preview?.dataUrl || song.coverUrl) as string} alt={song.title} onClose={() => setZoomed(false)} />
+      )}
     </div>
   );
 };

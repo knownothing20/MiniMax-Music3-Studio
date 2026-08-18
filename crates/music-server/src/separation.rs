@@ -25,6 +25,9 @@ use crate::downloads::{Asset, AssetKind, Downloader};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SeparationConfig {
+    /// Graphics card or processor. "auto" takes the card when its runtime is
+    /// installed, which is the difference between a minute and ten.
+    pub runtime: crate::lyrics_sync::OnnxFlavour,
     /// Which stems to keep. Every one still costs the same run - the model
     /// returns all six - but writing only what the user wants keeps the
     /// library from filling with silence they never asked for.
@@ -36,7 +39,11 @@ pub struct SeparationConfig {
 
 impl Default for SeparationConfig {
     fn default() -> Self {
-        Self { stems: STEMS.iter().map(|stem| (*stem).to_string()).collect(), overlap: OVERLAP }
+        Self {
+            runtime: crate::lyrics_sync::OnnxFlavour::Auto,
+            stems: STEMS.iter().map(|stem| (*stem).to_string()).collect(),
+            overlap: OVERLAP,
+        }
     }
 }
 
@@ -128,6 +135,7 @@ pub fn separate(
     audio: &[f32],
     stem_count: usize,
     overlap: f64,
+    on_gpu: bool,
     mut progress: impl FnMut(f64),
 ) -> Result<Vec<Stem>> {
     if audio.is_empty() {
@@ -137,8 +145,18 @@ pub fn separate(
         bail!("this model was declared with {stem_count} stems, more than the {} known", STEMS.len());
     }
 
-    let mut session = Session::builder()
-        .context("prepare an ONNX session")?
+    // Ask for the card, and say so if it is not there rather than quietly
+    // spending ten times as long on the processor.
+    let mut builder = Session::builder().context("prepare an ONNX session")?;
+    if on_gpu {
+        match builder.clone().with_execution_providers([
+            ort::execution_providers::CUDAExecutionProvider::default().build(),
+        ]) {
+            Ok(with_cuda) => builder = with_cuda,
+            Err(error) => eprintln!("the CUDA provider did not register, falling back to the processor: {error}"),
+        }
+    }
+    let mut session = builder
         .commit_from_file(model)
         .with_context(|| format!("load the separation model {}", model.display()))?;
 

@@ -109,6 +109,8 @@ function AppContent() {
   const leftPanel = useResizablePanel('create', 420, 320, 600);
   const rightPanel = useResizablePanel('details', 400, 320, 600, 'right');
   const [nativeSetupReady, setNativeSetupReady] = useState(false);
+  // A track sent here from a menu's "separate into stems".
+  const [stemsSongId, setStemsSongId] = useState<string | null>(null);
   // Which of the three situations the studio is in. It starts unknown, and
   // unknown must not look like "nothing is installed": showing the download
   // page for a second on every launch is how a ready studio was made to look
@@ -132,6 +134,23 @@ function AppContent() {
     const timer = window.setInterval(read, 2000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    const open = (event: Event) => {
+      setStemsSongId((event as CustomEvent<string>).detail);
+      setCurrentView('tools');
+    };
+    const openSettings = (event: Event) => {
+      setSettingsSection((event as CustomEvent<string>).detail);
+      setShowSettingsModal(true);
+    };
+    window.addEventListener('mm3:open-stems', open);
+    window.addEventListener('mm3:open-settings', openSettings);
+    return () => {
+      window.removeEventListener('mm3:open-stems', open);
+      window.removeEventListener('mm3:open-settings', openSettings);
+    };
+  }, []);
+
   // Track multiple concurrent generation jobs
   const activeJobsRef = useRef<Map<string, { tempId: string; pollInterval: ReturnType<typeof setInterval> }>>(new Map());
   const nativeReplayPollersRef = useRef<Map<string, ReturnType<typeof window.setInterval>>>(new Map());
@@ -282,6 +301,8 @@ function AppContent() {
 
   // Settings Modal
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  // Which settings page to land on, when something asks for a particular one.
+  const [settingsSection, setSettingsSection] = useState<string | null>(null);
 
   // Profile View
 
@@ -1173,7 +1194,7 @@ function AppContent() {
   const renderContent = () => {
     switch (currentView) {
       case 'tools':
-        return <StudioToolsPanel />;
+        return <StudioToolsPanel initialSongId={stemsSongId} />;
 
       case 'library': {
         const allSongs = songs;
@@ -1442,7 +1463,8 @@ function AppContent() {
       )}
       <SettingsModal
         isOpen={showSettingsModal}
-        onClose={() => setShowSettingsModal(false)}
+        initialSection={settingsSection}
+        onClose={() => { setShowSettingsModal(false); setSettingsSection(null); }}
         theme={theme}
         onToggleTheme={toggleTheme}
       />

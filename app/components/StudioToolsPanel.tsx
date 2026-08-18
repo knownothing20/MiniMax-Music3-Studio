@@ -4,6 +4,7 @@ import { useI18n } from '../context/I18nContext';
 import { transcribeWithNativeOpenRouter } from '../services/nativeOpenRouter';
 import { apiUrl } from '../services/apiBase';
 import { openExternal } from '../services/externalLinks';
+import { StemPlayer } from './StemPlayer';
 
 /**
  * Studio tools.
@@ -30,7 +31,8 @@ interface SeparationStatus {
   ready: boolean;
   stems: string[];
   download: { downloaded_bytes: number; total_bytes: number; done: boolean } | null;
-  settings: { stems: string[]; overlap: number };
+  cuda_runtime_installed: boolean;
+  settings: { stems: string[]; overlap: number; runtime: 'auto' | 'cuda' | 'cpu' };
   run: { song_id: string; progress: number; done: boolean; error: string | null; stems: string[] } | null;
 }
 
@@ -53,7 +55,7 @@ const CONTROL =
 
 const megabytes = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 
-export function StudioToolsPanel(): React.ReactElement {
+export function StudioToolsPanel({ initialSongId }: { initialSongId?: string | null } = {}): React.ReactElement {
   const { t } = useI18n();
 
   const [songs, setSongs] = useState<LibrarySong[]>([]);
@@ -80,6 +82,11 @@ export function StudioToolsPanel(): React.ReactElement {
     setSongs(playable);
     setSongId(current => current || playable[0]?.id || '');
   }, []);
+
+  // A track handed over by a menu wins over whatever was chosen here before.
+  useEffect(() => {
+    if (initialSongId) setSongId(initialSongId);
+  }, [initialSongId]);
 
   useEffect(() => {
     void loadSongs().catch(() => undefined);
@@ -109,7 +116,7 @@ export function StudioToolsPanel(): React.ReactElement {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  const saveSettings = async (next: { stems: string[]; overlap: number }) => {
+  const saveSettings = async (next: { stems: string[]; overlap: number; runtime: 'auto' | 'cuda' | 'cpu' }) => {
     setStatus(current => (current ? { ...current, settings: next } : current));
     await fetch('/v1/separation/settings', {
       method: 'PUT',
@@ -168,7 +175,7 @@ export function StudioToolsPanel(): React.ReactElement {
   const matches = needle ? songs.filter(song => song.title.toLowerCase().includes(needle)) : songs;
   const visible = matches.slice(0, 12);
   const hidden = matches.length - visible.length;
-  const settings = status?.settings ?? { stems: status?.stems ?? [], overlap: 0.25 };
+  const settings = status?.settings ?? { stems: status?.stems ?? [], overlap: 0.25, runtime: 'auto' as const };
   const run = status?.run?.song_id === songId ? status?.run : null;
   const running = Boolean(run && !run.done);
   const percent = Math.round((run?.progress ?? 0) * 100);
@@ -264,6 +271,32 @@ export function StudioToolsPanel(): React.ReactElement {
               </div>
             </div>
 
+            {/* Card or processor. The card needs its own build of the runtime,
+                which is listed with the other optional downloads. */}
+            <div className="mt-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('separationRuntime')}</p>
+              <div className="mt-2 flex gap-2">
+                {(['auto', 'cuda', 'cpu'] as const).map(choice => (
+                  <button
+                    key={choice}
+                    type="button"
+                    onClick={() => void saveSettings({ ...settings, runtime: choice })}
+                    disabled={choice === 'cuda' && !status?.cuda_runtime_installed}
+                    className={`flex-1 rounded-lg border px-3 py-2 text-xs font-semibold disabled:opacity-40 ${
+                      settings.runtime === choice
+                        ? 'border-pink-400 bg-pink-500/10 text-zinc-900 dark:text-white'
+                        : 'border-zinc-200 text-zinc-500 dark:border-white/10'
+                    }`}
+                  >
+                    {t(choice === 'auto' ? 'separationRuntimeAuto' : choice === 'cuda' ? 'separationRuntimeGpu' : 'separationRuntimeCpu')}
+                  </button>
+                ))}
+              </div>
+              {!status?.cuda_runtime_installed && (
+                <p className="mt-2 text-xs leading-5 text-amber-600 dark:text-amber-300">{t('separationGpuMissing')}</p>
+              )}
+            </div>
+
             <div className="mt-3">
               <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('separationQuality')}</p>
               <div className="mt-2 flex gap-2">
@@ -343,10 +376,16 @@ export function StudioToolsPanel(): React.ReactElement {
               {stems.map(stem => {
                 const url = apiUrl(`/v1/library/songs/${encodeURIComponent(songId)}/stems/${stem}`);
                 return (
-                  <div key={stem} className="flex items-center gap-3 rounded-lg border border-zinc-200 px-3 py-2 dark:border-white/10">
-                    <span className="w-24 shrink-0 text-xs font-semibold uppercase tracking-wide text-zinc-500">{t(`stem_${stem}` as never) || stem}</span>
-                    <audio controls preload="none" src={url} className="h-8 min-w-0 flex-1" />
-                    <a href={url} download={`${songs.find(song => song.id === songId)?.title ?? 'track'} - ${stem}.wav`} className="shrink-0 text-zinc-400 hover:text-pink-500">
+                  <div key={stem} className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <StemPlayer src={url} label={t(`stem_${stem}` as never) || stem} />
+                    </div>
+                    <a
+                      href={url}
+                      download={`${songs.find(song => song.id === songId)?.title ?? 'track'} - ${stem}.wav`}
+                      className="shrink-0 text-zinc-400 hover:text-pink-500"
+                      title={t('download')}
+                    >
                       <Download size={15} />
                     </a>
                   </div>

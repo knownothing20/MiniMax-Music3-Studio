@@ -27,15 +27,21 @@ const INPUT =
 
 interface SettingsModalProps {
   isOpen: boolean;
+  /// Which page to land on, when the caller has one in mind.
+  initialSection?: string | null;
   onClose: () => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, theme, onToggleTheme }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSection, onClose, theme, onToggleTheme }) => {
   const { user, setDisplayName } = useAuth();
   const { t, language, setLanguage } = useI18n();
   const [section, setSection] = useState<SectionId>('account');
+  // Opened from somewhere with a page in mind - the profile line, say.
+  useEffect(() => {
+    if (initialSection) setSection(initialSection as SectionId);
+  }, [initialSection]);
   const [showLangInfo, setShowLangInfo] = useState(false);
   const langInfoRef = useRef<HTMLDivElement>(null);
 
