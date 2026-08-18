@@ -107,7 +107,13 @@ function Invoke-CustomCudaBuild {
     # spread: virtual 50/61/70/75/80, real 86/89, virtual 90, and Blackwell on
     # CUDA 12.8 and above.
     $settings = switch ($CudaArchitecture) {
-        'universal' { '-DGGML_NATIVE=OFF' }
+        # A release must run on other people's machines, so both halves are
+        # spelled out: GGML_NATIVE off keeps ggml's CPU kernels off this exact
+        # processor's instruction set, and the architecture list covers the
+        # cards - PTX for Turing and Ampere, device code for the RTX 30, 40 and
+        # 50 series. Upstream's own script leaves both at "whatever this machine
+        # is", which produces a binary only this machine can run.
+        'universal' { '-DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real' }
         'native' { '-DCMAKE_CUDA_ARCHITECTURES=native' }
         'sm_89' { '-DCMAKE_CUDA_ARCHITECTURES=89' }
         default { throw "No custom CMake architecture is defined for '$CudaArchitecture'." }
