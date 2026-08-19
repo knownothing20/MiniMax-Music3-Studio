@@ -48,6 +48,11 @@ pub struct LyricsSyncConfig {
     pub whisper_model: Option<String>,
     /// Which OpenRouter speech-to-text model to call.
     pub openrouter_model: Option<String>,
+    /// What the local recogniser runs on. It decides which runtime is
+    /// downloaded as much as which one is loaded, so it belongs to the setting
+    /// rather than to a guess made at load time.
+    #[serde(default)]
+    pub runtime: OnnxFlavour,
 }
 
 impl LyricsSyncConfig {
@@ -278,11 +283,14 @@ pub const ASSETS: &[Asset] = &[
 ];
 
 /// Which build of the ONNX Runtime to load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnnxFlavour {
     /// The graphics card if its runtime is installed, otherwise the processor.
     Auto,
+    /// The default: this studio exists for machines with an NVIDIA card, and
+    /// the processor path is minutes where the card is seconds.
+    #[default]
     Cuda,
     Cpu,
 }
@@ -305,6 +313,9 @@ pub struct SyncStatus {
     pub whisper_binary: Option<String>,
     pub whisper_model: Option<String>,
     pub openrouter_model: Option<String>,
+    /// What the recogniser runs on, so the page that downloads it can show the
+    /// same choice that decides which files it fetches.
+    pub runtime: OnnxFlavour,
     pub installed_models: Vec<String>,
     pub assets: Vec<crate::downloads::AssetStatus>,
     pub active_download: Option<crate::downloads::DownloadProgress>,
@@ -403,6 +414,7 @@ impl LyricsSync {
         SyncStatus {
             enabled: config.enabled,
             provider: config.provider,
+            runtime: config.runtime,
             root: self.downloader.root().display().to_string(),
             ready: config.enabled && ready,
             whisper_binary: whisper_binary.map(|path| path.display().to_string()),

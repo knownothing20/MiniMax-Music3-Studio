@@ -202,6 +202,35 @@ impl Downloader {
         self.progress.lock().await.clone()
     }
 
+    /// Installs a whole set, in order, waiting for each file.
+    ///
+    /// The waiting used to be written out again at every call site - the
+    /// engine's libraries, the karaoke recognisers, the separator's CUDA
+    /// provider - three copies of one loop, and the one that was forgotten
+    /// started the engine before its libraries had arrived.
+    pub async fn install_all(&self, assets: &[&'static Asset]) -> Result<()> {
+        for asset in assets {
+            if self.is_installed(asset) {
+                continue;
+            }
+            self.install(asset).await?;
+            loop {
+                let Some(progress) = self.active().await else { break };
+                if progress.done {
+                    if let Some(error) = progress.error {
+                        bail!("{} could not be downloaded: {error}", asset.label);
+                    }
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            }
+            if !self.is_installed(asset) {
+                bail!("{} finished downloading but its files are not on disk", asset.label);
+            }
+        }
+        Ok(())
+    }
+
     /// Starts one download in the background. Only one runs at a time, and an
     /// interrupted file resumes from what is already on disk.
     pub async fn install(&self, asset: &'static Asset) -> Result<()> {

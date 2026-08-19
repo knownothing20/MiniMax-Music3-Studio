@@ -225,9 +225,23 @@ impl AssistantRuntime {
 
     /// The extracted llama-server, wherever the zip happened to put it.
     pub fn server_binary(&self) -> Option<PathBuf> {
+        self.server_binary_for(None)
+    }
+
+    /// The binary for a chosen device, or whichever is installed.
+    ///
+    /// The card build and the processor build sit in their own directories, so
+    /// this is also what decides which of the two a download has to fetch: the
+    /// choice is the setting, not a guess made after the fact.
+    pub fn server_binary_for(&self, device: Option<&str>) -> Option<PathBuf> {
         let runtime = self.root.join("runtime");
         let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
-        for flavour in ["cuda", "cpu"] {
+        let order: &[&str] = match device {
+            Some("cuda") => &["cuda"],
+            Some("cpu") => &["cpu"],
+            _ => &["cuda", "cpu"],
+        };
+        for flavour in order {
             let candidate = runtime.join(flavour).join(name);
             if candidate.is_file() {
                 return Some(candidate);

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, Download, FolderOpen, Loader2, Square, Trash2, X } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
+import { DevicePicker, type Device } from './DevicePicker';
 import {
   componentKindLabel,
   componentPrecision,
@@ -72,19 +73,65 @@ const errorMessage = async (response: Response) => {
   return body?.error || `Request failed (${response.status})`;
 };
 
-/** One optional capability, with its own catalogue and its own endpoints. */
-const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: string; installUrl: string; removeUrl?: string }> = ({ title, purpose, statusUrl, installUrl, removeUrl }) => {
+/** A recogniser or backend: which one, what it runs on, and one button. */
+type EngineChoice = { id: string; label: string; device?: boolean };
+
+/**
+ * One optional capability.
+ *
+ * A capability is a choice of engine and a choice of what it runs on - not a
+ * list of files. Parakeet is six downloads and a runtime, Whisper is two, and
+ * which two depends on the card; nobody should have to work that out from file
+ * names. `engines` turns the group into that choice, and the whole set is
+ * installed and removed by one button.
+ */
+const OptionalGroup: React.FC<{
+  title: string;
+  purpose: string;
+  statusUrl: string;
+  installUrl: string;
+  removeUrl?: string;
+  engines?: EngineChoice[];
+  /** Where the chosen engine and device are saved, when they are a setting. */
+  settingsUrl?: string;
+}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<OptionalStatus | null>(null);
   const [open, setOpen] = useState(false);
   // A refused download used to be silent: the request failed, the reply was
   // thrown away, and the button simply did nothing twice in a row.
   const [failed, setFailed] = useState<string | null>(null);
+  const [engine, setEngine] = useState<string>(engines?.[0]?.id ?? '');
+  const [device, setDevice] = useState<Device>('cuda');
 
   const load = useCallback(async () => {
     const response = await fetch(statusUrl);
-    if (response.ok) setStatus(await response.json());
-  }, [statusUrl]);
+    if (response.ok) {
+      const body = await response.json();
+      setStatus(body);
+      if (body.provider && engines?.some((choice) => choice.id === body.provider)) setEngine(body.provider);
+      if (body.runtime) setDevice(body.runtime);
+      if (body.settings?.runtime) setDevice(body.settings.runtime);
+    }
+  }, [statusUrl, engines]);
+
+  /// The engine and the device are a setting before they are a download: they
+  /// decide which files the one button fetches.
+  const remember = async (next: { engine?: string; device?: Device }) => {
+    if (next.engine !== undefined) setEngine(next.engine);
+    if (next.device !== undefined) setDevice(next.device);
+    if (!settingsUrl) return;
+    await fetch(settingsUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: next.engine ?? engine, runtime: next.device ?? device }),
+    })
+      .then(async (response) => {
+        if (!response.ok) setFailed(await errorMessage(response));
+        return load();
+      })
+      .catch((error: Error) => setFailed(error.message));
+  };
 
   useEffect(() => { void load().catch(() => undefined); }, [load]);
 
@@ -116,6 +163,29 @@ const OptionalGroup: React.FC<{ title: string; purpose: string; statusUrl: strin
       </button>
       {open && (
         <div className="space-y-2 border-t border-zinc-100 p-3 dark:border-white/5">
+          {engines && engines.length > 0 && (
+            <div className="space-y-2 pb-1">
+              <div className="grid grid-cols-3 gap-1.5">
+                {engines.map((choice) => (
+                  <button
+                    key={choice.id}
+                    type="button"
+                    onClick={() => void remember({ engine: choice.id })}
+                    className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                      engine === choice.id
+                        ? 'border-pink-500 bg-pink-500/10 text-zinc-900 dark:text-white'
+                        : 'border-zinc-200 text-zinc-500 hover:text-zinc-900 dark:border-white/10 dark:hover:text-white'
+                    }`}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+              {engines.find((choice) => choice.id === engine)?.device !== false && (
+                <DevicePicker value={device} onChange={(next) => void remember({ device: next })} />
+              )}
+            </div>
+          )}
           {assets.map((asset) => {
             const active = status?.active_download?.asset_id === asset.id && !status?.active_download?.done;
             const percent = active && status?.active_download
@@ -564,6 +634,12 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               statusUrl="/v1/karaoke/status"
               installUrl="/v1/karaoke/install"
               removeUrl="/v1/karaoke/remove"
+              settingsUrl="/v1/karaoke/status"
+              engines={[
+                { id: 'parakeet', label: 'Parakeet' },
+                { id: 'whisper', label: 'Whisper' },
+                { id: 'open_router', label: 'OpenRouter', device: false },
+              ]}
             />
           </div>
         </div>

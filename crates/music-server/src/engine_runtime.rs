@@ -81,11 +81,6 @@ impl EngineRuntime {
 
     /// Whether the engine will find every library it imports.
     ///
-    /// Downloaded copies are one way; a CUDA Toolkit already on the machine is
-    /// the other, and it is the more common one among the people who would
-    /// notice half a gigabyte arriving. The child process inherits this
-    /// process's PATH, so what the loader will find is exactly what is found
-    /// here - and a machine that already has cuBLAS downloads nothing.
     /// The Visual C++ runtime counts too: a machine that already has cuBLAS
     /// but no redistributable has nothing to download and still cannot start
     /// the engine, and checking only the downloads would have skipped the
@@ -95,6 +90,10 @@ impl EngineRuntime {
     }
 
     /// What is still missing, so a caller can report the size before starting.
+    ///
+    /// A machine that already has the libraries on its search path - a CUDA
+    /// Toolkit installation - downloads nothing: the engine inherits that path
+    /// and finds them there.
     pub fn missing(&self) -> Vec<&'static Asset> {
         ASSETS
             .iter()
@@ -108,31 +107,9 @@ impl EngineRuntime {
     }
 
     /// Fetches whatever is missing and waits for it.
-    ///
-    /// `install` only accepts the job - it downloads in the background and
-    /// returns at once. Returning here on that basis meant the engine was
-    /// started while its libraries were still arriving, so it failed to load
-    /// exactly as if nothing had been downloaded at all. The wait is what makes
-    /// this an installation rather than a request.
     pub async fn install_missing(&self) -> Result<()> {
         ensure_vc_runtime().await?;
-        for asset in self.missing() {
-            self.downloader.install(asset).await?;
-            loop {
-                let Some(progress) = self.downloader.active().await else { break };
-                if progress.done {
-                    if let Some(error) = progress.error {
-                        bail!("{} could not be downloaded: {error}", asset.label);
-                    }
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-            }
-            if !self.downloader.is_installed(asset) {
-                bail!("{} finished downloading but its files are not on disk", asset.label);
-            }
-        }
-        Ok(())
+        self.downloader.install_all(&self.missing()).await
     }
 }
 

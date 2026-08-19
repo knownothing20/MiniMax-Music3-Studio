@@ -3,6 +3,30 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## 2026-08-19 — 1.3.5
+
+### Fixed
+
+- **A clean installation never started.** The engine was launched once, at
+  startup, and only if a complete set of weights was already on disk - so a
+  first install downloaded its models, nothing started them, and the window
+  waited on "loading the models into memory" until the studio was restarted by
+  hand. The supervisor now watches: whenever the weights are there and nothing
+  answers on the engine port, it brings the engine up. The same gap swallowed a
+  crashed engine.
+- **A 24 GB card was recommended a 26.6 GB set.** The tiers were round numbers;
+  they are now the sets' own weights, so a 4090 is pointed at Quality Q8 and
+  the full native set is only recommended from 30 GB.
+
+### Changed
+
+- **Every local engine is now a choice, not a list of files.** Karaoke offers
+  Parakeet, Whisper or OpenRouter and what to run it on, and one button
+  installs or removes the whole set - a runtime and five model files are one
+  recogniser, not six decisions. The card is the default.
+- The device control is one component, used by the download page and the tools
+  panel alike; they had each grown their own version of it.
+
 ## 2026-08-19 — 1.3.4
 
 ### Fixed

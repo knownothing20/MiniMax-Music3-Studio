@@ -40,7 +40,7 @@ pub struct SeparationConfig {
 impl Default for SeparationConfig {
     fn default() -> Self {
         Self {
-            runtime: crate::lyrics_sync::OnnxFlavour::Auto,
+            runtime: crate::lyrics_sync::OnnxFlavour::default(),
             stems: STEMS.iter().map(|stem| (*stem).to_string()).collect(),
             overlap: OVERLAP,
         }

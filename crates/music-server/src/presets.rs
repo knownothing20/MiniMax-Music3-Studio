@@ -17,10 +17,10 @@ pub struct Preset {
 }
 
 pub const PRESETS: &[Preset] = &[
-    Preset { id: "native-full", title: "Native full fidelity", subtitle: "BF16 LM, BF16 depth decoder, F32 DiT; original weights", min_vram_gb: 20.0, profile_id: Some("native"), provider_mode: false, preserves_configuration: false },
-    Preset { id: "native-quality", title: "Native quality", subtitle: "Q8_0 LM, Q8_0 depth decoder, Q8_0 DiT", min_vram_gb: 10.0, profile_id: Some("quality-q8"), provider_mode: false, preserves_configuration: false },
-    Preset { id: "native-balanced", title: "Native balanced", subtitle: "Q6_K LM, Q8_0 depth decoder, Q5_K_M DiT", min_vram_gb: 11.0, profile_id: Some("balanced"), provider_mode: false, preserves_configuration: false },
-    Preset { id: "native-efficient", title: "Native efficient", subtitle: "Recommended Light: Q5_K_M LM, Q8_0 depth decoder, Q4_K_M DiT", min_vram_gb: 9.0, profile_id: Some("recommended-light"), provider_mode: false, preserves_configuration: false },
+    Preset { id: "native-full", title: "Native full fidelity", subtitle: "BF16 LM, BF16 depth decoder, F32 DiT; original weights", min_vram_gb: 30.0, profile_id: Some("native"), provider_mode: false, preserves_configuration: false },
+    Preset { id: "native-quality", title: "Native quality", subtitle: "Q8_0 LM, Q8_0 depth decoder, Q8_0 DiT", min_vram_gb: 15.0, profile_id: Some("quality-q8"), provider_mode: false, preserves_configuration: false },
+    Preset { id: "native-balanced", title: "Native balanced", subtitle: "Q6_K LM, Q8_0 depth decoder, Q5_K_M DiT", min_vram_gb: 11.5, profile_id: Some("balanced"), provider_mode: false, preserves_configuration: false },
+    Preset { id: "native-efficient", title: "Native efficient", subtitle: "Recommended Light: Q5_K_M LM, Q8_0 depth decoder, Q4_K_M DiT", min_vram_gb: 9.5, profile_id: Some("recommended-light"), provider_mode: false, preserves_configuration: false },
     Preset { id: "full-openrouter", title: "Full OpenRouter", subtitle: "Cloud for every catalog-verified capability, including music", min_vram_gb: 0.0, profile_id: None, provider_mode: true, preserves_configuration: false },
     Preset { id: "custom", title: "Custom", subtitle: "Keep every current provider and model choice unchanged", min_vram_gb: -1.0, profile_id: None, provider_mode: false, preserves_configuration: true },
 ];
@@ -96,11 +96,18 @@ fn recommend_for_hardware(gpu_name: &str, total_vram_gb: f64) -> (&'static str, 
         );
     }
 
-    let recommended = if total_vram_gb >= 20.0 {
+    // The thresholds are the sets' own weights, not round numbers: the full
+    // native set is 26.6 GB of BF16 and F32 files, so recommending it at 20 GB
+    // recommended something that does not fit on a 24 GB card. Quality Q8 is
+    // 12.8 GB, balanced 9.8 GB, light 8.8 GB, and each needs room above that
+    // for activations, so every tier is set above the set it installs.
+    let recommended = if total_vram_gb >= 30.0 {
         "native-full"
-    } else if total_vram_gb >= 10.0 {
+    } else if total_vram_gb >= 15.0 {
         "native-quality"
-    } else if total_vram_gb >= 9.0 {
+    } else if total_vram_gb >= 11.5 {
+        "native-balanced"
+    } else if total_vram_gb >= 9.5 {
         "native-efficient"
     } else {
         "full-openrouter"
@@ -200,27 +207,31 @@ mod tests {
 
     #[test]
     fn recommendation_matches_named_cards_and_real_music3_vram_tiers() {
+        // 31.8 GB is a 5090, and the only card the 26.6 GB native set fits on.
         assert_eq!(recommend_for_hardware("NVIDIA GeForce RTX 5090", 31.8).0, "native-full");
-        assert_eq!(recommend_for_hardware("NVIDIA GeForce RTX 4090", 24.0).0, "native-full");
+        // A 4090 has 24 GB and was being told to download 26.6 GB of weights.
+        assert_eq!(recommend_for_hardware("NVIDIA GeForce RTX 4090", 24.0).0, "native-quality");
         assert_eq!(recommend_for_hardware("RTX 4080", 15.9).0, "native-quality");
-        assert_eq!(recommend_for_hardware("RTX 4070", 11.9).0, "native-quality");
-        assert_eq!(recommend_for_hardware("RTX 4060 Ti", 9.0).0, "native-efficient");
+        assert_eq!(recommend_for_hardware("RTX 4070", 11.9).0, "native-balanced");
+        assert_eq!(recommend_for_hardware("RTX 4060 Ti", 10.0).0, "native-efficient");
         assert_eq!(recommend_for_hardware("RTX 4060", 8.0).0, "full-openrouter");
         assert_eq!(recommend_for_hardware("No NVIDIA GPU detected", 0.0).0, "full-openrouter");
     }
 
-    /// A capable card must never be recommended the Light speed profile, and
-    /// every recommendation must name an installable complete profile.
+    /// The Light set is a speed compromise, so a card with room for more must
+    /// not be pointed at it - but a 10 GB card has room for nothing else, and
+    /// pretending otherwise is how a recommendation stops fitting.
     #[test]
     fn capable_hardware_never_recommends_the_light_profile() {
-        for vram in [10.0, 12.0, 16.0, 20.0, 24.0, 32.0] {
+        for vram in [12.0, 16.0, 20.0, 24.0, 32.0] {
             let preset = recommend_for_hardware("NVIDIA test card", vram).0;
             let profile = profile_for_preset(preset);
             assert_ne!(profile, "recommended-light", "{vram} GB must not select the Light set");
             assert!(crate::model_manager::profile_exists(profile));
         }
-        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 24.0).0), "native");
-        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 12.0).0), "quality-q8");
-        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 9.0).0), "recommended-light");
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 32.0).0), "native");
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 24.0).0), "quality-q8");
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 12.0).0), "balanced");
+        assert_eq!(profile_for_preset(recommend_for_hardware("NVIDIA test card", 10.0).0), "recommended-light");
     }
 }

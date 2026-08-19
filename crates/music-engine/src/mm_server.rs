@@ -28,15 +28,6 @@ pub struct MmServerLaunchConfig {
     pub host: String,
     pub port: u16,
     pub options: MmServerOptions,
-    /// Directories added to the engine process's own library search path.
-    ///
-    /// The CUDA libraries the engine is linked against are downloaded rather
-    /// than installed, so they are not next to the executable and the loader
-    /// would never find them. They cannot be copied next to it either: a
-    /// normal installation lives in Program Files, which the studio must not
-    /// write to. Handing them over on the child's PATH covers both the
-    /// installed and the portable layout with one mechanism.
-    pub library_dirs: Vec<PathBuf>,
 }
 
 /// The launch flags upstream `mm-server` accepts, as documented by its usage
@@ -97,9 +88,6 @@ pub struct MmServerLocation {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub options: MmServerOptions,
-    /// Directories holding libraries the engine imports but does not ship
-    /// with, added to the child process's search path.
-    pub library_dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,10 +126,6 @@ impl MmServerLocation {
             host,
             port: self.port.unwrap_or(DEFAULT_PORT),
             options: self.options,
-            // A directory that does not exist yet is dropped rather than
-            // refused: the libraries are downloaded, and a first run reaches
-            // here before the download has been asked for.
-            library_dirs: self.library_dirs.into_iter().filter(|path| path.is_dir()).collect(),
         })
     }
 }
@@ -184,7 +168,6 @@ impl MmServerSupervisor {
             .arg("--port")
             .arg(self.config.port.to_string());
         self.config.options.apply(&mut command);
-        apply_library_path(&mut command, &self.config.library_dirs);
         command.stdin(Stdio::null());
         // Everything the engine says while it is starting - loading weights,
         // choosing a device, failing - happens before its HTTP log exists.
@@ -353,29 +336,6 @@ fn health_check(host: &str, port: u16, timeout: Duration) -> bool {
     stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1 200")
 }
 
-/// Puts the downloaded libraries in front of the engine's search path.
-///
-/// The loader resolves a static import from the executable's directory, the
-/// system directories and then PATH. The CUDA libraries are in none of the
-/// first two - they are downloaded into the studio's data directory - so PATH
-/// is where they have to be named. Only the child's environment is touched;
-/// the studio's own PATH is left alone.
-fn apply_library_path(command: &mut Command, library_dirs: &[PathBuf]) {
-    if library_dirs.is_empty() {
-        return;
-    }
-    let separator = if cfg!(windows) { ";" } else { ":" };
-    let mut value = library_dirs.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(separator);
-    if let Some(existing) = std::env::var_os("PATH") {
-        let existing = existing.to_string_lossy().into_owned();
-        if !existing.is_empty() {
-            value.push_str(separator);
-            value.push_str(&existing);
-        }
-    }
-    command.env("PATH", value);
-}
-
 #[cfg(windows)]
 fn configure_child_process(command: &mut Command) {
     use std::os::windows::process::CommandExt;
@@ -432,7 +392,6 @@ mod tests {
             host: None,
             port: None,
             options: MmServerOptions::default(),
-            library_dirs: Vec::new(),
         }
         .resolve()
         .unwrap();

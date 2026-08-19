@@ -485,7 +485,6 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/configuration", get(configuration).put(update_configuration))
         .route("/engine/presets", get(engine_presets))
         .route("/engine/preset", post(apply_engine_preset))
-        .route("/engine/start", post(start_local_engine))
         .route("/engine/options", get(engine_options).put(update_engine_options))
         .route("/engine/restart", post(restart_local_engine))
         .route("/v1/engine/logs", get(engine_logs))
@@ -557,15 +556,35 @@ pub async fn serve() -> anyhow::Result<()> {
     // Start the engine as soon as a complete set is installed. It takes about
     // three seconds; making the user press a button for it - or worse, wait
     // without knowing what for - is the studio being lazy on their time.
+    // The engine is supervised, not started once and forgotten. It used to be
+    // launched a single time at startup, and only if a complete set of weights
+    // was already on disk - so a first installation downloaded its models,
+    // nothing started them, and the window waited on "loading the models into
+    // memory" until the studio was restarted by hand. The same gap swallowed a
+    // crashed engine. This watches instead: whenever a complete set is on disk
+    // and nothing is answering on the engine port, it brings the engine up.
     {
         let state = state.clone();
         tokio::spawn(async move {
-            let ready = state.model_manager.status(effective_install_target(&state).await).await.ready;
-            if !ready || state.music_server.health().await {
-                return;
-            }
-            if let Err(error) = restart_engine(&state).await {
-                eprintln!("the local engine did not start on its own: {error}");
+            let mut complained = false;
+            loop {
+                let ready = state.model_manager.status(effective_install_target(&state).await).await.ready;
+                let running = state.music_server.health().await;
+                if ready && !running {
+                    match restart_engine(&state).await {
+                        Ok(()) => complained = false,
+                        Err(error) => {
+                            // Say it once per failure, not once every few
+                            // seconds: a card with too little memory would
+                            // otherwise fill the log with the same line.
+                            if !complained {
+                                eprintln!("the local engine did not start: {error}");
+                                complained = true;
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(if running { 5 } else { 2 })).await;
             }
         });
     }
@@ -792,7 +811,9 @@ struct InstallSeparationAssetRequest {
     asset_id: String,
 }
 
-/// Everything the card path needs, in the order it is used.
+/// Everything the card path needs, in the order it is used. `karaoke_set`
+/// builds a recogniser out of these plus its own model files, so this is the
+/// one place the CUDA provider's parts are named.
 const CARD_ASSETS: [&str; 5] = ["onnxruntime-cuda", "cuda-cudart", "cuda-cublas", "cuda-cufft", "cuda-cudnn"];
 
 async fn install_separation_asset(
@@ -804,25 +825,10 @@ async fn install_separation_asset(
     // setup, it is a quiz.
     if request.asset_id == "card" {
         let sync = state.lyrics_sync.clone();
+        let card: Vec<&'static lyrics_sync::Asset> = CARD_ASSETS.iter().filter_map(|id| lyrics_sync::asset(id)).collect();
         tokio::spawn(async move {
-            for id in CARD_ASSETS {
-                let Some(asset) = lyrics_sync::asset(id) else { continue };
-                if sync.downloader().is_installed(asset) {
-                    continue;
-                }
-                if let Err(error) = sync.downloader().install(asset).await {
-                    eprintln!("could not install {id}: {error}");
-                    return;
-                }
-                // The downloader takes one job at a time on purpose; wait for
-                // this one before starting the next.
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    match sync.downloader().active().await {
-                        Some(progress) if !progress.done => continue,
-                        _ => break,
-                    }
-                }
+            if let Err(error) = sync.downloader().install_all(&card).await {
+                eprintln!("the card path could not be installed: {error}");
             }
         });
         return Ok(Json(serde_json::json!({ "started": true })));
@@ -1635,7 +1641,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     // copy has no bundle for. Saying whose service this is turns a hang into
     // a sentence.
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string());
-    let engine_available = engine_location(*state.engine_options.read().await, Vec::new()).bundle_root.is_dir();
+    let engine_available = engine_location(*state.engine_options.read().await).bundle_root.is_dir();
     Json(serde_json::json!({
         "status": "ok",
         "runtime": "native",
@@ -1721,47 +1727,6 @@ async fn update_configuration(
     Json(configuration)
 }
 
-/// Starts the local `minimaxmusic.cpp` runtime.
-///
-/// The service owns this, not the desktop shell: the studio has to work when it
-/// is opened in a browser during development, and a UI that could only start
-/// the engine through a Tauri command failed with "cannot read properties of
-/// undefined" outside the packaged app. If a healthy engine is already
-/// listening the call is a no-op and never spawns a second process.
-async fn start_local_engine(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
-    if state.music_server.health().await {
-        return Ok(Json(serde_json::json!({ "engine_id": PRIMARY_MUSIC_ENGINE_ID, "started": false, "reachable": true })));
-    }
-
-    // The engine binary imports CUDA libraries that are downloaded rather than
-    // shipped. Without them Windows refuses to start the process at all, so
-    // this is not an optional extra to offer later: selecting the local engine
-    // is the instruction to fetch them.
-    if let Some(preparing) = prepare_engine_runtime(&state).await {
-        return Ok(Json(preparing));
-    }
-
-    let mut supervisor = state.engine.lock().await;
-    if supervisor.is_none() {
-        let location = engine_location(*state.engine_options.read().await, Vec::new());
-        let config = location
-            .resolve()
-            .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("The local engine runtime was not found: {error}")))?;
-        *supervisor = Some(
-            music_engine::mm_server::MmServerSupervisor::new(config)
-                .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?,
-        );
-    }
-    let engine = supervisor.as_mut().expect("supervisor was created above");
-    let started = tokio::task::block_in_place(|| engine.ensure_started(std::time::Duration::from_secs(60)))
-        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("The local engine did not start: {error}")))?;
-    Ok(Json(serde_json::json!({
-        "engine_id": PRIMARY_MUSIC_ENGINE_ID,
-        "started": matches!(started, music_engine::mm_server::StartOutcome::Started),
-        "reachable": true,
-    })))
-}
-
 async fn engine_options(State(state): State<AppState>) -> Json<Value> {
     let options = *state.engine_options.read().await;
     Json(serde_json::json!({
@@ -1841,7 +1806,7 @@ async fn restart_engine(state: &AppState) -> Result<(), String> {
     // the writing assistant is still holding the card, it does not finish.
     free_the_card_for_the_engine(state).await;
     let options = *state.engine_options.read().await;
-    let config = engine_location(options, Vec::new())
+    let config = engine_location(options)
         .resolve()
         .map_err(|error| format!("the local engine runtime was not found: {error}"))?;
     let mut engine = music_engine::mm_server::MmServerSupervisor::new(config).map_err(|error| error.to_string())?;
@@ -1853,40 +1818,6 @@ async fn restart_engine(state: &AppState) -> Result<(), String> {
 
 /// Where the packaged or developer-built `mm-server` lives. Every value is an
 /// explicit override or a documented default; nothing is downloaded here.
-/// Makes sure the libraries the engine is linked against are on disk.
-///
-/// Returns `Some(status)` while they are still being fetched, so the caller
-/// answers with a real percentage instead of starting a process Windows will
-/// refuse to load. The download runs in the background and survives the
-/// request: the window asks again, and each answer carries the progress.
-async fn prepare_engine_runtime(state: &AppState) -> Option<Value> {
-    if state.engine_runtime.is_ready() {
-        return None;
-    }
-    let active = state.engine_runtime.downloader().active().await;
-    if active.is_none() {
-        let runtime = state.engine_runtime.clone();
-        tokio::spawn(async move {
-            if let Err(error) = runtime.install_missing().await {
-                eprintln!("could not fetch the engine's CUDA libraries: {error}");
-            }
-        });
-    }
-    let total = state.engine_runtime.missing_bytes().max(1);
-    let downloaded = active.as_ref().map(|progress| progress.downloaded_bytes).unwrap_or(0);
-    Some(serde_json::json!({
-        "engine_id": PRIMARY_MUSIC_ENGINE_ID,
-        "started": false,
-        "reachable": false,
-        "preparing": "engine.runtime",
-        "downloaded_bytes": downloaded,
-        "total_bytes": total,
-        "percent": (downloaded.min(total) * 100 / total) as u32,
-        "error": active.and_then(|progress| progress.error),
-    }))
-}
-
-/// The directory holding `mm-server.exe` and everything it loads.
 fn engine_bundle_root() -> PathBuf {
     env::var_os("MINIMAX_MM_SERVER_ROOT")
         .map(PathBuf::from)
@@ -1895,7 +1826,7 @@ fn engine_bundle_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("resources/minimaxmusic-cpp"))
 }
 
-fn engine_location(options: EngineOptions, library_dirs: Vec<PathBuf>) -> music_engine::mm_server::MmServerLocation {
+fn engine_location(options: EngineOptions) -> music_engine::mm_server::MmServerLocation {
     let configured_executable = env::var_os("MINIMAX_MM_SERVER_BIN").map(PathBuf::from);
     let bundle_root = engine_bundle_root();
     music_engine::mm_server::MmServerLocation {
@@ -1914,7 +1845,6 @@ fn engine_location(options: EngineOptions, library_dirs: Vec<PathBuf>) -> music_
         host: env::var("MINIMAX_MM_SERVER_HOST").ok(),
         port: env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse().ok()),
         options: options.to_engine(),
-        library_dirs,
     }
 }
 
@@ -2528,20 +2458,51 @@ async fn karaoke_status(State(state): State<AppState>) -> Json<lyrics_sync::Sync
     Json(state.lyrics_sync.status(&config).await)
 }
 
+/// Every field optional, so a panel that changes one thing changes one thing.
+///
+/// This took the whole configuration before: the download page, which knows
+/// only which recogniser and which device were picked, would have blanked the
+/// switch and both model choices by sending them absent.
+#[derive(Debug, Deserialize)]
+struct KaraokeSettingsRequest {
+    enabled: Option<bool>,
+    provider: Option<lyrics_sync::AsrProvider>,
+    whisper_model: Option<Option<String>>,
+    openrouter_model: Option<Option<String>>,
+    runtime: Option<lyrics_sync::OnnxFlavour>,
+}
+
 async fn update_karaoke_settings(
     State(state): State<AppState>,
-    Json(request): Json<lyrics_sync::LyricsSyncConfig>,
+    Json(request): Json<KaraokeSettingsRequest>,
 ) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
-    *state.lyrics_sync_config.write().await = request.clone();
+    let merged = {
+        let mut config = state.lyrics_sync_config.write().await;
+        if let Some(enabled) = request.enabled { config.enabled = enabled; }
+        if let Some(provider) = request.provider { config.provider = provider; }
+        if let Some(model) = request.whisper_model { config.whisper_model = model; }
+        if let Some(model) = request.openrouter_model { config.openrouter_model = model; }
+        if let Some(runtime) = request.runtime { config.runtime = runtime; }
+        config.clone()
+    };
     let _ = persist_studio_settings(&state).await;
-    Ok(Json(state.lyrics_sync.status(&request).await))
+    Ok(Json(state.lyrics_sync.status(&merged).await))
 }
 
 /// Frees the disk a karaoke recogniser takes.
+/// Removes a recogniser the same way it was installed: whole.
 async fn karaoke_remove(
     State(state): State<AppState>,
     Json(request): Json<AssistantAssetRequest>,
 ) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
+    let config = state.lyrics_sync_config.read().await.clone();
+    let set = karaoke_set(&request.asset_id, config.runtime, config.whisper_model.as_deref());
+    if !set.is_empty() {
+        for asset in set {
+            let _ = state.lyrics_sync.downloader().remove(asset);
+        }
+        return Ok(Json(state.lyrics_sync.status(&config).await));
+    }
     let asset = lyrics_sync::asset(&request.asset_id)
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, format!("unknown karaoke asset: {}", request.asset_id)))?;
     state
@@ -2549,7 +2510,6 @@ async fn karaoke_remove(
         .downloader()
         .remove(asset)
         .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
-    let config = state.lyrics_sync_config.read().await.clone();
     Ok(Json(state.lyrics_sync.status(&config).await))
 }
 
@@ -2563,10 +2523,49 @@ async fn remove_separation_model(State(state): State<AppState>) -> Result<Json<V
     Ok(Json(serde_json::json!({ "freed_bytes": freed })))
 }
 
+/// Installs a recogniser, not a file.
+///
+/// Parakeet is six downloads and Whisper is two, and which two depends on the
+/// card. Asking a person to work that out from a list of file names - and to
+/// notice that one of them is a runtime - is not a setup screen, it is a quiz.
+/// The whole set is named here, in the order it is used.
+fn karaoke_set(name: &str, device: lyrics_sync::OnnxFlavour, whisper_model: Option<&str>) -> Vec<&'static lyrics_sync::Asset> {
+    let mut wanted: Vec<String> = Vec::new();
+    match name {
+        "parakeet" => {
+            wanted.push("onnxruntime".into());
+            if !matches!(device, lyrics_sync::OnnxFlavour::Cpu) {
+                wanted.extend(CARD_ASSETS.map(String::from));
+            }
+            wanted.extend(lyrics_sync::PARAKEET_ASSET_IDS.map(String::from));
+        }
+        "whisper" => {
+            wanted.push(if matches!(device, lyrics_sync::OnnxFlavour::Cpu) { "whisper-cpu" } else { "whisper-cuda" }.into());
+            wanted.push(whisper_model.unwrap_or("whisper-large-v3-turbo").to_owned());
+        }
+        _ => {}
+    }
+    wanted.iter().filter_map(|id| lyrics_sync::asset(id)).collect()
+}
+
 async fn karaoke_install(
     State(state): State<AppState>,
     Json(request): Json<AssistantAssetRequest>,
 ) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
+    let config = state.lyrics_sync_config.read().await.clone();
+    let set = karaoke_set(&request.asset_id, config.runtime, config.whisper_model.as_deref());
+    if !set.is_empty() {
+        // In the background, so the panel keeps answering while half a
+        // gigabyte arrives; the whole set is one button, not eight.
+        let sync = state.lyrics_sync.clone();
+        tokio::spawn(async move {
+            if let Err(error) = sync.downloader().install_all(&set).await {
+                eprintln!("the karaoke recogniser could not be installed: {error}");
+            }
+        });
+        return Ok(Json(state.lyrics_sync.status(&config).await));
+    }
+
     let asset = lyrics_sync::asset(&request.asset_id)
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, format!("unknown karaoke asset: {}", request.asset_id)))?;
     state
@@ -2574,8 +2573,7 @@ async fn karaoke_install(
         .downloader()
         .install(asset)
         .await
-        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
-    let config = state.lyrics_sync_config.read().await.clone();
+        .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
     Ok(Json(state.lyrics_sync.status(&config).await))
 }
 
@@ -3298,30 +3296,6 @@ fn describes_exhausted_memory(log: &str) -> bool {
     .any(|marker| log.contains(marker))
 }
 
-/// Sends a job to the engine, restarting it once if it is no longer there.
-///
-/// A crashed engine used to end the request: the studio reported "mm-server is
-/// unavailable" and waited for a human to restart it. The supervisor already
-/// knows how to bring it back, so it does, and the job goes through.
-async fn submit_with_recovery(state: &AppState, request: Value) -> anyhow::Result<MmServerSubmitResponse> {
-    match state.music_server.submit(request.clone()).await {
-        Ok(response) => Ok(response),
-        Err(first) => {
-            if let Some(reason) = engine_failure_reason() {
-                anyhow::bail!("{reason}");
-            }
-            if let Err(error) = restart_engine(state).await {
-                anyhow::bail!("the engine had stopped and could not be restarted: {error} (first failure: {first})");
-            }
-            state
-                .music_server
-                .submit(request)
-                .await
-                .map_err(|second| anyhow::anyhow!("the engine was restarted and still refused the job: {second}"))
-        }
-    }
-}
-
 async fn create_music_job(
     State(state): State<AppState>,
     Json(request): Json<CreateMusicJobRequest>,
@@ -3344,8 +3318,7 @@ async fn create_music_job(
         Ok(value) => value,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error))),
     };
-    free_the_card_for_the_engine(&state).await;
-    match submit_with_recovery(&state, mm_request.clone()).await {
+    match state.music_server.submit(mm_request.clone()).await {
         Ok(remote) => {
             let job = MusicJob {
                 id: remote.id,
@@ -3401,10 +3374,11 @@ async fn replay_music_job(
     let synth_request = prepare_replay_synthesis(replay, &request).map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
     let caption = synth_request.get("caption").and_then(Value::as_str).unwrap_or_default().to_owned();
     let lyrics = synth_request.get("lyrics").and_then(Value::as_str).unwrap_or_default().to_owned();
-    free_the_card_for_the_engine(&state).await;
-    let remote = submit_with_recovery(&state, synth_request.clone())
+    let remote = state
+        .music_server
+        .submit(synth_request.clone())
         .await
-        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, format!("the engine refused the job: {error}")))?;
     let job = MusicJob {
         cover_prompt: None,
         id: remote.id, engine_id: PRIMARY_MUSIC_ENGINE_ID.into(), title: source_title, status: MusicJobStatus::Queued,
@@ -4138,6 +4112,7 @@ mod tests {
                 provider: lyrics_sync::AsrProvider::Parakeet,
                 whisper_model: None,
                 openrouter_model: None,
+                runtime: lyrics_sync::OnnxFlavour::default(),
             },
             selected_profile_id: None,
             selected_component_ids: Some(vec!["lm-q8".into(), "depth-q8".into(), "condition-f32".into(), "dit-q6".into(), "vocoder-f32".into()]),

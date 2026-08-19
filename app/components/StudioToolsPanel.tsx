@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Copy, Download, FileAudio, Loader2, Music, Play, RefreshCw, Scissors, Search, SlidersHorizontal } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
+import { DevicePicker } from './DevicePicker';
 import { transcribeWithNativeOpenRouter } from '../services/nativeOpenRouter';
 import { apiUrl } from '../services/apiBase';
 import { openExternal } from '../services/externalLinks';
@@ -276,22 +277,12 @@ export function StudioToolsPanel({ initialSongId }: { initialSongId?: string | n
                 which is listed with the other optional downloads. */}
             <div className="mt-3">
               <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500">{t('separationRuntime')}</p>
-              <div className="mt-2 flex gap-2">
-                {(['auto', 'cuda', 'cpu'] as const).map(choice => (
-                  <button
-                    key={choice}
-                    type="button"
-                    onClick={() => void saveSettings({ ...settings, runtime: choice })}
-                    disabled={choice === 'cuda' && !status?.cuda_runtime_installed}
-                    className={`flex-1 rounded-lg border px-3 py-2 text-xs font-semibold disabled:opacity-40 ${
-                      settings.runtime === choice
-                        ? 'border-pink-400 bg-pink-500/10 text-zinc-900 dark:text-white'
-                        : 'border-zinc-200 text-zinc-500 dark:border-white/10'
-                    }`}
-                  >
-                    {t(choice === 'auto' ? 'separationRuntimeAuto' : choice === 'cuda' ? 'separationRuntimeGpu' : 'separationRuntimeCpu')}
-                  </button>
-                ))}
+              <div className="mt-2">
+                <DevicePicker
+                  value={settings.runtime}
+                  onChange={choice => void saveSettings({ ...settings, runtime: choice })}
+                  cudaAvailable={Boolean(status?.cuda_runtime_installed)}
+                />
               </div>
               {!status?.cuda_runtime_installed && (
                 // One button for the whole card setup: it fetches whatever is

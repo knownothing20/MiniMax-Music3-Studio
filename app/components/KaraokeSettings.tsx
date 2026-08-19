@@ -31,6 +31,7 @@ interface KaraokeStatus {
   whisper_binary?: string | null;
   whisper_model?: string | null;
   openrouter_model?: string | null;
+  runtime?: Device;
   installed_models: string[];
   assets: Asset[];
   active_download?: { asset_id: string; downloaded_bytes: number; total_bytes: number; done: boolean; error?: string | null } | null;
@@ -41,13 +42,17 @@ const INPUT =
 
 const megabytes = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`);
 
-/// Which assets each recogniser needs, so the list shows only what applies.
-const ASSETS_FOR: Record<Provider, string[]> = {
+/// What a recogniser is made of. The panel never shows these: the whole set is
+/// installed and removed by one button, because a runtime and five model files
+/// are not five decisions - they are one recogniser.
+const SET_OF: Record<Provider, string[]> = {
   none: [],
-  whisper: ['whisper-cuda', 'whisper-cpu', 'whisper-large-v3-turbo', 'whisper-base'],
-  parakeet: ['onnxruntime', 'parakeet-tdt-int8', 'parakeet-decoder', 'parakeet-features', 'parakeet-vocab', 'parakeet-config'],
+  whisper: ['whisper-cuda', 'whisper-cpu'],
+  parakeet: ['onnxruntime', 'onnxruntime-cuda', 'cuda-cudart', 'cuda-cublas', 'cuda-cufft', 'cuda-cudnn', 'parakeet-tdt-int8', 'parakeet-decoder', 'parakeet-features', 'parakeet-vocab', 'parakeet-config'],
   open_router: [],
 };
+
+type Device = 'auto' | 'cuda' | 'cpu';
 
 export const KaraokeSettings: React.FC = () => {
   const { t } = useI18n();
@@ -57,6 +62,7 @@ export const KaraokeSettings: React.FC = () => {
   const [provider, setProvider] = useState<Provider>('none');
   const [whisperModel, setWhisperModel] = useState('');
   const [openRouterModel, setOpenRouterModel] = useState('');
+  const [device, setDevice] = useState<Device>('auto');
   const [catalog, setCatalog] = useState<NativeOpenRouterModel[]>([]);
   const [busy, setBusy] = useState<'save' | 'catalog' | null>(null);
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
@@ -82,6 +88,7 @@ export const KaraokeSettings: React.FC = () => {
       setProvider(body.provider);
       setWhisperModel(body.whisper_model ?? '');
       setOpenRouterModel(body.openrouter_model ?? '');
+      setDevice(body.runtime ?? 'auto');
     }).catch(() => undefined);
   }, [load]);
 
@@ -109,6 +116,22 @@ export const KaraokeSettings: React.FC = () => {
     }
   };
 
+  const remove = async (setId: string) => {
+    setMessage(null);
+    try {
+      const response = await fetch('/v1/karaoke/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset_id: setId }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error || String(response.status));
+      setStatus(body);
+    } catch (reason) {
+      setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : String(reason) });
+    }
+  };
+
   const save = async () => {
     setBusy('save');
     setMessage(null);
@@ -121,6 +144,7 @@ export const KaraokeSettings: React.FC = () => {
           provider,
           whisper_model: whisperModel.trim() || null,
           openrouter_model: openRouterModel.trim() || null,
+          runtime: device,
         }),
       });
       const body = await response.json().catch(() => null);
@@ -147,7 +171,7 @@ export const KaraokeSettings: React.FC = () => {
     }
   };
 
-  const relevant = (status?.assets ?? []).filter(asset => ASSETS_FOR[provider].includes(asset.id));
+  const relevant: Asset[] = [];
   const whisperModels = (status?.assets ?? []).filter(asset => asset.id.startsWith('whisper-') && asset.kind === 'model');
 
   return (
