@@ -450,7 +450,7 @@ pub async fn serve() -> anyhow::Result<()> {
         )),
         activity: Arc::new(RwLock::new(Vec::new())),
         cover_auto: Arc::new(RwLock::new(
-            persisted.as_ref().and_then(|settings| settings.cover_auto).unwrap_or(true),
+            persisted.as_ref().and_then(|settings| settings.cover_auto).unwrap_or(false),
         )),
         separation_config: Arc::new(RwLock::new(
             persisted.as_ref().and_then(|settings| settings.separation.clone()).unwrap_or_default(),

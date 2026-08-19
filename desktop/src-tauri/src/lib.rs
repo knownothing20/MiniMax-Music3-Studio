@@ -30,6 +30,16 @@ fn studio_data_directory() -> PathBuf {
         return executable_directory().join("data");
     }
 
+    // An installation is treated the same way whenever it can be: someone who
+    // installs into F:\AI expects the twenty-five gigabytes of weights to land
+    // in F:\AI, not in their profile on C:. Only when the install directory
+    // cannot be written to - Program Files, a read-only share - does the studio
+    // fall back to AppData, because then it has nowhere else to go.
+    let beside_the_executable = executable_directory().join("data");
+    if directory_is_writable(&beside_the_executable) {
+        return beside_the_executable;
+    }
+
     #[cfg(windows)]
     {
         if let Some(root) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
@@ -130,6 +140,21 @@ fn executable_directory() -> PathBuf {
 
 fn is_portable() -> bool {
     executable_directory().join("portable.flag").is_file()
+}
+
+/// Whether the studio may keep its data here.
+///
+/// Asked by creating the directory and writing to it, because that is the only
+/// answer that matters: permissions on Windows are not something to reason
+/// about from a path.
+fn directory_is_writable(path: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let probe = path.join(".write-probe");
+    let written = std::fs::write(&probe, b"1").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    written
 }
 
 /// Hosts the studio service inside this process.

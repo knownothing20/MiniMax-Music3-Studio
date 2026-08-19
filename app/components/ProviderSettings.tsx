@@ -108,8 +108,14 @@ export const ProviderSettings: React.FC = () => {
 
   useEffect(() => {
     void load();
-    void loadCatalog(false);
-  }, [load, loadCatalog]);
+  }, [load]);
+
+  // The catalogue is OpenRouter's, and reading it needs OpenRouter's key. With
+  // no key stored this used to spin anyway and then report a failure nobody
+  // could act on; most people have no key at all and never will.
+  useEffect(() => {
+    if (settings?.configured) void loadCatalog(false);
+  }, [settings?.configured, loadCatalog]);
 
   // A suggestion shown in the select is not a choice anyone made: until it is
   // saved, the capability has no model and the feature refuses to run while the

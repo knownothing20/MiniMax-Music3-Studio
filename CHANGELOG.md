@@ -3,6 +3,28 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## 2026-08-19 — 1.3.4
+
+### Fixed
+
+- **An installed studio kept its models on the system drive.** Portability was
+  decided by a `portable.flag` file that only the portable archive ever
+  contained, so installing into `F:\AI` still put twenty-five gigabytes of
+  weights, the library and the media into `%LOCALAPPDATA%`. The studio now
+  keeps its data beside its own executable whenever it can actually write
+  there - it tries, rather than reasoning about permissions - and falls back to
+  the profile only for a read-only location such as Program Files.
+- **The engine started before its libraries had finished downloading.**
+  Fetching cuBLAS only queued the download and returned at once, so the engine
+  was launched into a folder that did not have it yet and failed exactly as if
+  nothing had been fetched. The install now waits, and reports the failure if
+  the files do not arrive.
+- Automatic cover art was on by default, which does nothing without an
+  OpenRouter key and costs money with one. It is off until switched on.
+- The OpenRouter catalogue was requested every time the providers page opened,
+  with or without a key, so people without one watched a spinner and then read
+  an error they could do nothing about. It is only fetched once a key is saved.
+
 ## 2026-08-19 — 1.3.3
 
 ### Fixed

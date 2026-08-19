@@ -107,12 +107,30 @@ impl EngineRuntime {
         self.missing().iter().map(|asset| asset.bytes).sum()
     }
 
-    /// Fetches whatever is missing. One asset at a time, resumable, and
-    /// progress is readable from the downloader while it runs.
+    /// Fetches whatever is missing and waits for it.
+    ///
+    /// `install` only accepts the job - it downloads in the background and
+    /// returns at once. Returning here on that basis meant the engine was
+    /// started while its libraries were still arriving, so it failed to load
+    /// exactly as if nothing had been downloaded at all. The wait is what makes
+    /// this an installation rather than a request.
     pub async fn install_missing(&self) -> Result<()> {
         ensure_vc_runtime().await?;
         for asset in self.missing() {
             self.downloader.install(asset).await?;
+            loop {
+                let Some(progress) = self.downloader.active().await else { break };
+                if progress.done {
+                    if let Some(error) = progress.error {
+                        bail!("{} could not be downloaded: {error}", asset.label);
+                    }
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            }
+            if !self.downloader.is_installed(asset) {
+                bail!("{} finished downloading but its files are not on disk", asset.label);
+            }
         }
         Ok(())
     }
