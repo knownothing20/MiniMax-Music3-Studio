@@ -224,7 +224,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
 
   // Parameters are strings so an empty field can mean "engine default".
   const [duration, setDuration] = useState('');
-  const [lmBatch, setLmBatch] = useState('');
   const [lmSeed, setLmSeed] = useState('');
   const [lmCfg, setLmCfg] = useState('');
   const [lmTopK, setLmTopK] = useState('');
@@ -293,7 +292,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const ready = setup?.ready === true && setup?.engine_ready === true;
   const defaults = catalog?.defaults ?? {};
   const placeholder = (key: string) => (defaults[key] === undefined ? '' : String(defaults[key]));
-  const maxSongs = Math.max(1, setup?.effective_max_batch ?? 1);
   const caption = joinCaption(globalMetadata, vocalDetails, arrangement);
   const promptTokens = estimateTokens(caption) + estimateTokens(lyrics);
 
@@ -403,7 +401,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       lm_seed: numberOrUndefined(lmSeed),
       lm_cfg: numberOrUndefined(lmCfg) ?? 1.5,
       lm_top_k: numberOrUndefined(lmTopK) ?? 50,
-      lm_batch_size: Math.min(numberOrUndefined(lmBatch) ?? 1, maxSongs),
+      lm_batch_size: 1,
       synth_batch_size: numberOrUndefined(synthBatch) ?? 1,
       dit_cfg: numberOrUndefined(ditCfg) ?? 1.7,
       peak_clip: numberOrUndefined(peakClip) ?? 10,
@@ -561,7 +559,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     onGenerate(buildRequest());
   };
 
-  const totalTracks = (numberOrUndefined(lmBatch) ?? 1) * (numberOrUndefined(synthBatch) ?? 1);
+  const totalTracks = numberOrUndefined(synthBatch) ?? 1;
   const roles: Array<{ key: string; label: string; options: string[] }> = [
     { key: 'lm_model', label: 'LM', options: catalog?.models?.lm ?? [] },
     { key: 'depth_model', label: 'Depth', options: catalog?.models?.depth ?? [] },
@@ -814,16 +812,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
             </div>
 
             <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 dark:border-white/5">
-              <SliderRow
-                label={t('lmBatch')}
-                value={lmBatch}
-                fallback={Number(defaults.lm_batch_size ?? 1)}
-                min={1}
-                max={maxSongs}
-                disabled={maxSongs <= 1}
-                step={1}
-                onChange={setLmBatch}
-              />
+              {/* No batch slider. The engine reserves KV cache for the whole
+                  batch when it loads its weights and takes the number only as a
+                  launch flag, so a control here could not change anything about
+                  the run it appears in. */}
               <SliderRow
                 label={t('variationsBatch')}
                 value={synthBatch}
@@ -843,7 +835,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 <p className="text-[11px] text-zinc-500">{t('renderCountPrefix')} <b className="text-zinc-700 dark:text-zinc-200">{totalTracks}</b></p>
               )}
             </div>
-            {maxSongs === 1 && <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('maxBatchHint')}</p>}
           </Card>
 
           <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
