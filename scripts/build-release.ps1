@@ -5,8 +5,8 @@ param(
     [string]$ReleaseNotes = "",
     [ValidateSet('auto', 'cuda', 'vulkan', 'all')]
     [string]$RuntimeBackend = 'auto',
-    [ValidateSet('nsis', 'msi', 'all')]
-    [string]$BundleTarget = 'all'
+    [ValidateSet('nsis')]
+    [string]$BundleTarget = 'nsis'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,7 +115,11 @@ try {
 
     New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
     $bundleRoot = Join-Path $tauriRoot 'target\release\bundle'
-    Get-ChildItem -Recurse -File $bundleRoot -Include '*.exe','*.msi','*.sig' |
+    # NSIS only. The MSI was built by WiX and installed per-machine into
+    # Program Files, where the studio cannot write - so an MSI installation put
+    # its models in the user profile on C: no matter which drive was chosen for
+    # the program itself. The updater never used it either.
+    Get-ChildItem -Recurse -File $bundleRoot -Include '*.exe','*.sig' |
         Copy-Item -Destination $releaseDir -Force
 
     $portableRoot = Join-Path $releaseDir "MiniMax-Music3-Studio-$Version-portable"

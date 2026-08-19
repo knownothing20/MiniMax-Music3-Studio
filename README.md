@@ -146,7 +146,7 @@ scripts\build-minimax-runtime.ps1 -OutputDirectory .\build\engine -RuntimeBacken
 
 ### Release
 
-`scripts/build-release.ps1 -Version X.Y.Z` produces NSIS and MSI installers, a portable
+`scripts/build-release.ps1 -Version X.Y.Z` produces the NSIS installer, a portable
 archive and a signed `latest.json` for the in-app updater. It requires
 `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
 `TAURI_UPDATER_PUBKEY`, and refuses to run without them. Model weights are never included
