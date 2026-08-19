@@ -819,9 +819,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 value={lmBatch}
                 fallback={Number(defaults.lm_batch_size ?? 1)}
                 min={1}
-                max={Math.max(1, maxSongs)}
+                max={Math.min(4, Math.max(1, maxSongs))}
                 step={1}
-                disabled={maxSongs === 1}
                 onChange={setLmBatch}
               />
               <SliderRow

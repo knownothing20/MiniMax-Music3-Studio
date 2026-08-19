@@ -307,8 +307,14 @@ struct EngineOptions {
 impl EngineOptions {
     /// `--max-batch` defaults to 1 upstream, and `lm_batch_size` may not exceed
     /// it, so this is also the number of songs one request can render.
+    ///
+    /// The studio asks for four. The language model is memory-bound - every
+    /// frame reads the whole weight set - so songs decoded together are nearly
+    /// free after the first, and leaving the upstream default of 1 in place
+    /// meant the variations slider was permanently disabled. What it costs is
+    /// KV cache, which scales with the batch and not with the weights.
     fn effective_max_batch(&self) -> u32 {
-        self.max_batch.unwrap_or(1).max(1)
+        self.max_batch.unwrap_or(4).max(1)
     }
 
     fn to_engine(self) -> music_engine::mm_server::MmServerOptions {
@@ -4326,7 +4332,9 @@ mod tests {
         // derived from them rather than assumed.
         assert!(restored.engine_options.keep_loaded);
         assert_eq!(restored.engine_options.effective_max_batch(), 2);
-        assert_eq!(EngineOptions::default().effective_max_batch(), 1);
+        // Four by default: songs decoded together are nearly free after the
+        // first, and the upstream default of 1 left the slider disabled.
+        assert_eq!(EngineOptions::default().effective_max_batch(), 4);
         // The assistant is optional: it must survive a restart when configured,
         // and stay unavailable when it is not.
         assert!(restored.assistant.available());
