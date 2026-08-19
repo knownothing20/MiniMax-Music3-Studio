@@ -120,7 +120,12 @@ try {
 
     $portableRoot = Join-Path $releaseDir "MiniMax-Music3-Studio-$Version-portable"
     New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
-    Copy-Item (Join-Path $tauriRoot 'target\release\minimax-music3-studio-desktop.exe') (Join-Path $portableRoot 'MiniMax-Music3-Studio.exe') -Force
+    # The binary's name comes from tauri.conf.json, not from this script: it was
+    # spelled out here as the crate name, so renaming the executable broke the
+    # portable build instead of just renaming it.
+    $binaryName = (Get-Content -Raw (Join-Path $tauriRoot 'tauri.conf.json') | ConvertFrom-Json).mainBinaryName
+    if ([string]::IsNullOrWhiteSpace($binaryName)) { $binaryName = 'minimax-music3-studio-desktop' }
+    Copy-Item (Join-Path $tauriRoot "target\release\$binaryName.exe") (Join-Path $portableRoot 'MiniMax-Music3-Studio.exe') -Force
     Copy-Item $engineResourceRoot (Join-Path $portableRoot 'resources\minimaxmusic-cpp') -Recurse -Force
     New-Item -ItemType File -Path (Join-Path $portableRoot 'portable.flag') -Force | Out-Null
     Compress-Archive -Path "$portableRoot\*" -DestinationPath (Join-Path $releaseDir "MiniMax-Music3-Studio-$Version-portable.zip") -Force
