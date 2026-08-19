@@ -26,9 +26,8 @@ Windows build.
   already running") vanished into a successful reply, and no interface could
   have reported it. The refusal now reaches the caller, and the interface reads
   the reply instead of discarding it.
-- Two of the five interface languages carried `karaokeOff` twice, and the
-  second silently replaced the first.
-
+- All five interface languages declared `karaokeOff` twice, and the second
+  silently replaced the first.
 - **The writing assistant kept the graphics card after it had answered.** Gemma
   holds around five gigabytes; the engine then asked for eleven more and died
   on a 24 GB card, and the studio reported a queued job that never ran. The
@@ -55,10 +54,12 @@ Windows build.
 ### Changed
 
 - The studio opens in its dark theme unless the user has chosen otherwise.
-- The CUDA build carries PTX for the newest architecture as well
-  (`120-virtual`), so a card released after Blackwell has something to compile
-  from instead of failing at the first kernel launch — NVIDIA's own
-  "Building for Maximum Compatibility" rule.
+- The CUDA build carries PTX for the newest architecture as well, so a
+  Blackwell variant without its own device code has something to compile from
+  instead of failing at the first kernel launch — NVIDIA's own "Building for
+  Maximum Compatibility" rule. ggml rewrites the flag to `120a-virtual`,
+  because its Blackwell kernels use instructions that exist only there, so this
+  does not reach past Blackwell.
 
 ## 2026-08-19 — 1.3.1
 

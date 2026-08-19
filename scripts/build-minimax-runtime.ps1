@@ -113,11 +113,13 @@ function Invoke-CustomCudaBuild {
         # cards - PTX for Turing and Ampere, device code for the RTX 30, 40 and
         # 50 series. Upstream's own script leaves both at "whatever this machine
         # is", which produces a binary only this machine can run.
-        # The trailing 120-virtual is NVIDIA's own "Building for Maximum
-        # Compatibility" rule: without PTX for the newest architecture, a card
-        # newer than the ones listed has nothing to JIT from and the kernel
-        # launch fails outright. 120a-real is device code for Blackwell as it
-        # exists today; 120-virtual is what a card released after it uses.
+        # The trailing 120-virtual follows NVIDIA's "Building for Maximum
+        # Compatibility" rule: without PTX for the newest architecture there is
+        # nothing to JIT from and the kernel launch simply fails. ggml rewrites
+        # it to 120a-virtual on the way through - its Blackwell kernels use FP4
+        # tensor core instructions that only exist in 12Xa - so this buys PTX
+        # for Blackwell variants, not for whatever comes after them. ggml's own
+        # comment puts that boundary at Rubin.
         'universal' { '-DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;120-virtual' }
         'native' { '-DCMAKE_CUDA_ARCHITECTURES=native' }
         'sm_89' { '-DCMAKE_CUDA_ARCHITECTURES=89' }
@@ -126,7 +128,15 @@ function Invoke-CustomCudaBuild {
     $vcvars = Get-VcVars64
     $buildDirectoryName = "build-cuda-$CudaArchitecture"
     $parallelism = [Math]::Max(1, [Environment]::ProcessorCount)
-    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $settings && cmake --build `"$buildDirectoryName`" --config Release --parallel $parallelism"
+    # Only the server is shipped. Building every target as well meant compiling
+    # and linking mm-lm, mm-synth, quantize, neural-codec and seven test
+    # binaries on every release, none of which leave the build directory.
+    #
+    # ccache, when it is installed, is what turns a rebuild from twenty minutes
+    # into one: ggml picks it up on its own through GGML_CCACHE, and the CUDA
+    # kernels - which are almost all of the time here - are what it caches.
+    $ccache = if (Get-Command ccache -ErrorAction SilentlyContinue) { '-DGGML_CCACHE=ON' } else { '-DGGML_CCACHE=OFF' }
+    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --parallel $parallelism"
     Push-Location $engineWorktree
     # The compiler's own output must not become this function's return value:
     # PowerShell returns everything a function writes, and the build directory

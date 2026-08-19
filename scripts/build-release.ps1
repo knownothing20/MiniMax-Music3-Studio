@@ -41,11 +41,19 @@ if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
 if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY)) {
     throw "TAURI_UPDATER_PUBKEY must contain the matching public key.`n`n$whereTheKeyIs"
 }
-# A password is only needed for an encrypted signing key. Windows cannot hold an
-# empty environment variable at all - assigning '' deletes it - so demanding this
-# variable made a release with an unencrypted key impossible to build. Tauri asks
-# for a password only when the key is actually encrypted, and the build below
-# fails loudly if signing does not happen.
+# A password is only needed for an encrypted signing key, and this checks the
+# key itself rather than demanding the variable unconditionally: Windows cannot
+# hold an empty environment variable at all, so requiring it made a release with
+# an unencrypted key impossible to build.
+#
+# Without this check an encrypted key does not fail - it hangs. Tauri asks for
+# the password on stdin, the build runs with no console, and the whole release
+# sits there in silence after the installers are already on disk. That happened,
+# and it looked exactly like a slow build.
+$decodedKey = try { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TAURI_SIGNING_PRIVATE_KEY)) } catch { $env:TAURI_SIGNING_PRIVATE_KEY }
+if ($decodedKey -match 'encrypted secret key' -and [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+    throw "The signing key is encrypted and TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty. Tauri would wait for it on stdin and this build would hang.`n`n$whereTheKeyIs"
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $desktopRoot = Join-Path $repoRoot 'desktop'
