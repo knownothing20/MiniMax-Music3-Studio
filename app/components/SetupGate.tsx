@@ -62,7 +62,7 @@ type Profile = {
 
 type Catalog = { engine_id: string; recommended_profile_id: string; profiles: Profile[]; components: Music3Component[] };
 
-type OptionalAsset = { id: string; label: string; bytes: number; note: string; installed: boolean; kind: 'model' | 'runtime' };
+type OptionalAsset = { id: string; label: string; bytes: number; note: string; installed: boolean; kind: 'model' | 'runtime'; vram_gb?: number | null };
 type SetProgress = { bytes: number; installed_bytes: number; ready: boolean; files: number };
 type OptionalStatus = {
   assets: OptionalAsset[];
@@ -213,7 +213,10 @@ export const OptionalGroup: React.FC<{
   const models = assets.filter((asset) => {
     if (asset.kind !== 'model') return false;
     if (!engines || engines.length === 0) return false;
-    if (engine === 'whisper') return asset.id.startsWith('whisper-');
+    // A faster-whisper model is a directory of files - weights, tokenizer,
+    // vocabulary - and only the weights are a choice. The rest carry no VRAM
+    // figure, which is how they are told apart here.
+    if (engine === 'whisper') return asset.id.startsWith('whisper-') && asset.vram_gb != null;
     // Parakeet comes in two precisions; the rest of its files are shared, so
     // only the encoders are a choice.
     if (engine === 'parakeet') return asset.id === 'parakeet-tdt-int8' || asset.id === 'parakeet-tdt-fp32';

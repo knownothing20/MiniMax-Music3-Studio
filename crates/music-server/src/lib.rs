@@ -2763,8 +2763,26 @@ fn karaoke_set(name: &str, device: lyrics_sync::OnnxFlavour, whisper_model: Opti
             }
         }
         "whisper" => {
-            wanted.push(if matches!(device, lyrics_sync::OnnxFlavour::Cpu) { "whisper-cpu" } else { "whisper-cuda" }.into());
-            wanted.push(whisper_model.unwrap_or("whisper-large-v3-turbo").to_owned());
+            // One binary whichever device is chosen; the card needs CUDA 11's
+            // libraries beside it, and without them CTranslate2 silently uses
+            // the processor instead of saying so.
+            wanted.push("whisper-engine".into());
+            if !matches!(device, lyrics_sync::OnnxFlavour::Cpu) {
+                wanted.push("whisper-cublas".into());
+                wanted.push("whisper-cudnn".into());
+            }
+            // A model is a directory of files, and it is useless one file
+            // short, so the whole set goes together.
+            let chosen = whisper_model.unwrap_or("whisper-large-v3-turbo");
+            if let Some(size) = chosen.strip_prefix("whisper-") {
+                let prefix = format!("models/whisper/faster-whisper-{size}/");
+                wanted.extend(
+                    lyrics_sync::ASSETS
+                        .iter()
+                        .filter(|asset| asset.relative_path.starts_with(&prefix))
+                        .map(|asset| asset.id.to_string()),
+                );
+            }
         }
         _ => {}
     }

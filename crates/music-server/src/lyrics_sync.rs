@@ -62,7 +62,13 @@ impl LyricsSyncConfig {
 }
 
 /// whisper.cpp is pinned to one release so a working setup keeps working.
-const WHISPER_BUILD: &str = "v1.9.2";
+/// The recogniser is pinned to one release, so a setup that works keeps
+/// working: Purfview's standalone faster-whisper, the build Dub Studio runs.
+const WHISPER_BUILD: &str = "Whisper-Faster_r192.3";
+/// CTranslate2 in that build links against CUDA 11, not the 12 the separator
+/// uses, so Whisper carries its own pair of libraries.
+const WHISPER_CUBLAS_BUILD: &str = "11.11.3.6";
+const WHISPER_CUDNN_BUILD: &str = "8.9.7.29";
 /// The ONNX Runtime that Parakeet loads. Mixing versions deadlocks the loader,
 /// so this is pinned exactly as Dub Studio pins it.
 /// The NVIDIA libraries the CUDA provider links against, pinned like the rest.
@@ -72,40 +78,99 @@ const CUFFT_BUILD: &str = "11.4.1.4";
 const CUDNN_BUILD: &str = "9.25.0.15";
 const ONNXRUNTIME_BUILD: &str = "v1.24.2";
 
+/// Where the recogniser's binaries live once unpacked. CTranslate2 loads its
+/// CUDA libraries from beside the executable, so they share one directory - the
+/// way Dub Studio arranges it, and the reason its card mode works instead of
+/// quietly falling back to the processor.
+pub const WHISPER_RUNTIME_DIR: &str = "whisper";
+
+/// The model sizes the recogniser knows, as `--model` names them.
+pub const WHISPER_SIZES: &[&str] = &["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"];
+
+/// The words and their times out of faster-whisper's JSON.
+///
+/// A segment that came back without word timestamps becomes one long "word":
+/// better a line placed roughly than a line dropped, and the written lyrics are
+/// laid back over whatever times these are.
+fn whisper_words_from_json(text: &str) -> Vec<(f64, String)> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let Some(segments) = value.get("segments").and_then(|value| value.as_array()) else { return Vec::new() };
+    let mut words = Vec::new();
+    for segment in segments {
+        match segment.get("words").and_then(|value| value.as_array()) {
+            Some(list) if !list.is_empty() => {
+                for entry in list {
+                    let word = entry
+                        .get("word")
+                        .or_else(|| entry.get("text"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    if word.is_empty() {
+                        continue;
+                    }
+                    words.push((entry.get("start").and_then(|value| value.as_f64()).unwrap_or(0.0), word));
+                }
+            }
+            _ => {
+                let word = segment.get("text").and_then(|value| value.as_str()).unwrap_or_default().trim().to_string();
+                if !word.is_empty() {
+                    words.push((segment.get("start").and_then(|value| value.as_f64()).unwrap_or(0.0), word));
+                }
+            }
+        }
+    }
+    words
+}
+
 pub const ASSETS: &[Asset] = &[
     Asset {
-        id: "whisper-cuda",
-        label: "whisper.cpp runtime (CUDA 12.4)",
+        id: "whisper-engine",
+        label: "Whisper (faster-whisper standalone)",
         kind: AssetKind::Runtime,
-        url: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-cublas-12.4.0-bin-x64.zip",
-        relative_path: "runtime/whisper-cuda.zip",
-        bytes: 670_611_449,
-        unzip_into: Some("whisper-cuda"),
-        marker: "whisper-cli",
+        url: "https://github.com/Purfview/whisper-standalone-win/releases/download/faster-whisper/Whisper-Faster_r192.3_windows.zip",
+        relative_path: "runtime/whisper-faster.zip",
+        bytes: 87_654_143,
+        unzip_into: Some(WHISPER_RUNTIME_DIR),
+        marker: "whisper-faster",
         pick: &[],
         vram_gb: None,
-        note: "GPU build. Large, because it carries the CUDA libraries with it.",
+        note: "Purfview's build of faster-whisper: word timestamps, on the card or the processor.",
     },
     Asset {
-        id: "whisper-cpu",
-        label: "whisper.cpp runtime (CPU)",
+        id: "whisper-cublas",
+        label: "NVIDIA cuBLAS 11.11 (for Whisper)",
         kind: AssetKind::Runtime,
-        url: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip",
-        relative_path: "runtime/whisper-cpu.zip",
-        bytes: 8_194_445,
-        unzip_into: Some("whisper-cpu"),
-        marker: "whisper-cli",
-        pick: &[],
+        url: "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-11.11.3.6-archive.zip",
+        relative_path: "runtime/whisper-cublas.zip",
+        bytes: 420_850_025,
+        unzip_into: Some(WHISPER_RUNTIME_DIR),
+        marker: "cublas64_11",
+        pick: &["cublas64_11.dll", "cublasLt64_11.dll"],
         vram_gb: None,
-        note: "Tiny download, works anywhere, slower on long tracks.",
+        note: "CTranslate2 is built against CUDA 11; without these the card is never used.",
+    },
+    Asset {
+        id: "whisper-cudnn",
+        label: "NVIDIA cuDNN 8.9 (for Whisper)",
+        kind: AssetKind::Runtime,
+        url: "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-8.9.7.29_cuda11-archive.zip",
+        relative_path: "runtime/whisper-cudnn.zip",
+        bytes: 704_240_064,
+        unzip_into: Some(WHISPER_RUNTIME_DIR),
+        marker: "cudnn64_8",
+        pick: &["cudnn64_8.dll", "cudnn_ops_infer64_8.dll", "cudnn_cnn_infer64_8.dll"],
+        vram_gb: None,
+        note: "The convolution kernels the encoder spends its time in.",
     },
     Asset {
         id: "whisper-tiny",
         label: "Whisper tiny",
         kind: AssetKind::Model,
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-        relative_path: "models/ggml-tiny.bin",
-        bytes: 77_691_713,
+        url: "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/model.bin",
+        relative_path: "models/whisper/faster-whisper-tiny/model.bin",
+        bytes: 75_538_270,
         unzip_into: None,
         marker: "",
         pick: &[],
@@ -113,12 +178,103 @@ pub const ASSETS: &[Asset] = &[
         note: "The smallest there is. For a quick check, not for lyrics.",
     },
     Asset {
+        id: "whisper-tiny-config",
+        label: "Whisper tiny (config.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/config.json",
+        relative_path: "models/whisper/faster-whisper-tiny/config.json",
+        bytes: 2_249,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-tiny-tokenizer",
+        label: "Whisper tiny (tokenizer.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/tokenizer.json",
+        relative_path: "models/whisper/faster-whisper-tiny/tokenizer.json",
+        bytes: 2_203_239,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-tiny-vocabulary",
+        label: "Whisper tiny (vocabulary.txt)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-tiny/resolve/main/vocabulary.txt",
+        relative_path: "models/whisper/faster-whisper-tiny/vocabulary.txt",
+        bytes: 459_861,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-base",
+        label: "Whisper base",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-base/resolve/main/model.bin",
+        relative_path: "models/whisper/faster-whisper-base/model.bin",
+        bytes: 145_217_532,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: Some(1),
+        note: "Fast and small; misses words in dense mixes.",
+    },
+    Asset {
+        id: "whisper-base-config",
+        label: "Whisper base (config.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-base/resolve/main/config.json",
+        relative_path: "models/whisper/faster-whisper-base/config.json",
+        bytes: 2_309,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-base-tokenizer",
+        label: "Whisper base (tokenizer.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-base/resolve/main/tokenizer.json",
+        relative_path: "models/whisper/faster-whisper-base/tokenizer.json",
+        bytes: 2_203_239,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-base-vocabulary",
+        label: "Whisper base (vocabulary.txt)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-base/resolve/main/vocabulary.txt",
+        relative_path: "models/whisper/faster-whisper-base/vocabulary.txt",
+        bytes: 459_861,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
         id: "whisper-small",
         label: "Whisper small",
         kind: AssetKind::Model,
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-        relative_path: "models/ggml-small.bin",
-        bytes: 487_601_967,
+        url: "https://huggingface.co/Systran/faster-whisper-small/resolve/main/model.bin",
+        relative_path: "models/whisper/faster-whisper-small/model.bin",
+        bytes: 483_546_902,
         unzip_into: None,
         marker: "",
         pick: &[],
@@ -126,12 +282,51 @@ pub const ASSETS: &[Asset] = &[
         note: "Noticeably better than base without asking much of the card.",
     },
     Asset {
+        id: "whisper-small-config",
+        label: "Whisper small (config.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-small/resolve/main/config.json",
+        relative_path: "models/whisper/faster-whisper-small/config.json",
+        bytes: 2_370,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-small-tokenizer",
+        label: "Whisper small (tokenizer.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-small/resolve/main/tokenizer.json",
+        relative_path: "models/whisper/faster-whisper-small/tokenizer.json",
+        bytes: 2_203_239,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-small-vocabulary",
+        label: "Whisper small (vocabulary.txt)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-small/resolve/main/vocabulary.txt",
+        relative_path: "models/whisper/faster-whisper-small/vocabulary.txt",
+        bytes: 459_861,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
         id: "whisper-medium",
         label: "Whisper medium",
         kind: AssetKind::Model,
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-        relative_path: "models/ggml-medium.bin",
-        bytes: 1_533_763_059,
+        url: "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/model.bin",
+        relative_path: "models/whisper/faster-whisper-medium/model.bin",
+        bytes: 1_527_906_378,
         unzip_into: None,
         marker: "",
         pick: &[],
@@ -139,43 +334,173 @@ pub const ASSETS: &[Asset] = &[
         note: "Slower than turbo and rarely better on sung words.",
     },
     Asset {
-        id: "whisper-large-v3",
-        label: "Whisper large-v3 (q5_0)",
+        id: "whisper-medium-config",
+        label: "Whisper medium (config.json)",
         kind: AssetKind::Model,
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
-        relative_path: "models/ggml-large-v3-q5_0.bin",
-        bytes: 1_081_140_203,
+        url: "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/config.json",
+        relative_path: "models/whisper/faster-whisper-medium/config.json",
+        bytes: 2_257,
         unzip_into: None,
         marker: "",
         pick: &[],
-        vram_gb: Some(4),
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-medium-tokenizer",
+        label: "Whisper medium (tokenizer.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/tokenizer.json",
+        relative_path: "models/whisper/faster-whisper-medium/tokenizer.json",
+        bytes: 2_203_239,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-medium-vocabulary",
+        label: "Whisper medium (vocabulary.txt)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-medium/resolve/main/vocabulary.txt",
+        relative_path: "models/whisper/faster-whisper-medium/vocabulary.txt",
+        bytes: 459_861,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3",
+        label: "Whisper large-v3",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/model.bin",
+        relative_path: "models/whisper/faster-whisper-large-v3/model.bin",
+        bytes: 3_087_284_237,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: Some(5),
         note: "The full model. Slower than turbo, and the most accurate on hard mixes.",
     },
     Asset {
-        id: "whisper-large-v3-turbo",
-        label: "Whisper large-v3-turbo (q5_0)",
+        id: "whisper-large-v3-config",
+        label: "Whisper large-v3 (config.json)",
         kind: AssetKind::Model,
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-        relative_path: "models/ggml-large-v3-turbo-q5_0.bin",
-        bytes: 574_041_195,
+        url: "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/config.json",
+        relative_path: "models/whisper/faster-whisper-large-v3/config.json",
+        bytes: 2_394,
         unzip_into: None,
         marker: "",
         pick: &[],
-        vram_gb: Some(2),
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-preprocessor-config",
+        label: "Whisper large-v3 (preprocessor_config.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/preprocessor_config.json",
+        relative_path: "models/whisper/faster-whisper-large-v3/preprocessor_config.json",
+        bytes: 340,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-tokenizer",
+        label: "Whisper large-v3 (tokenizer.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/tokenizer.json",
+        relative_path: "models/whisper/faster-whisper-large-v3/tokenizer.json",
+        bytes: 2_480_617,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-vocabulary",
+        label: "Whisper large-v3 (vocabulary.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/vocabulary.json",
+        relative_path: "models/whisper/faster-whisper-large-v3/vocabulary.json",
+        bytes: 1_068_114,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-turbo",
+        label: "Whisper large-v3-turbo",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/main/model.bin",
+        relative_path: "models/whisper/faster-whisper-large-v3-turbo/model.bin",
+        bytes: 1_617_884_929,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: Some(3),
         note: "The accurate choice for sung lyrics.",
     },
     Asset {
-        id: "whisper-base",
-        label: "Whisper base",
+        id: "whisper-large-v3-turbo-config",
+        label: "Whisper large-v3-turbo (config.json)",
         kind: AssetKind::Model,
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-        relative_path: "models/ggml-base.bin",
-        bytes: 147_951_465,
+        url: "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/main/config.json",
+        relative_path: "models/whisper/faster-whisper-large-v3-turbo/config.json",
+        bytes: 2_263,
         unzip_into: None,
         marker: "",
         pick: &[],
-        vram_gb: Some(1),
-        note: "Fast and small; misses words in dense mixes.",
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-turbo-preprocessor-config",
+        label: "Whisper large-v3-turbo (preprocessor_config.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/main/preprocessor_config.json",
+        relative_path: "models/whisper/faster-whisper-large-v3-turbo/preprocessor_config.json",
+        bytes: 340,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-turbo-tokenizer",
+        label: "Whisper large-v3-turbo (tokenizer.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/main/tokenizer.json",
+        relative_path: "models/whisper/faster-whisper-large-v3-turbo/tokenizer.json",
+        bytes: 2_710_337,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
+    },
+    Asset {
+        id: "whisper-large-v3-turbo-vocabulary",
+        label: "Whisper large-v3-turbo (vocabulary.json)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2/resolve/main/vocabulary.json",
+        relative_path: "models/whisper/faster-whisper-large-v3-turbo/vocabulary.json",
+        bytes: 1_068_114,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "Part of the model above.",
     },
     Asset {
         id: "parakeet-tdt-int8",
@@ -428,7 +753,20 @@ impl LyricsSync {
     /// The CUDA build first: on a machine that has one, the CPU build would be
     /// a silent downgrade.
     pub fn whisper_binary(&self) -> Option<PathBuf> {
-        crate::downloads::locate_binary(self.downloader.root(), &["whisper-cuda", "whisper-cpu"], "whisper-cli")
+        crate::downloads::locate_binary(self.downloader.root(), &[WHISPER_RUNTIME_DIR], "whisper-faster")
+    }
+
+    /// What `--model_dir` is given: the binary looks inside it for a directory
+    /// called `faster-whisper-<size>`.
+    fn whisper_model_dir(&self) -> PathBuf {
+        self.downloader.root().join("models").join("whisper")
+    }
+
+    /// The size a model id stands for - `whisper-large-v3` is `large-v3`, which
+    /// is the name the binary is given.
+    fn whisper_size(id: &str) -> Option<&str> {
+        let size = id.strip_prefix("whisper-")?;
+        WHISPER_SIZES.contains(&size).then_some(size)
     }
 
     pub fn installed_models(&self) -> Vec<&'static Asset> {
@@ -488,10 +826,16 @@ impl LyricsSync {
             .all(|name| dir.join(name).is_file())
     }
 
+    /// A model counts as present only with every one of its files: a directory
+    /// missing its tokenizer loads exactly as far as an error message.
     fn whisper_model_path(&self, config: &LyricsSyncConfig) -> Option<PathBuf> {
-        let id = config.whisper_model.as_deref()?;
-        let asset = asset(id)?;
-        self.downloader.is_installed(asset).then(|| self.downloader.path_of(asset))
+        let size = Self::whisper_size(config.whisper_model.as_deref()?)?;
+        let prefix = format!("models/whisper/faster-whisper-{size}/");
+        let parts: Vec<&'static Asset> = ASSETS.iter().filter(|asset| asset.relative_path.starts_with(&prefix)).collect();
+        if parts.is_empty() || !parts.iter().all(|asset| self.downloader.is_installed(asset)) {
+            return None;
+        }
+        Some(self.whisper_model_dir().join(format!("faster-whisper-{size}")))
     }
 
     pub async fn status(&self, config: &LyricsSyncConfig) -> SyncStatus {
@@ -554,15 +898,24 @@ impl LyricsSync {
         Ok(words)
     }
 
-    /// Runs whisper.cpp over one audio file and returns the words it heard.
+    /// Runs faster-whisper over one track and returns the words it heard.
     ///
-    /// whisper.cpp writes LRC itself, but only line by line; asking for one
-    /// token per line gives the word stream the aligner needs.
-    pub fn whisper_words(&self, config: &LyricsSyncConfig, audio: &Path, language: Option<&str>, lyrics: &str) -> Result<Vec<(f64, String)>> {
+    /// Purfview's standalone build, asked for JSON with word timestamps - the
+    /// same recogniser Dub Studio uses. It replaced whisper.cpp, which was
+    /// asked for an LRC file: that file is written line by line, word times had
+    /// to be guessed out of it, and when the run failed the binary exited zero
+    /// and wrote nothing at all, so the only thing anyone ever saw was
+    /// "whisper-cli produced no LRC file".
+    pub fn whisper_words(&self, config: &LyricsSyncConfig, audio: &Path, language: Option<&str>, _lyrics: &str) -> Result<Vec<(f64, String)>> {
         let binary = self.whisper_binary().ok_or_else(|| anyhow!("the Whisper runtime is not installed"))?;
-        let model = self
-            .whisper_model_path(config)
+        let size = config
+            .whisper_model
+            .as_deref()
+            .and_then(Self::whisper_size)
             .ok_or_else(|| anyhow!("no Whisper model is downloaded and selected"))?;
+        if self.whisper_model_path(config).is_none() {
+            bail!("the Whisper model {size} is not completely downloaded");
+        }
 
         let work = self.downloader.root().join("work");
         fs::create_dir_all(&work).with_context(|| format!("create {}", work.display()))?;
@@ -570,48 +923,93 @@ impl LyricsSync {
         let wav = stem.with_extension("wav");
         crate::audio_pcm::write_wav16k_mono(audio, &wav)
             .with_context(|| format!("decode {} for recognition", audio.display()))?;
+        let out_dir = stem.with_extension("out");
+        fs::remove_dir_all(&out_dir).ok();
+        fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
 
-        let mut command = Command::new(&binary);
+        let on_card = !matches!(config.runtime, OnnxFlavour::Cpu);
+        let mut outcome = self.run_whisper(&binary, size, &wav, &out_dir, language, on_card);
+        // CTranslate2 fails inside itself on a machine without usable CUDA, so
+        // the card is tried and the processor is the answer to its refusal -
+        // once, and only in that direction.
+        if outcome.is_err() && on_card {
+            let refused = outcome.unwrap_err();
+            fs::remove_dir_all(&out_dir).ok();
+            fs::create_dir_all(&out_dir).ok();
+            outcome = self
+                .run_whisper(&binary, size, &wav, &out_dir, language, false)
+                .with_context(|| format!("the card was tried first and refused: {refused}"));
+        }
+        fs::remove_file(&wav).ok();
+
+        if let Err(error) = outcome {
+            fs::remove_dir_all(&out_dir).ok();
+            return Err(error);
+        }
+        let json = fs::read_dir(&out_dir)
+            .with_context(|| format!("read {}", out_dir.display()))?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+            .ok_or_else(|| anyhow!("whisper wrote no JSON into {}", out_dir.display()))?;
+        let text = fs::read_to_string(&json).with_context(|| format!("read {}", json.display()))?;
+        let words = whisper_words_from_json(&text);
+        fs::remove_dir_all(&out_dir).ok();
+        Ok(words)
+    }
+
+    /// One run of the recogniser, with its complaints kept: a failure here is
+    /// the only place that ever says why nothing was recognised.
+    fn run_whisper(&self, binary: &Path, size: &str, wav: &Path, out_dir: &Path, language: Option<&str>, on_card: bool) -> Result<()> {
+        let mut command = Command::new(binary);
         command
+            .arg(wav)
             .arg("--model")
-            .arg(&model)
-            .arg("--file")
-            .arg(&wav)
-            .arg("--output-lrc")
-            .arg("--output-file")
-            .arg(&stem)
-            // One token per line: the aligner puts the written lyrics back on
-            // top of these times, so what is wanted here is the finest
-            // granularity whisper.cpp will emit.
-            .arg("--max-len")
-            .arg("1")
-            .arg("--language")
-            .arg(language.unwrap_or("auto"))
-            // Biasing the decoder with the words that were actually sung is
-            // what every lyric aligner does; without it a dense mix comes back
-            // as "[Music]" and there is nothing to align to.
-            .arg("--prompt")
-            .arg(prompt_from(lyrics))
+            .arg(size)
+            .arg("--model_dir")
+            .arg(self.whisper_model_dir())
+            .arg("--task")
+            .arg("transcribe")
+            .arg("--output_format")
+            .arg("json")
+            .arg("--output_dir")
+            .arg(out_dir)
+            .arg("--word_timestamps")
+            .arg("True")
+            .arg("--compute_type")
+            .arg(if on_card { "float16" } else { "int8" })
+            .arg("--device")
+            .arg(if on_card { "cuda" } else { "cpu" })
+            .arg("--beep_off");
+        // A language it was told beats one it has to guess, and "auto" is not a
+        // language code - passing it as one is how a run comes back empty.
+        if let Some(code) = language.map(str::trim).filter(|code| !code.is_empty() && *code != "auto") {
+            command.arg("--language").arg(code);
+        }
+        command
+            // The weights are on this disk; a recogniser that goes looking for
+            // them on the network is one that fails without one.
+            .env("HF_HUB_OFFLINE", "1")
+            .env("TRANSFORMERS_OFFLINE", "1")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // CTranslate2 and the CUDA libraries sit beside the binary, and that is
+        // where they are found from.
+        if let Some(directory) = binary.parent() {
+            command.current_dir(directory);
+        }
         hide_console(&mut command);
 
-        let status = command.status().with_context(|| format!("run {}", binary.display()))?;
-        let produced = stem.with_extension("lrc");
-        let lrc = fs::read_to_string(&produced).ok();
-        fs::remove_file(&wav).ok();
-        fs::remove_file(&produced).ok();
-
-        if !status.success() {
-            bail!("whisper-cli exited with {status}");
+        let finished = command.output().with_context(|| format!("run {}", binary.display()))?;
+        if finished.status.success() {
+            return Ok(());
         }
-        let lrc = lrc.context("whisper-cli produced no LRC file")?;
-        let words = words_from_lrc(&lrc);
-        if words.is_empty() {
-            bail!("the recogniser found no words to time");
-        }
-        Ok(words)
+        let stderr = String::from_utf8_lossy(&finished.stderr);
+        let stdout = String::from_utf8_lossy(&finished.stdout);
+        let mut tail: Vec<&str> = stderr.lines().chain(stdout.lines()).filter(|line| !line.trim().is_empty()).rev().take(8).collect();
+        tail.reverse();
+        bail!("whisper exited with {}: {}", finished.status, tail.join(" | "))
     }
 }
 
@@ -1164,6 +1562,8 @@ Third");
                 // NVIDIA's libraries are pinned by their own version in the
                 // archive name, the same way the others are.
                 let pinned = entry.url.contains(WHISPER_BUILD)
+                    || entry.url.contains(WHISPER_CUBLAS_BUILD)
+                    || entry.url.contains(WHISPER_CUDNN_BUILD)
                     || entry.url.contains(ONNXRUNTIME_BUILD)
                     || entry.url.contains(CUBLAS_BUILD)
                     || entry.url.contains(CUDART_BUILD)

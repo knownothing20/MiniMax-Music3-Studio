@@ -247,3 +247,22 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 }
+
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    /// Decodes an actual generated track, when one is there to decode. The
+    /// karaoke path failed with "whisper-cli produced no LRC file", and the
+    /// only way that happens with a successful exit is a WAV whisper cannot
+    /// read - so this is where that would show.
+    #[test]
+    fn decoding_a_real_track_gives_whisper_something_to_read() {
+        let Some(track) = std::env::var_os("MM3_TEST_TRACK").map(std::path::PathBuf::from) else { return };
+        let output = std::env::temp_dir().join("mm3-decode-check.wav");
+        write_wav16k_mono(&track, &output).expect("decode the track");
+        let size = std::fs::metadata(&output).expect("the wav exists").len();
+        assert!(size > 44, "the wav is nothing but a header: {size} bytes");
+        eprintln!("wav: {} bytes at {}", size, output.display());
+    }
+}
