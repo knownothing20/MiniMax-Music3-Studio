@@ -2073,6 +2073,23 @@ fn save_cached_catalog(catalog: &providers::openrouter::CapabilityCatalog) {
 /// the user to "refresh the catalog" at the moment they press a button is
 /// asking them to do the program's job - and the refresh button lives on
 /// another screen entirely.
+/// The catalogue, and a fresh one when the model asked about is not in it.
+///
+/// The record is what the request is built from - the model's own parameters,
+/// the efforts it accepts - so a catalogue that predates the model would have
+/// the studio guessing about a model OpenRouter can describe exactly.
+async fn catalog_describing(state: &AppState, model: &str) -> Result<providers::openrouter::CapabilityCatalog, String> {
+    let catalog = catalog_for(state).await?;
+    if model.is_empty() || catalog.models.iter().any(|entry| entry.id == model) {
+        return Ok(catalog);
+    }
+    {
+        let mut cached = state.openrouter_catalog.write().await;
+        cached.catalog = None;
+    }
+    catalog_for(state).await
+}
+
 async fn catalog_for(state: &AppState) -> Result<providers::openrouter::CapabilityCatalog, String> {
     if let Some(catalog) = state.openrouter_catalog.read().await.catalog.clone() {
         return Ok(catalog);
@@ -3095,17 +3112,28 @@ async fn assistant_write_stream(
         // out with the studio's own temperature on top of models that had
         // stated their own - a different request from the one the catalogue
         // describes, and the streamed path is the one the window uses.
-        let published = if matches!(config.provider, AssistantProvider::OpenRouter) {
-            catalog_for(&state)
+        let entry = if matches!(config.provider, AssistantProvider::OpenRouter) {
+            catalog_describing(&state, &model)
                 .await
                 .ok()
-                .and_then(|catalog| catalog.models.iter().find(|entry| entry.id == model).cloned())
-                .map(|entry| serde_json::to_value(&entry.defaults).unwrap_or(Value::Null))
+                .and_then(|catalog| catalog.models.iter().find(|item| item.id == model).cloned())
         } else {
             None
         };
-        let mut body =
-            assistant::chat_body_constrained(&model, &system, &user, config.reasoning_effort.as_deref(), published.as_ref(), schema);
+        let published = entry.as_ref().map(|entry| serde_json::to_value(&entry.defaults).unwrap_or(Value::Null));
+        // Thinking on the model's own terms: it publishes which efforts it
+        // takes, which one it prefers, and whether it can be asked not to
+        // think at all. A setting of ours that is not on its list becomes the
+        // one it named, because naming an unknown effort is refused outright.
+        let effort = match (&entry, config.provider) {
+            (Some(entry), AssistantProvider::OpenRouter) => entry
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.effort_for(config.reasoning_effort.as_deref())),
+            (_, AssistantProvider::OpenRouter) => None,
+            _ => config.reasoning_effort.clone(),
+        };
+        let mut body = assistant::chat_body_constrained(&model, &system, &user, effort.as_deref(), published.as_ref(), schema);
         body["stream"] = Value::Bool(true);
 
         emit(sender.clone(), serde_json::json!({ "stage": "sent", "model": model })).await;
@@ -3288,17 +3316,19 @@ async fn assistant_write(
                 path: providers::openrouter::CHAT_COMPLETIONS_PATH,
                 // Whatever this model publishes for itself; the studio's own
                 // temperature is only for models that publish nothing.
-                body: assistant::chat_body_full(
-                    &model,
-                    &system,
-                    &user,
-                    config.reasoning_effort.as_deref(),
-                    catalog_now
-                        .as_ref()
-                        .and_then(|catalog| catalog.models.iter().find(|entry| entry.id == model))
-                        .map(|entry| serde_json::to_value(&entry.defaults).unwrap_or(Value::Null))
-                        .as_ref(),
-                ),
+                body: {
+                    let entry = catalog_now.as_ref().and_then(|catalog| catalog.models.iter().find(|entry| entry.id == model));
+                    let effort = entry
+                        .and_then(|entry| entry.reasoning.as_ref())
+                        .and_then(|reasoning| reasoning.effort_for(config.reasoning_effort.as_deref()));
+                    assistant::chat_body_full(
+                        &model,
+                        &system,
+                        &user,
+                        effort.as_deref(),
+                        entry.map(|entry| serde_json::to_value(&entry.defaults).unwrap_or(Value::Null)).as_ref(),
+                    )
+                },
             })
             .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
             execute_openrouter_json(authenticated.request)

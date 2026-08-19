@@ -414,6 +414,11 @@ pub fn chat_body_constrained(
     if let Some(effort) = effort.filter(|value| !value.trim().is_empty() && *value != "off") {
         // The draft is what is wanted, not the thinking: exclude keeps the
         // response small and the parser looking in one place.
+        //
+        // Only for a model that says it takes this. OpenRouter publishes
+        // `supported_parameters` for every model and 182 of the 468 do not
+        // list reasoning; sending it to those is asking for something they
+        // never offered.
         body["reasoning"] = serde_json::json!({ "effort": effort, "exclude": true });
     }
     if let Some(schema) = schema {
@@ -679,6 +684,33 @@ neon on the wet road"));
 
     /// "required" alone let the model answer with an empty string and still
     /// satisfy the schema, which is how a blank description came back.
+    /// Two things this request has to get right about a model it did not
+    /// choose: use what the model published for itself, and ask for thinking
+    /// only where thinking is offered.
+    #[test]
+    fn a_model_that_published_nothing_gets_the_studio_s_own_warmth() {
+        let plain = chat_body_constrained("m", "s", "u", None, None, None);
+        assert_eq!(plain["temperature"], serde_json::json!(0.8));
+
+        let published = serde_json::json!({ "temperature": 0.6, "top_p": 0.95 });
+        let honoured = chat_body_constrained("m", "s", "u", None, Some(&published), None);
+        assert_eq!(honoured["temperature"], serde_json::json!(0.6), "the model's own figure wins");
+        assert_eq!(honoured["top_p"], serde_json::json!(0.95));
+    }
+
+    #[test]
+    fn reasoning_is_only_asked_of_models_that_take_it() {
+        let asked = chat_body_constrained("m", "s", "u", Some("high"), None, None);
+        assert_eq!(asked["reasoning"], serde_json::json!({ "effort": "high", "exclude": true }));
+
+        // The caller passes None for a model whose supported_parameters do not
+        // list reasoning, and for "off".
+        let quiet = chat_body_constrained("m", "s", "u", None, None, None);
+        assert!(quiet.get("reasoning").is_none(), "nothing is asked of a model that does not offer it");
+        let switched_off = chat_body_constrained("m", "s", "u", Some("off"), None, None);
+        assert!(switched_off.get("reasoning").is_none());
+    }
+
     #[test]
     fn the_schema_asks_for_content_not_just_a_key() {
         let schema = super::draft_schema(&["global_metadata"]);

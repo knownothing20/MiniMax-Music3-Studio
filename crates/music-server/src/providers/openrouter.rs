@@ -102,6 +102,48 @@ pub struct RemoteModel {
     pub architecture: ModelArchitecture,
     #[serde(default)]
     pub default_parameters: ModelDefaults,
+    /// What the model says about thinking, in its own terms. Not part of
+    /// `default_parameters`: it is a field of its own, and ignoring it is how a
+    /// request asks for an effort the model does not take.
+    #[serde(default)]
+    pub reasoning: Option<ReasoningSupport>,
+}
+
+/// A model's own rules for reasoning, as OpenRouter publishes them.
+///
+/// `deepseek/deepseek-v4-pro-0813` takes max, high or low - not medium.
+/// `z-ai/glm-5.3` reasons whether or not anyone asks. Sending an effort from a
+/// list of our own invention is asking for something that was never offered.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct ReasoningSupport {
+    /// What the model uses when nothing is asked for.
+    pub default_effort: Option<String>,
+    /// Whether it thinks unless told otherwise.
+    pub default_enabled: Option<bool>,
+    /// Whether it can be told otherwise at all.
+    pub mandatory: bool,
+    /// The only values it accepts.
+    pub supported_efforts: Vec<String>,
+}
+
+impl ReasoningSupport {
+    /// The effort to send for a wanted setting, or nothing at all.
+    ///
+    /// An effort the model does not list becomes the one it prefers, because a
+    /// request that names an unknown effort is refused outright - and a model
+    /// that must think is not told to stop.
+    pub fn effort_for(&self, wanted: Option<&str>) -> Option<String> {
+        let wanted = wanted.map(str::trim).filter(|value| !value.is_empty());
+        if matches!(wanted, Some("off")) {
+            return if self.mandatory { self.default_effort.clone() } else { None };
+        }
+        let wanted = wanted?;
+        if self.supported_efforts.is_empty() || self.supported_efforts.iter().any(|value| value == wanted) {
+            return Some(wanted.to_string());
+        }
+        self.default_effort.clone().or_else(|| self.supported_efforts.first().cloned())
+    }
 }
 
 /// Prices are decimal strings in the upstream API. Preserve that representation
@@ -146,6 +188,8 @@ pub struct CatalogModel {
     pub supported_parameters: Vec<String>,
     pub pricing: Option<ModelPricing>,
     pub capabilities: Vec<Capability>,
+    /// What this model will accept as thinking, in its own words.
+    pub reasoning: Option<ReasoningSupport>,
 }
 
 impl CatalogModel {
@@ -162,6 +206,7 @@ impl CatalogModel {
             supported_parameters: normalized(model.supported_parameters),
             pricing: model.pricing,
             defaults: model.default_parameters,
+            reasoning: model.reasoning,
             capabilities,
         }
     }
@@ -451,6 +496,37 @@ fn normalized(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The rules are the model's, and these are real ones, copied from the
+    /// live catalogue rather than imagined.
+    #[test]
+    fn an_effort_a_model_does_not_take_becomes_the_one_it_named() {
+        // deepseek/deepseek-v4-pro-0813 as published: max, high or low.
+        let deepseek = ReasoningSupport {
+            default_effort: Some("high".into()),
+            default_enabled: None,
+            mandatory: false,
+            supported_efforts: vec!["max".into(), "high".into(), "low".into()],
+        };
+        assert_eq!(deepseek.effort_for(Some("max")).as_deref(), Some("max"), "a listed effort is sent as asked");
+        assert_eq!(deepseek.effort_for(Some("medium")).as_deref(), Some("high"), "an unlisted one becomes its own default");
+        assert_eq!(deepseek.effort_for(Some("off")), None, "a model that may stay quiet is allowed to");
+        assert_eq!(deepseek.effort_for(None), None);
+
+        // z-ai/glm-5.3 thinks whether or not anyone asks.
+        let glm = ReasoningSupport {
+            default_effort: Some("max".into()),
+            default_enabled: Some(true),
+            mandatory: true,
+            supported_efforts: vec!["max".into(), "high".into(), "low".into()],
+        };
+        assert_eq!(glm.effort_for(Some("off")).as_deref(), Some("max"), "a mandatory thinker is not told to stop");
+        assert_eq!(glm.effort_for(Some("medium")).as_deref(), Some("max"));
+
+        // A model that publishes no list takes what it is given.
+        let unknown = ReasoningSupport::default();
+        assert_eq!(unknown.effort_for(Some("high")).as_deref(), Some("high"));
+    }
     use super::*;
 
     #[test]
