@@ -40,3 +40,35 @@ export const DevicePicker: React.FC<{
     </div>
   );
 };
+
+/**
+ * The same row of choices, wherever a choice is made.
+ *
+ * The settings panels had each drawn their own - indigo, thicker borders,
+ * different radius - so the same decision looked like a different control
+ * depending on which page you were on.
+ */
+export const ChoiceTabs = <T extends string>({ options, value, onChange, columns = 3 }: {
+  options: { id: T; label: string; disabled?: boolean }[];
+  value: T;
+  onChange: (value: T) => void;
+  columns?: number;
+}) => (
+  <div className={`grid gap-1.5 ${columns === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+    {options.map(option => (
+      <button
+        key={option.id}
+        type="button"
+        disabled={option.disabled}
+        onClick={() => onChange(option.id)}
+        className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-40 ${
+          value === option.id
+            ? 'border-pink-400 bg-pink-500/10 text-zinc-900 dark:text-white'
+            : 'border-zinc-200 text-zinc-500 hover:text-zinc-900 dark:border-white/10 dark:hover:text-white'
+        }`}
+      >
+        {option.label}
+      </button>
+    ))}
+  </div>
+);

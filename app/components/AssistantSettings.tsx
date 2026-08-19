@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Download, Loader2, PenLine, Square } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
+import { ChoiceTabs } from './DevicePicker';
 import { loadNativeOpenRouterCatalog, refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
 /**
@@ -57,7 +58,7 @@ interface AssistantStatus {
 }
 
 const INPUT =
-  'w-full rounded-lg border-2 border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-white';
+  'w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-white';
 
 export const AssistantSettings: React.FC = () => {
   const { t } = useI18n();
@@ -208,28 +209,17 @@ export const AssistantSettings: React.FC = () => {
       <div className="space-y-3 pl-7">
         <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantHint')}</p>
 
-        <div className="grid grid-cols-2 gap-2">
-          {(['none', 'managed', 'open_router', 'local'] as const).map(value => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setProvider(value)}
-              className={`rounded-lg border-2 py-2 text-sm font-medium transition-colors ${
-                provider === value
-                  ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300'
-                  : 'border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-600'
-              }`}
-            >
-              {value === 'none'
-                ? t('assistantDisabled')
-                : value === 'managed'
-                  ? t('assistantManaged')
-                  : value === 'local'
-                    ? t('assistantLocal')
-                    : 'OpenRouter'}
-            </button>
-          ))}
-        </div>
+        <ChoiceTabs
+          columns={2}
+          options={[
+            { id: 'none' as Provider, label: t('assistantDisabled') },
+            { id: 'managed' as Provider, label: t('assistantManaged') },
+            { id: 'open_router' as Provider, label: 'OpenRouter' },
+            { id: 'local' as Provider, label: t('assistantLocal') },
+          ]}
+          value={provider}
+          onChange={setProvider}
+        />
 
         {provider === 'managed' && (
           <div className="space-y-2">
@@ -240,7 +230,7 @@ export const AssistantSettings: React.FC = () => {
                 ? Math.min(100, Math.round((runtime.active_download.downloaded_bytes / Math.max(1, runtime.active_download.total_bytes)) * 100))
                 : 0;
               return (
-                <div key={asset.id} className="rounded-lg border-2 border-zinc-300 p-3 dark:border-zinc-700">
+                <div key={asset.id} className="rounded-lg border border-zinc-200 p-3 dark:border-white/10">
                   <div className="flex items-center justify-between gap-3">
                     <label className="flex min-w-0 items-center gap-2">
                       {asset.kind === 'model' && (
@@ -250,7 +240,7 @@ export const AssistantSettings: React.FC = () => {
                           checked={managedModel === asset.id}
                           onChange={() => setManagedModel(asset.id)}
                           disabled={!asset.installed}
-                          className="h-4 w-4 accent-indigo-500"
+                          className="h-4 w-4 accent-pink-500"
                         />
                       )}
                       <span className="truncate text-sm font-medium text-zinc-900 dark:text-white">{asset.label}</span>
@@ -266,7 +256,7 @@ export const AssistantSettings: React.FC = () => {
                           type="button"
                           onClick={() => void install(asset.id)}
                           disabled={Boolean(runtime.active_download && !runtime.active_download.done)}
-                          className="inline-flex items-center gap-1 rounded-lg border-2 border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-pink-400 disabled:opacity-40 dark:border-white/10 dark:text-zinc-300"
                         >
                           {active ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                           {active ? `${percent}%` : t('download')}
@@ -277,13 +267,13 @@ export const AssistantSettings: React.FC = () => {
                   <p className="mt-1 text-[11px] leading-4 text-zinc-500">{ASSET_NOTE[asset.id] ? t(ASSET_NOTE[asset.id] as never) : asset.note}</p>
                   {active && (
                     <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                      <div className="h-full bg-indigo-500 transition-[width]" style={{ width: `${percent}%` }} />
+                      <div className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-[width]" style={{ width: `${percent}%` }} />
                     </div>
                   )}
                 </div>
               );
             })}
-            <div className="rounded-lg border-2 border-dashed border-zinc-300 p-3 dark:border-zinc-700">
+            <div className="rounded-lg border-2 border-dashed border-zinc-300 p-3 dark:border-white/10">
               <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400">{t('assistantOwnFile')}</label>
               <input
                 value={managedPath}
@@ -300,7 +290,7 @@ export const AssistantSettings: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void stopSidecar()}
-                className="inline-flex items-center gap-2 rounded-lg border-2 border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-300"
+                className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-pink-400 dark:border-white/10 dark:text-zinc-300"
               >
                 <Square size={13} /> {t('assistantUnload')}
               </button>
@@ -332,7 +322,7 @@ export const AssistantSettings: React.FC = () => {
                 type="button"
                 onClick={() => void loadCatalog()}
                 disabled={busy !== null}
-                className="shrink-0 rounded-lg border-2 border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+                className="shrink-0 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-600 hover:border-pink-400 disabled:opacity-50 dark:border-white/10 dark:text-zinc-300"
               >
                 {busy === 'catalog' ? <Loader2 size={16} className="animate-spin" /> : t('refresh')}
               </button>

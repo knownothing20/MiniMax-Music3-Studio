@@ -823,6 +823,29 @@ async fn install_separation_asset(
     // "card" means whatever is still missing for the graphics card, one after
     // another: asking someone to press four buttons in the right order is not a
     // setup, it is a quiz.
+    // The separator as one thing: its model, the runtime that loads it, and -
+    // for the card - the CUDA provider. Six rows of file names asked the user
+    // to work out which of them belong together.
+    if matches!(request.asset_id.as_str(), "auto" | "cuda" | "cpu") {
+        let card = !matches!(request.asset_id.as_str(), "cpu");
+        let separator = state.separator.clone();
+        let sync = state.lyrics_sync.clone();
+        let mut runtime: Vec<&'static lyrics_sync::Asset> = Vec::new();
+        if let Some(asset) = lyrics_sync::asset("onnxruntime") { runtime.push(asset); }
+        if card {
+            runtime.extend(CARD_ASSETS.iter().filter_map(|id| lyrics_sync::asset(id)));
+        }
+        tokio::spawn(async move {
+            if let Err(error) = separator.downloader().install_all(&[&separation::MODEL]).await {
+                eprintln!("the separator model could not be installed: {error}");
+                return;
+            }
+            if let Err(error) = sync.downloader().install_all(&runtime).await {
+                eprintln!("the separator runtime could not be installed: {error}");
+            }
+        });
+        return Ok(Json(serde_json::json!({ "started": true })));
+    }
     if request.asset_id == "card" {
         let sync = state.lyrics_sync.clone();
         let card: Vec<&'static lyrics_sync::Asset> = CARD_ASSETS.iter().filter_map(|id| lyrics_sync::asset(id)).collect();
@@ -2369,10 +2392,35 @@ async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+/// Every field optional, so the download page can set the provider without
+/// blanking the model, the path and the reasoning effort it knows nothing of.
+#[derive(Debug, Deserialize)]
+struct AssistantSettingsRequest {
+    provider: Option<AssistantProvider>,
+    local_base_url: Option<Option<String>>,
+    local_model: Option<Option<String>>,
+    openrouter_model: Option<Option<String>>,
+    managed_model: Option<Option<String>>,
+    managed_path: Option<Option<String>>,
+    reasoning_effort: Option<Option<String>>,
+}
+
 async fn update_assistant_settings(
     State(state): State<AppState>,
-    Json(request): Json<AssistantConfig>,
+    Json(incoming): Json<AssistantSettingsRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let request = {
+        let current = state.assistant.read().await.clone();
+        AssistantConfig {
+            provider: incoming.provider.unwrap_or(current.provider),
+            local_base_url: incoming.local_base_url.unwrap_or(current.local_base_url),
+            local_model: incoming.local_model.unwrap_or(current.local_model),
+            openrouter_model: incoming.openrouter_model.unwrap_or(current.openrouter_model),
+            managed_model: incoming.managed_model.unwrap_or(current.managed_model),
+            managed_path: incoming.managed_path.unwrap_or(current.managed_path),
+            reasoning_effort: incoming.reasoning_effort.unwrap_or(current.reasoning_effort),
+        }
+    };
     if request.provider == AssistantProvider::Local {
         let base = request.local_base_url.as_deref().unwrap_or_default();
         let url = reqwest::Url::parse(base)
@@ -2389,6 +2437,10 @@ async fn update_assistant_settings(
 #[derive(Debug, Deserialize)]
 struct AssistantAssetRequest {
     asset_id: String,
+    /// The model to install along with the runtime, when the capability has a
+    /// choice of them. A runtime with no model does nothing.
+    #[serde(default)]
+    model_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2427,8 +2479,9 @@ async fn assistant_runtime_install(
     };
     if !set.is_empty() {
         let runtime = state.assistant_runtime.clone();
+        let model = request.model_id.clone();
         tokio::spawn(async move {
-            for id in set {
+            for id in set.into_iter().chain(model.as_deref()) {
                 if let Err(error) = runtime.install(id).await {
                     eprintln!("the assistant runtime could not be installed: {error}");
                     return;
@@ -2580,7 +2633,11 @@ async fn karaoke_install(
     Json(request): Json<AssistantAssetRequest>,
 ) -> Result<Json<lyrics_sync::SyncStatus>, (StatusCode, Json<ApiError>)> {
     let config = state.lyrics_sync_config.read().await.clone();
-    let set = karaoke_set(&request.asset_id, config.runtime, config.whisper_model.as_deref());
+    let set = karaoke_set(
+        &request.asset_id,
+        config.runtime,
+        request.model_id.as_deref().or(config.whisper_model.as_deref()),
+    );
     if !set.is_empty() {
         // In the background, so the panel keeps answering while half a
         // gigabyte arrives; the whole set is one button, not eight.

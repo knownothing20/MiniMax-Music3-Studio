@@ -94,7 +94,9 @@ const OptionalGroup: React.FC<{
   engines?: EngineChoice[];
   /** Where the chosen engine and device are saved, when they are a setting. */
   settingsUrl?: string;
-}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl }) => {
+  /** Whether one of the engines is a server the user runs themselves. */
+  serverField?: boolean;
+}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl, serverField }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<OptionalStatus | null>(null);
   const [open, setOpen] = useState(false);
@@ -103,6 +105,10 @@ const OptionalGroup: React.FC<{
   const [failed, setFailed] = useState<string | null>(null);
   const [engine, setEngine] = useState<string>(engines?.[0]?.id ?? '');
   const [device, setDevice] = useState<Device>('cuda');
+  const [model, setModel] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [keyStored, setKeyStored] = useState(false);
+  const [baseUrl, setBaseUrl] = useState('');
 
   const load = useCallback(async () => {
     const response = await fetch(statusUrl);
@@ -111,6 +117,7 @@ const OptionalGroup: React.FC<{
       setStatus(body);
       if (body.provider && engines?.some((choice) => choice.id === body.provider)) setEngine(body.provider);
       if (body.runtime) setDevice(body.runtime);
+      if (body.whisper_model) setModel(body.whisper_model);
       if (body.settings?.runtime) setDevice(body.settings.runtime);
     }
   }, [statusUrl, engines]);
@@ -124,7 +131,13 @@ const OptionalGroup: React.FC<{
     await fetch(settingsUrl, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: next.engine ?? engine, runtime: next.device ?? device }),
+      body: JSON.stringify(
+        settingsUrl.endsWith('/separation/settings')
+          ? { ...(status as unknown as { settings?: object })?.settings, runtime: next.device ?? device }
+          : settingsUrl.endsWith('/assistant/status')
+            ? { provider: next.engine ?? engine }
+            : { provider: next.engine ?? engine, runtime: next.device ?? device },
+      ),
     })
       .then(async (response) => {
         if (!response.ok) setFailed(await errorMessage(response));
@@ -136,6 +149,14 @@ const OptionalGroup: React.FC<{
   useEffect(() => { void load().catch(() => undefined); }, [load]);
 
   useEffect(() => {
+    if (!engines?.some((choice) => choice.device === false)) return;
+    void fetch('/v1/openrouter/settings')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { configured?: boolean } | null) => setKeyStored(Boolean(body?.configured)))
+      .catch(() => undefined);
+  }, [engines]);
+
+  useEffect(() => {
     const active = status?.active_download;
     if (!active || active.done) return;
     const timer = window.setInterval(() => void load().catch(() => undefined), 1500);
@@ -145,6 +166,17 @@ const OptionalGroup: React.FC<{
   const assets = status?.assets ?? [];
   if (assets.length === 0) return null;
   const installed = assets.filter((asset) => asset.installed).length;
+  // The models the chosen engine can run. A recogniser or an assistant is a
+  // runtime plus one of these; the runtime is the studio's business, the model
+  // is the user's choice.
+  const models = assets.filter((asset) => {
+    if (asset.kind !== 'model') return false;
+    if (!engines || engines.length === 0) return false;
+    if (engine === 'whisper') return asset.id.startsWith('whisper-');
+    if (engine === 'parakeet' || engine === 'open_router') return false;
+    return true;
+  });
+  const chosenModel = model || models.find((asset) => asset.installed)?.id || models[0]?.id || '';
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/10 dark:bg-suno-card">
@@ -193,58 +225,166 @@ const OptionalGroup: React.FC<{
             (() => {
               const chosen = engines.find((choice) => choice.id === engine);
               if (chosen?.device === false) {
-                return <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{purpose}</p>;
+                // The cloud recogniser downloads nothing and needs one thing:
+                // the key. Sending the user to another page to type it, and
+                // back here to use it, is two pages for one field.
+                if (serverField && engine === 'local') {
+                  return (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={baseUrl}
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                        placeholder="http://127.0.0.1:8080/v1"
+                        className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs text-zinc-900 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFailed(null);
+                          void fetch('/v1/assistant/status', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ provider: 'local', local_base_url: baseUrl.trim() || null }),
+                          })
+                            .then(async (response) => {
+                              if (!response.ok) setFailed(await errorMessage(response));
+                            })
+                            .catch((error: Error) => setFailed(error.message));
+                        }}
+                        className="shrink-0 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-200"
+                      >
+                        {t('save')}
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onChange={(event) => setApiKey(event.target.value)}
+                      placeholder={keyStored ? '••••••••' : 'sk-or-...'}
+                      className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs text-zinc-900 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFailed(null);
+                        void fetch('/v1/openrouter/settings', {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ api_key: apiKey.trim() || null }),
+                        })
+                          .then(async (response) => {
+                            if (!response.ok) setFailed(await errorMessage(response));
+                            else { setApiKey(''); setKeyStored(true); }
+                          })
+                          .catch((error: Error) => setFailed(error.message));
+                      }}
+                      className="shrink-0 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-200"
+                    >
+                      {t('save')}
+                    </button>
+                  </div>
+                );
               }
               const busy = Boolean(status?.active_download && !status.active_download.done);
               const percent = busy && status?.active_download
                 ? Math.min(100, Math.round((status.active_download.downloaded_bytes / Math.max(1, status.active_download.total_bytes)) * 100))
                 : 0;
               const ready = installed > 0 && installed === assets.length;
+              const setBytes = assets.reduce((total, asset) => total + asset.bytes, 0);
               return (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFailed(null);
-                      void fetch(installUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ asset_id: engines.length === 1 ? device : engine }),
-                      })
-                        .then(async (response) => {
-                          if (!response.ok) setFailed(await errorMessage(response));
-                          return load();
-                        })
-                        .catch((error: Error) => setFailed(error.message));
-                    }}
-                    disabled={busy}
-                    className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-200"
-                  >
-                    {busy ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                    {busy ? `${percent}%` : t('download')}
-                  </button>
-                  {removeUrl && ready && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFailed(null);
-                        void fetch(removeUrl, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ asset_id: engine }),
-                        })
-                          .then(async (response) => {
-                            if (!response.ok) setFailed(await errorMessage(response));
-                            return load();
-                          })
-                          .catch((error: Error) => setFailed(error.message));
-                      }}
-                      disabled={busy}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-500 hover:border-rose-400 hover:text-rose-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-400"
-                    >
-                      <Trash2 size={13} />
-                      {t('remove')}
-                    </button>
+                // One row, the way Dub Studio states it: what this is, what it
+                // weighs, whether it is here, which variant, and the two
+                // buttons that change that.
+                <div className="rounded-lg border border-zinc-200 px-2.5 py-2 dark:border-white/10">
+                  <div className="flex items-center gap-2.5">
+                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ready ? 'bg-pink-500' : 'bg-zinc-400'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium text-zinc-900 dark:text-white">
+                        {engines.find((choice) => choice.id === engine)?.label}
+                      </div>
+                      <div className="truncate text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400">
+                        {bytes(setBytes)}{ready ? ` · ${t('installed')}` : ` · ${t('notInstalledSuffix')}`}
+                      </div>
+                    </div>
+                    {models.length > 1 && (
+                      <select
+                        value={chosenModel}
+                        onChange={(event) => {
+                          setModel(event.target.value);
+                          if (settingsUrl && engine === 'whisper') {
+                            void fetch(settingsUrl, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ whisper_model: event.target.value }),
+                            }).catch(() => undefined);
+                          }
+                        }}
+                        className="shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] tabular-nums text-zinc-800 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-zinc-100"
+                      >
+                        {models.map((asset) => (
+                          <option key={asset.id} value={asset.id}>
+                            {asset.label}{asset.installed ? ' ✓' : ''} · {bytes(asset.bytes)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {busy ? (
+                      <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-pink-500">{percent}%</span>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFailed(null);
+                            void fetch(installUrl, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ asset_id: engines.length === 1 ? device : engine, model_id: chosenModel || undefined }),
+                            })
+                              .then(async (response) => {
+                                if (!response.ok) setFailed(await errorMessage(response));
+                                return load();
+                              })
+                              .catch((error: Error) => setFailed(error.message));
+                          }}
+                          title={t('download')}
+                          className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+                        >
+                          <Download size={13} />
+                        </button>
+                        {removeUrl && ready && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFailed(null);
+                              void fetch(removeUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ asset_id: engine }),
+                              })
+                                .then(async (response) => {
+                                  if (!response.ok) setFailed(await errorMessage(response));
+                                  return load();
+                                })
+                                .catch((error: Error) => setFailed(error.message));
+                            }}
+                            title={t('remove')}
+                            className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-500 hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-400"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  {busy && (
+                    <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-black/30">
+                      <div className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-[width]" style={{ width: `${percent}%` }} />
+                    </div>
                   )}
                 </div>
               );
@@ -688,13 +828,21 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               purpose={t('assistantOptionalPurpose')}
               statusUrl="/v1/assistant/runtime"
               installUrl="/v1/assistant/runtime/install"
-              engines={[{ id: 'llama', label: 'llama.cpp' }]}
+              engines={[
+                { id: 'managed', label: 'llama.cpp' },
+                { id: 'local', label: t('assistantLocal'), device: false },
+                { id: 'open_router', label: 'OpenRouter', device: false },
+              ]}
+              settingsUrl="/v1/assistant/status"
+              serverField
             />
             <OptionalGroup
               title={t('stemsTitle')}
               purpose={t('separationSectionHint')}
               statusUrl="/v1/separation/runtime"
               installUrl="/v1/separation/runtime/install"
+              settingsUrl="/v1/separation/settings"
+              engines={[{ id: 'htdemucs', label: 'HT-Demucs' }]}
             />
             <OptionalGroup
               title={t('karaokeSection')}

@@ -24,12 +24,23 @@ Windows build.
 
 ### Changed
 
+- **Six Whisper models instead of two** — tiny, base, small, medium, large-v3
+  and large-v3-turbo, the same line-up Dub Studio offers.
+- **The OpenRouter key and a self-hosted server address are typed where they
+  are needed**, in the group that uses them, rather than on another page.
 - **Every local engine is now a choice, not a list of files.** Karaoke offers
   Parakeet, Whisper or OpenRouter and what to run it on, and one button
   installs or removes the whole set - a runtime and five model files are one
   recogniser, not six decisions. The card is the default.
-- The device control is one component, used by the download page and the tools
-  panel alike; they had each grown their own version of it.
+- Every model row states the same things in the same order - what it is, what
+  it weighs, whether it is installed, which variant - with download and remove
+  beside it, the way Dub Studio states it.
+- The controls are shared components now. The settings panels had each drawn
+  their own tabs, inputs and buttons, so the same decision looked like a
+  different control depending on the page.
+- A partial settings request no longer replaces the whole assistant
+  configuration: sending a provider used to blank the model, the path and the
+  reasoning effort.
 
 ## 2026-08-19 — 1.3.4
 

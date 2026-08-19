@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Check, Download, Loader2, Mic2 } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
+import { ChoiceTabs, DevicePicker } from './DevicePicker';
 import { loadNativeOpenRouterCatalog, refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
 /**
@@ -38,7 +39,7 @@ interface KaraokeStatus {
 }
 
 const INPUT =
-  'w-full rounded-lg border-2 border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-white';
+  'w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-white';
 
 const megabytes = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`);
 
@@ -188,28 +189,23 @@ export const KaraokeSettings: React.FC = () => {
         <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('karaokeHint')}</p>
 
         <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-          <input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} className="h-4 w-4 accent-indigo-500" />
+          <input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} className="h-4 w-4 accent-pink-500" />
           {t('karaokeEnable')}
         </label>
 
         {enabled && (
           <>
-            <div className="grid grid-cols-3 gap-2">
-              {(['parakeet', 'whisper', 'open_router'] as const).map(value => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setProvider(value)}
-                  className={`rounded-lg border-2 py-2 text-sm font-medium transition-colors ${
-                    provider === value
-                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300'
-                      : 'border-zinc-300 text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-600'
-                  }`}
-                >
-                  {value === 'parakeet' ? 'Parakeet' : value === 'whisper' ? 'Whisper' : 'OpenRouter'}
-                </button>
-              ))}
-            </div>
+            <ChoiceTabs
+              options={[
+                { id: 'parakeet' as Provider, label: 'Parakeet' },
+                { id: 'whisper' as Provider, label: 'Whisper' },
+                { id: 'open_router' as Provider, label: 'OpenRouter' },
+              ]}
+              value={provider}
+              onChange={setProvider}
+            />
+
+            <DevicePicker value={device} onChange={setDevice} />
 
             {provider === 'whisper' && (
               <div className="space-y-2">
@@ -240,7 +236,7 @@ export const KaraokeSettings: React.FC = () => {
                     type="button"
                     onClick={() => void loadCatalog()}
                     disabled={busy !== null}
-                    className="shrink-0 rounded-lg border-2 border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+                    className="shrink-0 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-600 hover:border-pink-400 disabled:opacity-50 dark:border-white/10 dark:text-zinc-300"
                   >
                     {busy === 'catalog' ? <Loader2 size={16} className="animate-spin" /> : t('refresh')}
                   </button>
@@ -264,7 +260,7 @@ export const KaraokeSettings: React.FC = () => {
                     ? Math.min(100, Math.round((status.active_download.downloaded_bytes / Math.max(1, status.active_download.total_bytes)) * 100))
                     : 0;
                   return (
-                    <div key={asset.id} className="rounded-lg border-2 border-zinc-300 p-3 dark:border-zinc-700">
+                    <div key={asset.id} className="rounded-lg border border-zinc-200 p-3 dark:border-white/10">
                       <div className="flex items-center justify-between gap-3">
                         <span className="truncate text-sm font-medium text-zinc-900 dark:text-white">{asset.label}</span>
                         <div className="flex shrink-0 items-center gap-2">
@@ -278,7 +274,7 @@ export const KaraokeSettings: React.FC = () => {
                               type="button"
                               onClick={() => void install(asset.id)}
                               disabled={Boolean(status?.active_download && !status.active_download.done)}
-                              className="inline-flex items-center gap-1 rounded-lg border-2 border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-zinc-400 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300"
+                              className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-pink-400 disabled:opacity-40 dark:border-white/10 dark:text-zinc-300"
                             >
                               {active ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                               {active ? `${percent}%` : t('download')}
@@ -289,7 +285,7 @@ export const KaraokeSettings: React.FC = () => {
                       <p className="mt-1 text-[11px] leading-4 text-zinc-500">{asset.note}</p>
                       {active && (
                         <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                          <div className="h-full bg-indigo-500 transition-[width]" style={{ width: `${percent}%` }} />
+                          <div className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-[width]" style={{ width: `${percent}%` }} />
                         </div>
                       )}
                     </div>
