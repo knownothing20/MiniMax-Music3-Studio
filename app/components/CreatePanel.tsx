@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { karaokeReason } from '../services/karaoke';
-import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, RotateCcw, Save, Sparkles, Square, Wand2 , Settings2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, Pause, Play, RotateCcw, Save, Sparkles, Square, Trash2, Upload, Wand2 , Settings2 } from 'lucide-react';
+import { AudioWaveform } from './AudioWaveform';
 import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { joinCaption, randomExample, splitCaption } from '../services/examples';
@@ -165,6 +166,12 @@ const Stage: React.FC<{ title: string; hint: string; children: React.ReactNode }
 );
 
 /** A card with a titled header strip, the way the panels are built elsewhere. */
+/// Minutes and seconds, the way a player writes them.
+const formatClock = (seconds: number) => {
+  const whole = Math.max(0, Math.floor(seconds || 0));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+};
+
 const Card: React.FC<{ title: string; actions?: React.ReactNode; children: React.ReactNode }> = ({ title, actions, children }) => (
   <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
     <div className="flex items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50 px-3 py-2 dark:border-white/5 dark:bg-white/5">
@@ -231,6 +238,23 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [steps, setSteps] = useState('');
   const [ditCfg, setDitCfg] = useState('');
   const [synthBatch, setSynthBatch] = useState('');
+  // A track read back into the codes the engine renders from. Nothing here
+  // changes a request until a file is chosen: no file, no field, and the
+  // studio behaves exactly as it did before this existed.
+  const [audioInputPath, setAudioInputPath] = useState('');
+  const [audioInputName, setAudioInputName] = useState('');
+  const [audioInputUrl, setAudioInputUrl] = useState('');
+  const [audioInputCodes, setAudioInputCodes] = useState('');
+  const [audioInputSeconds, setAudioInputSeconds] = useState(0);
+  const [audioInputBusy, setAudioInputBusy] = useState(false);
+  const [audioInputError, setAudioInputError] = useState<string | null>(null);
+  const [audioInputOpen, setAudioInputOpen] = useState(false);
+  const [audioInputDragging, setAudioInputDragging] = useState(false);
+  const [audioInputPlaying, setAudioInputPlaying] = useState(false);
+  const [audioInputTime, setAudioInputTime] = useState(0);
+  const [audioInputDuration, setAudioInputDuration] = useState(0);
+  const audioInputFile = useRef<HTMLInputElement>(null);
+  const audioInputPlayer = useRef<HTMLAudioElement>(null);
   const [seed, setSeed] = useState('');
   const [peakClip, setPeakClip] = useState('');
   // Quality first, not "quick listen": the engine's own defaults are mp3 at
@@ -408,6 +432,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       output_format: format,
       mp3_bitrate: numberOrUndefined(mp3Bitrate) ?? 128,
     };
+    // Only when a track was read. Absent, and this is the request it always was.
+    if (audioInputCodes) request.audio_codes = audioInputCodes;
     if (name.trim()) request.title = name.trim();
     if (coverPrompt.trim()) request.cover_prompt = coverPrompt.trim();
     if (audioCodes.trim()) request.audio_codes = audioCodes.trim();
@@ -469,6 +495,82 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     setAssistStage(null);
     setAssistDraft('');
   };
+  /// A track chosen or dropped on the card. The bytes cross into the studio
+  /// once - a page cannot hand over a path, browsers do not give one - and the
+  /// same bytes play in the card while the encoder reads them.
+  const takeAudioInput = async (file: File) => {
+    setAudioInputError(null);
+    setAudioInputCodes('');
+    setAudioInputSeconds(0);
+    setAudioInputName(file.name);
+    setAudioInputUrl(URL.createObjectURL(file));
+    setAudioInputBusy(true);
+    try {
+      const response = await fetch('/v1/audio-input/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
+        body: await file.arrayBuffer(),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error || String(response.status));
+      const path = String(body.path || '');
+      setAudioInputPath(path);
+      // Reading takes seconds, so it happens as part of choosing the track
+      // rather than behind a second button nobody asked for.
+      await readTrackAt(path);
+    } catch (reason) {
+      setAudioInputError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAudioInputBusy(false);
+    }
+  };
+
+  const readTrackAt = async (path: string) => {
+    const response = await fetch('/v1/audio-input/encode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || String(response.status));
+    setAudioInputCodes(String(body.audio_codes || ''));
+    setAudioInputSeconds(Number(body.seconds) || 0);
+  };
+
+  /// Only ever needed a second time: the first read happens on its own.
+  const readAudioInput = async () => {
+    if (!audioInputPath || audioInputBusy) return;
+    setAudioInputBusy(true);
+    setAudioInputError(null);
+    try {
+      await readTrackAt(audioInputPath);
+    } catch (reason) {
+      setAudioInputError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAudioInputBusy(false);
+    }
+  };
+
+  const clearAudioInput = () => {
+    if (audioInputUrl) URL.revokeObjectURL(audioInputUrl);
+    setAudioInputPath('');
+    setAudioInputName('');
+    setAudioInputUrl('');
+    setAudioInputCodes('');
+    setAudioInputSeconds(0);
+    setAudioInputError(null);
+    setAudioInputPlaying(false);
+    setAudioInputTime(0);
+    setAudioInputDuration(0);
+  };
+
+  const toggleAudioInput = () => {
+    const player = audioInputPlayer.current;
+    if (!player) return;
+    if (player.paused) void player.play();
+    else player.pause();
+  };
+
   const askAssistant = async (target: 'all' | 'lyrics' | 'prompt') => {
     if (!assistantReady || assisting) return;
     const run = new AbortController();
@@ -684,6 +786,126 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               )}
             </Card>
           )}
+
+
+          {/* Both modes, because reading a track is not an advanced setting:
+              it is a different way of starting a song. A file is dropped on it
+              or chosen, and it plays right here - the same shape the reference
+              track had in ACE-Step Studio. */}
+          <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
+            <button
+              type="button"
+              onClick={() => setAudioInputOpen(value => !value)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-white/5"
+            >
+              <div className="min-w-0">
+                <div className="text-xs font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{t('audioInputTitle')}</div>
+                <p className="mt-0.5 truncate text-[11px] text-zinc-500">
+                  {audioInputCodes
+                    ? `${audioInputName} · ${Math.round(audioInputSeconds)} ${t('secondsShort')}`
+                    : audioInputName || t('audioInputHint')}
+                </p>
+              </div>
+              <ChevronDown size={15} className={audioInputOpen ? 'shrink-0 rotate-180 transition-transform' : 'shrink-0 transition-transform'} />
+            </button>
+            {audioInputOpen && (
+              <div className="space-y-2 border-t border-zinc-100 p-3 dark:border-white/5">
+                <input
+                  ref={audioInputFile}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    if (file) void takeAudioInput(file);
+                    event.target.value = '';
+                  }}
+                />
+                {!audioInputUrl ? (
+                  <div
+                    onDragOver={event => { event.preventDefault(); setAudioInputDragging(true); }}
+                    onDragLeave={() => setAudioInputDragging(false)}
+                    onDrop={event => {
+                      event.preventDefault();
+                      setAudioInputDragging(false);
+                      const file = event.dataTransfer.files?.[0];
+                      if (file) void takeAudioInput(file);
+                    }}
+                    onClick={() => audioInputFile.current?.click()}
+                    className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed px-4 py-6 text-center transition-colors ${
+                      audioInputDragging
+                        ? 'border-pink-400 bg-pink-500/5'
+                        : 'border-zinc-300 hover:border-pink-400 dark:border-white/10 dark:hover:border-pink-500/40'
+                    }`}
+                  >
+                    <Upload size={18} className="text-zinc-400" />
+                    <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('audioInputDrop')}</span>
+                    <span className="text-[11px] text-zinc-500">{t('audioInputFormats')}</span>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-zinc-200 p-2.5 dark:border-white/10">
+                    <div className="flex items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={toggleAudioInput}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-orange-500 to-pink-600 text-white"
+                      >
+                        {audioInputPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium text-zinc-900 dark:text-white">{audioInputName}</div>
+                        <div className="text-[10px] tabular-nums text-zinc-500">
+                          {formatClock(audioInputTime)} / {formatClock(audioInputDuration)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={clearAudioInput}
+                        title={t('remove')}
+                        className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-500 transition-colors hover:border-rose-400 hover:bg-rose-500/10 hover:text-rose-600 dark:border-white/15 dark:text-zinc-400"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                    <div className="mt-2">
+                      <AudioWaveform
+                        url={audioInputUrl}
+                        currentTime={audioInputTime}
+                        duration={audioInputDuration}
+                        height={28}
+                        onClick={percent => {
+                          const player = audioInputPlayer.current;
+                          if (player && audioInputDuration > 0) player.currentTime = percent * audioInputDuration;
+                        }}
+                      />
+                    </div>
+                    <audio
+                      ref={audioInputPlayer}
+                      src={audioInputUrl}
+                      onPlay={() => setAudioInputPlaying(true)}
+                      onPause={() => setAudioInputPlaying(false)}
+                      onTimeUpdate={event => setAudioInputTime(event.currentTarget.currentTime)}
+                      onLoadedMetadata={event => setAudioInputDuration(event.currentTarget.duration || 0)}
+                      className="hidden"
+                    />
+                  </div>
+                )}
+                {audioInputUrl && (audioInputBusy || !audioInputCodes) && (
+                  <button
+                    type="button"
+                    onClick={() => void readAudioInput()}
+                    disabled={!audioInputPath || audioInputBusy || Boolean(audioInputCodes)}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-300 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
+                  >
+                    {audioInputBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                    {audioInputBusy ? t('audioInputReading') : audioInputCodes ? t('audioInputReady') : t('audioInputRead')}
+                  </button>
+                )}
+                <p className="text-[11px] leading-4 text-zinc-500">{t('audioInputExplain')}</p>
+                {audioInputError && <p className="text-[11px] leading-4 text-rose-600 dark:text-rose-300">{audioInputError}</p>}
+              </div>
+            )}
+          </div>
 
           {activity.filter(entry => entry.state !== 'done').slice(-3).map(entry => (
             <div key={`${entry.song_id}-${entry.kind}`} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] dark:border-white/10 dark:bg-suno-card">

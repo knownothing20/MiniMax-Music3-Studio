@@ -69,6 +69,8 @@ struct AppState {
     /// The look a new cover starts from, chosen in Settings.
     cover_template_default: Arc<RwLock<Option<String>>>,
     separator: Arc<separation::Separator>,
+    /// Reading a finished track back into the codes the engine renders from.
+    audio_input: Arc<audio_input::AudioInput>,
     separation_config: Arc<RwLock<separation::SeparationConfig>>,
     /// Draw a cover as soon as a track is finished.
     cover_auto: Arc<RwLock<bool>>,
@@ -97,6 +99,14 @@ struct CreateMusicJobRequest {
     lm_cfg: Option<f64>,
     lm_top_k: Option<u32>,
     lm_batch_size: Option<u32>,
+    /// A track read back into the codes the engine renders from.
+    ///
+    /// Absent, and nothing about the request changes. Present, and the engine
+    /// skips its own sampling and replays these instead - the caption and the
+    /// lyrics still build the prompt they are replayed through, so the music is
+    /// the one that was read and the sound is the one that was asked for.
+    #[serde(default)]
+    audio_codes: Option<String>,
     synth_batch_size: Option<u32>,
     dit_cfg: Option<f64>,
     peak_clip: Option<i32>,
@@ -474,6 +484,10 @@ pub async fn serve() -> anyhow::Result<()> {
         separator: Arc::new(separation::Separator::new(
             &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
         )),
+        audio_input: Arc::new(audio_input::AudioInput::new(
+            &studio_data_root().unwrap_or_else(|| std::path::PathBuf::from(".")),
+            &engine_bundle_root(),
+        )),
         separation_run: Arc::new(RwLock::new(None)),
         selected_profile_id: Arc::new(RwLock::new(selected_profile_id)),
         selected_component_ids: Arc::new(RwLock::new(selected_component_ids)),
@@ -531,6 +545,14 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/separation/runtime", get(separation_assets))
         .route("/v1/separation/runtime/install", post(install_separation_asset))
         .route("/v1/separation/runtime/cancel", post(cancel_separation_download))
+        .route("/v1/audio-input/runtime", get(audio_input_status))
+        .route("/v1/audio-input/runtime/install", post(install_audio_input))
+        .route("/v1/audio-input/runtime/cancel", post(cancel_audio_input_download))
+        .route("/v1/audio-input/remove", post(remove_audio_input))
+        .route("/v1/audio-input/pick", post(pick_audio_input))
+        .route("/v1/audio-input/preview", get(preview_audio_input))
+        .route("/v1/audio-input/upload", post(upload_audio_input))
+        .route("/v1/audio-input/encode", post(encode_audio_input))
         .route("/v1/separation/status", get(separation_status))
         .route("/v1/separation/settings", get(read_separation_settings).put(write_separation_settings))
         .route("/v1/separation/install", post(install_separation_model))
@@ -871,6 +893,230 @@ const CARD_ASSETS: [&str; 5] = ["onnxruntime-cuda", "cuda-cudart", "cuda-cublas"
 ///
 /// Two panels can be downloading at once, and until this existed the only way
 /// to stop one of them was to close the studio.
+/// The encoder that reads a finished track, reported the way every optional
+/// capability reports itself.
+async fn audio_input_status(State(state): State<AppState>) -> Json<Value> {
+    let assets = state.audio_input.downloader().status_of(std::slice::from_ref(&audio_input::ENCODER));
+    let installed = assets.first().is_some_and(|asset| asset.installed);
+    let bytes = assets.first().map(|asset| asset.bytes).unwrap_or(0);
+    Json(serde_json::json!({
+        "assets": assets,
+        "ready": installed,
+        "set": { "bytes": bytes, "installed_bytes": if installed { bytes } else { 0 }, "ready": installed, "files": 1 },
+        "active_download": state.audio_input.downloader().active_for("audio-input").await,
+    }))
+}
+
+async fn install_audio_input(State(state): State<AppState>) -> Json<Value> {
+    let input = state.audio_input.clone();
+    tokio::spawn(async move {
+        if let Err(error) = input.install().await {
+            eprintln!("the audio encoder could not be installed: {error}");
+        }
+    });
+    Json(serde_json::json!({ "started": true }))
+}
+
+async fn cancel_audio_input_download(State(state): State<AppState>) -> Json<Value> {
+    state.audio_input.downloader().cancel();
+    Json(serde_json::json!({ "cancelled": true }))
+}
+
+async fn remove_audio_input(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let freed = state
+        .audio_input
+        .downloader()
+        .remove(&audio_input::ENCODER)
+        .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "freed_bytes": freed })))
+}
+
+/// Chooses a track with the system's own file dialog. The studio runs on the
+/// same machine as the music, so a path is all that travels: nothing is
+/// uploaded, copied or converted behind the user's back.
+async fn pick_audio_input() -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let picked = tokio::task::spawn_blocking(move || {
+        rfd::FileDialog::new()
+            .set_title("Track to read")
+            .add_filter("Audio", &["mp3", "wav", "flac", "ogg", "m4a", "opus", "aac"])
+            .pick_file()
+    })
+    .await
+    .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(match picked {
+        Some(path) => serde_json::json!({ "picked": true, "path": path.display().to_string() }),
+        None => serde_json::json!({ "picked": false }),
+    }))
+}
+
+/// Takes the bytes of a dropped or chosen file and keeps them where the
+/// encoder can reach them.
+///
+/// A page cannot hand over a path - browsers do not give one - so the file
+/// itself travels, once, into the studio's own working folder. It is the same
+/// machine either way; this only crosses the window's own boundary.
+/// A file name arrives however the window's platform writes one; only the last
+/// part of it is kept, and never as a path of its own.
+fn is_separator(character: char) -> bool {
+    character == '/' || character == '\\'
+}
+
+async fn upload_audio_input(
+    State(state): State<AppState>,
+    headers: header::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if body.is_empty() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "the file was empty".into()));
+    }
+    let name = headers
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.rsplit(is_separator).next().unwrap_or(value).to_string())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "track.mp3".into());
+    let work = state.audio_input.downloader().root().join("uploads");
+    tokio::fs::create_dir_all(&work)
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    // One file at a time: the previous upload is of no further use once another
+    // has been chosen, and these are whole songs.
+    if let Ok(mut entries) = tokio::fs::read_dir(&work).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+    let path = work.join(&name);
+    tokio::fs::write(&path, &body)
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(serde_json::json!({ "path": path.display().to_string(), "name": name, "bytes": body.len() })))
+}
+
+#[derive(Debug, Deserialize)]
+struct PreviewAudioQuery {
+    path: String,
+}
+
+/// Streams a chosen track back to the window so it can be listened to.
+///
+/// The file stays where it is - nothing is uploaded or copied - but a page
+/// cannot read a disk, so the studio serves the bytes it was pointed at.
+async fn preview_audio_input(
+    axum::extract::Query(query): axum::extract::Query<PreviewAudioQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let path = std::path::PathBuf::from(&query.path);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|error| api_error(StatusCode::NOT_FOUND, format!("{}: {error}", path.display())))?;
+    let kind = match path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" | "opus" => "audio/ogg",
+        "m4a" | "aac" => "audio/mp4",
+        _ => "application/octet-stream",
+    };
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, kind)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .body(Body::from(bytes))
+        .expect("valid audio response"))
+}
+
+#[derive(Debug, Deserialize)]
+struct EncodeAudioRequest {
+    /// A track already in the library, by id.
+    #[serde(default)]
+    song_id: Option<String>,
+    /// Or any file on this machine, by path.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Reads a finished track into the codes the engine renders from.
+///
+/// What this is, said plainly because it is easy to expect something else: the
+/// engine's replay path takes these codes instead of generating any, so the
+/// whole track is rendered again from them. It is not continuing a song and not
+/// repainting a section - the engine takes the codes neither as a prefix nor as
+/// a masked span.
+async fn encode_audio_input(
+    State(state): State<AppState>,
+    Json(request): Json<EncodeAudioRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let path = match (&request.song_id, &request.path) {
+        (Some(id), _) => state
+            .library
+            .get_song(id)
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .and_then(|song| song.audio_path)
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "that track has no audio".into()))?,
+        (None, Some(path)) => path.clone(),
+        _ => return Err(api_error(StatusCode::BAD_REQUEST, "name a song_id or a path".into())),
+    };
+    // Choosing a track is the instruction to fetch what reads it. Sending the
+    // user to a settings page to press a second button for a file they have
+    // already chosen is a refusal dressed as guidance.
+    if !state.audio_input.is_ready() {
+        state
+            .audio_input
+            .install()
+            .await
+            .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("the audio encoder could not be installed: {error}")))?;
+    }
+    // The same ONNX Runtime the separator and Parakeet use. Without it there is
+    // nothing to run the encoder on, and saying so beats waiting.
+    let runtime = state
+        .lyrics_sync
+        .onnxruntime_library_of(if state.lyrics_sync.has_cuda_libraries() {
+            lyrics_sync::OnnxFlavour::Cuda
+        } else {
+            lyrics_sync::OnnxFlavour::Cpu
+        })
+        .or_else(|| state.lyrics_sync.onnxruntime_library())
+        .ok_or_else(|| api_error(StatusCode::CONFLICT, "audio-input.no-onnxruntime".into()))?;
+    let on_gpu = state.lyrics_sync.has_cuda_libraries()
+        && !matches!(state.separation_config.read().await.runtime, lyrics_sync::OnnxFlavour::Cpu);
+    let input = state.audio_input.clone();
+    let source = std::path::PathBuf::from(&path);
+    let codes = tokio::task::spawn_blocking(move || {
+        point_ort_at(&runtime);
+        input.codes_of(&source, on_gpu)
+    })
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let frames = audio_input::frames_in(&codes);
+    Ok(Json(serde_json::json!({
+        "audio_codes": codes,
+        "frames": frames,
+        "seconds": frames as f64 / 25.0,
+        "path": path,
+    })))
+}
+
+/// Points `ort` at the ONNX Runtime the studio installed, once per process.
+///
+/// It has to happen before anything touches `ort`, or the library binds to
+/// whatever `onnxruntime.dll` the system happens to have - and on Windows a
+/// DLL's own dependencies are resolved through the process search path, not
+/// through the folder it came from, which is why the directory joins PATH too.
+/// Every caller needs this, not only the separator: reading a track through the
+/// same runtime without it left the request waiting on a library that was never
+/// located.
+fn point_ort_at(runtime: &std::path::Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let runtime = runtime.to_path_buf();
+    ONCE.call_once(|| unsafe {
+        std::env::set_var("ORT_DYLIB_PATH", &runtime);
+        if let Some(directory) = runtime.parent() {
+            let existing = std::env::var("PATH").unwrap_or_default();
+            std::env::set_var("PATH", format!("{};{existing}", directory.display()));
+        }
+    });
+}
+
 async fn cancel_separation_download(State(state): State<AppState>) -> Json<Value> {
     state.separator.downloader().cancel();
     state.lyrics_sync.downloader().cancel();
@@ -1156,20 +1402,7 @@ async fn start_separation(
     let background = state.clone();
     let song_id = id.clone();
     tokio::task::spawn_blocking(move || {
-        // Must be set before anything touches `ort`, or it binds to whatever
-        // onnxruntime.dll the system happens to have.
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| unsafe {
-            std::env::set_var("ORT_DYLIB_PATH", &runtime);
-            // Windows resolves a DLL's own dependencies through the process
-            // search path, not through the folder the DLL came from. The CUDA
-            // provider sits next to cuBLAS and cuDNN and still reported them
-            // "missing" until this directory was on PATH.
-            if let Some(directory) = runtime.parent() {
-                let existing = std::env::var("PATH").unwrap_or_default();
-                std::env::set_var("PATH", format!("{};{existing}", directory.display()));
-            }
-        });
+        point_ort_at(&runtime);
 
         let outcome = (|| -> anyhow::Result<(Vec<String>, bool)> {
             let audio = audio_pcm::decode_stereo_44k(&audio_path)?;
@@ -4300,6 +4533,11 @@ fn mm_request_from(request: &CreateMusicJobRequest, selected_profile_id: Option<
     // rather than relying on hidden mm-server defaults.
     body["steps"] = Value::from(request.steps.unwrap_or(30));
     body["lm_batch_size"] = Value::from(request.lm_batch_size.unwrap_or(1));
+    // Absent means absent: a request without a track behaves exactly as it did
+    // before this existed.
+    if let Some(codes) = request.audio_codes.as_deref().map(str::trim).filter(|codes| !codes.is_empty()) {
+        body["audio_codes"] = Value::from(codes);
+    }
     body["synth_batch_size"] = Value::from(request.synth_batch_size.unwrap_or(1));
     body["peak_clip"] = Value::from(request.peak_clip.unwrap_or(10));
     body["mp3_bitrate"] = Value::from(request.mp3_bitrate.unwrap_or(128));
@@ -4442,6 +4680,7 @@ mod tests {
         let body = mm_request_from(&CreateMusicJobRequest {
             cover_prompt: None,
             title: None,
+            audio_codes: None,
             caption: "night drive".into(),
             lyrics: "one line".into(),
             duration_seconds: 30.0,
@@ -4481,6 +4720,7 @@ mod tests {
         let error = mm_request_from(&CreateMusicJobRequest {
             cover_prompt: None,
             title: None,
+            audio_codes: None,
             caption: "night drive".into(),
             lyrics: "one line".into(),
             duration_seconds: 30.0,
@@ -4511,6 +4751,7 @@ mod tests {
         let request = CreateMusicJobRequest {
             cover_prompt: None,
             title: None,
+            audio_codes: None,
             caption: "night drive".into(), lyrics: "[verse] one line".into(), duration_seconds: 60.0,
             steps: None, seed: None, lm_seed: None, lm_cfg: None, lm_top_k: None,
             lm_batch_size: None, synth_batch_size: None, dit_cfg: None, peak_clip: None,
@@ -4581,6 +4822,7 @@ mod tests {
             CreateMusicJobRequest {
                 cover_prompt: None,
                 title: None,
+                audio_codes: None,
             caption: "night drive".into(),
                 lyrics: "one line".into(),
                 duration_seconds: 30.0,
