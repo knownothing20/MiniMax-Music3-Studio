@@ -94,11 +94,20 @@ pub struct Downloader {
     root: PathBuf,
     http: reqwest::Client,
     progress: Arc<Mutex<Option<DownloadProgress>>>,
+    /// Raised to stop whatever is downloading. What has already arrived stays
+    /// on disk with its manifest, so pressing this is a pause as much as a
+    /// cancel: the next attempt carries on from the last finished piece.
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Downloader {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, http: crate::sizes::client(), progress: Arc::new(Mutex::new(None)) }
+        Self {
+            root,
+            http: crate::sizes::client(),
+            progress: Arc::new(Mutex::new(None)),
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -227,6 +236,11 @@ impl Downloader {
         self.progress.lock().await.clone()
     }
 
+    /// Stops the running download.
+    pub fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// The running download, but only if this panel started it.
     pub async fn active_for(&self, scope: &str) -> Option<DownloadProgress> {
         self.active().await.filter(|progress| progress.scope.as_deref() == Some(scope))
@@ -252,6 +266,7 @@ impl Downloader {
             return Ok(());
         }
 
+        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         let total: u64 = pending.iter().map(|asset| asset.bytes).sum();
         *self.progress.lock().await = Some(DownloadProgress {
             // A set of one is that one file, as far as anyone watching is
@@ -295,6 +310,10 @@ impl Downloader {
         }
 
         let outcome = match failure {
+            Some(error) if self.cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+                let _ = error;
+                Err(anyhow::anyhow!("cancelled"))
+            }
             Some(error) => Err(error),
             None => match assets.iter().find(|asset| !self.is_installed(asset)) {
                 Some(asset) => Err(anyhow::anyhow!("{} finished downloading but its files are not on disk", asset.label)),
@@ -355,7 +374,7 @@ impl Downloader {
             .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))?;
         }
         let target = self.path_of(asset);
-        fetch(&self.http, asset, &target, cell).await?;
+        fetch(&self.http, asset, &target, cell, self.cancel.clone()).await?;
         if let Some(flavour) = asset.unzip_into {
             extract_zip(&target, &self.root.join("runtime").join(flavour))?;
         }
@@ -380,10 +399,12 @@ impl Downloader {
             });
         }
 
+        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         let target = self.path_of(asset);
         let root = self.root.clone();
         let http = self.http.clone();
         let progress = self.progress.clone();
+        let cancel = self.cancel.clone();
         tokio::spawn(async move {
             // An asset that names its files never downloads the archive: the
             // wanted entries are read straight out of it over range requests.
@@ -412,7 +433,7 @@ impl Downloader {
                 }
                 return;
             }
-            let outcome = fetch(&http, asset, &target, &progress).await;
+            let outcome = fetch(&http, asset, &target, &progress, cancel).await;
             let mut guard = progress.lock().await;
             let error = match outcome {
                 Ok(()) => match asset.unzip_into {
@@ -435,6 +456,7 @@ async fn fetch(
     asset: &Asset,
     target: &Path,
     progress: &Arc<Mutex<Option<DownloadProgress>>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -466,8 +488,7 @@ async fn fetch(
             }
         })
     };
-    let outcome =
-        crate::chunked::fetch(http, asset.url, &part, plan, written.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false))).await;
+    let outcome = crate::chunked::fetch(http, asset.url, &part, plan, written.clone(), cancel).await;
     reporter.abort();
     outcome?;
     if let Some(active) = progress.lock().await.as_mut() {

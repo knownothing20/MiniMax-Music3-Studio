@@ -41,7 +41,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSec
   const [section, setSection] = useState<SectionId>('account');
   // Opened from somewhere with a page in mind - the profile line, say.
   useEffect(() => {
-    if (initialSection) setSection(initialSection as SectionId);
+    // Only a section that exists. Two of them were removed - the assistant and
+    // karaoke are set up where they are installed now - and a button still
+    // pointed at one, which silently opened whatever was first instead.
+    if (initialSection && sections.some((entry) => entry.id === initialSection)) {
+      setSection(initialSection as SectionId);
+    }
   }, [initialSection]);
   const [showLangInfo, setShowLangInfo] = useState(false);
   const langInfoRef = useRef<HTMLDivElement>(null);

@@ -103,6 +103,8 @@ export const OptionalGroup: React.FC<{
   settingsUrl?: string;
   /** Whether one of the engines is a server the user runs themselves. */
   serverField?: boolean;
+  /** Where to stop a running download. Without it the only way was to quit. */
+  cancelUrl?: string;
   /**
    * On a settings page this is the page, so it drops its own heading and stays
    * open. Wrapping it in a second collapsible titled the same thing is how one
@@ -116,7 +118,7 @@ export const OptionalGroup: React.FC<{
    * business appearing under llama.cpp.
    */
   children?: React.ReactNode | ((engine: string) => React.ReactNode);
-}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl, serverField, embedded, children }) => {
+}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl, serverField, cancelUrl, embedded, children }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<OptionalStatus | null>(null);
   const [open, setOpen] = useState(Boolean(embedded));
@@ -396,7 +398,25 @@ export const OptionalGroup: React.FC<{
                       </select>
                     )}
                     {busy ? (
-                      <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-pink-500">{percent}%</span>
+                      <>
+                        <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-pink-500">{percent}%</span>
+                        {cancelUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFailed(null);
+                              setStarting(false);
+                              void fetch(cancelUrl, { method: 'POST' })
+                                .then(() => load())
+                                .catch((error: Error) => setFailed(error.message));
+                            }}
+                            title={t('cancelDownload')}
+                            className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-500 transition-colors hover:border-rose-400 hover:bg-rose-500/10 hover:text-rose-600 dark:border-white/15 dark:text-zinc-400"
+                          >
+                            <Square size={13} />
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <>
                         <button
@@ -937,6 +957,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                 { id: 'none', label: t('assistantDisabled'), device: false },
               ]}
               settingsUrl="/v1/assistant/status"
+              cancelUrl="/v1/assistant/runtime/cancel"
               serverField
             >
               {(engine) => <AssistantExtras engine={engine} />}
@@ -947,6 +968,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               statusUrl="/v1/separation/runtime"
               installUrl="/v1/separation/runtime/install"
               settingsUrl="/v1/separation/settings"
+              cancelUrl="/v1/separation/runtime/cancel"
               engines={[{ id: 'htdemucs', label: 'HT-Demucs' }]}
             />
             <OptionalGroup
@@ -956,6 +978,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               installUrl="/v1/karaoke/install"
               removeUrl="/v1/karaoke/remove"
               settingsUrl="/v1/karaoke/status"
+              cancelUrl="/v1/karaoke/cancel"
               engines={[
                 { id: 'parakeet', label: 'Parakeet' },
                 { id: 'whisper', label: 'Whisper' },

@@ -205,6 +205,9 @@ pub struct AssistantRuntime {
     root: PathBuf,
     http: reqwest::Client,
     state: Arc<Mutex<RuntimeState>>,
+    /// Raised to stop the download. What arrived stays on disk, so this is a
+    /// pause as much as a cancel.
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -241,6 +244,7 @@ impl AssistantRuntime {
             root: data_root.join("assistant"),
             http: crate::sizes::client(),
             state: Arc::new(Mutex::new(RuntimeState::default())),
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -368,6 +372,11 @@ impl AssistantRuntime {
     /// first file. That is why the runtime appeared and the model never did -
     /// the panel reported "installed" for the group and "not installed" for the
     /// set in the same breath, because both were true.
+    /// Stops whatever is downloading.
+    pub fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub async fn install_all(&self, ids: &[String]) -> Result<()> {
         let mut assets: Vec<&'static Asset> = Vec::new();
         for id in ids {
@@ -378,6 +387,7 @@ impl AssistantRuntime {
             return Ok(());
         }
 
+        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
         let total: u64 = pending.iter().map(|asset| asset.bytes).sum();
         {
             let mut state = self.state.lock().await;
@@ -400,7 +410,7 @@ impl AssistantRuntime {
         let mut failure = None;
         for asset in &pending {
             let target = self.path_of(asset);
-            let outcome = match download_asset(&self.http, asset, &target, &self.state, base).await {
+            let outcome = match download_asset(&self.http, asset, &target, &self.state, base, self.cancel.clone()).await {
                 Ok(()) => match asset.unzip_into {
                     Some(flavour) => extract_zip(&target, &self.root.join("runtime").join(flavour)),
                     None => Ok(()),
@@ -418,6 +428,7 @@ impl AssistantRuntime {
         }
 
         let outcome = match failure {
+            Some(_) if self.cancel.load(std::sync::atomic::Ordering::Relaxed) => Err(anyhow!("cancelled")),
             Some(error) => Err(error),
             None => Ok(()),
         };
@@ -454,7 +465,7 @@ impl AssistantRuntime {
         let state = self.state.clone();
         let root = self.root.clone();
         tokio::spawn(async move {
-            let outcome = download_asset(&http, asset, &target, &state, 0).await;
+            let outcome = download_asset(&http, asset, &target, &state, 0, Arc::new(std::sync::atomic::AtomicBool::new(false))).await;
             let mut guard = state.lock().await;
             match outcome {
                 Ok(()) => {
@@ -636,6 +647,7 @@ async fn download_asset(
     target: &Path,
     state: &Arc<Mutex<RuntimeState>>,
     base: u64,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -663,8 +675,7 @@ async fn download_asset(
             }
         })
     };
-    let outcome =
-        crate::chunked::fetch(http, asset.url, &part, plan, written.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false))).await;
+    let outcome = crate::chunked::fetch(http, asset.url, &part, plan, written.clone(), cancel).await;
     reporter.abort();
     outcome?;
     if let Some(progress) = state.lock().await.download.as_mut() {

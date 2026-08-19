@@ -354,7 +354,7 @@ async fn piece(
             bail!("cancelled");
         }
         let mut got = 0u64;
-        let outcome = once(http, url, file, start, end, written, &mut got).await;
+        let outcome = once(http, url, file, start, end, written, &mut got, stop).await;
         match outcome {
             Ok(()) if got == wanted => {
                 // The bytes reach the disk before the manifest says they did.
@@ -368,7 +368,12 @@ async fn piece(
                 return Ok(());
             }
             Ok(()) => last = format!("incomplete range: {got} of {wanted} bytes"),
-            Err(error) => last = error.to_string(),
+            Err(error) => {
+                if stop.load(Ordering::Relaxed) {
+                    bail!("cancelled");
+                }
+                last = error.to_string();
+            }
         }
         // The failed attempt's bytes are subtracted again, or the bar would
         // count them twice when the retry fetches the same range.
@@ -390,6 +395,7 @@ async fn once(
     end: u64,
     written: &Arc<AtomicU64>,
     got: &mut u64,
+    stop: &Arc<AtomicBool>,
 ) -> Result<()> {
     let response = send(http, url, Some(format!("bytes={start}-{end}"))).await?;
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -398,6 +404,12 @@ async fn once(
     let mut stream = response.bytes_stream();
     let mut offset = start;
     while let Some(chunk) = stream.next().await {
+        // Checked here and not only between pieces: four sixteen megabyte
+        // pieces in flight is ten seconds of downloading after the user has
+        // pressed stop, which reads as a button that did nothing.
+        if stop.load(Ordering::Relaxed) {
+            bail!("cancelled");
+        }
         let chunk = chunk.context("read range")?;
         let mut placed = 0usize;
         while placed < chunk.len() {

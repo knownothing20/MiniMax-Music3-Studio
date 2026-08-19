@@ -505,10 +505,12 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/assistant/write/stream", post(assistant_write_stream))
         .route("/v1/assistant/runtime", get(assistant_runtime_status))
         .route("/v1/assistant/runtime/install", post(assistant_runtime_install))
+        .route("/v1/assistant/runtime/cancel", post(cancel_assistant_download))
         .route("/v1/assistant/runtime/start", post(assistant_runtime_start))
         .route("/v1/assistant/runtime/stop", post(assistant_runtime_stop))
         .route("/v1/karaoke/status", get(karaoke_status).put(update_karaoke_settings))
         .route("/v1/karaoke/install", post(karaoke_install))
+        .route("/v1/karaoke/cancel", post(cancel_karaoke_download))
         .route("/v1/karaoke/remove", post(karaoke_remove))
         .route("/v1/library/songs/{id}/karaoke", post(create_song_karaoke).delete(delete_song_karaoke))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
@@ -519,6 +521,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/editor/{*path}", get(editor_asset))
         .route("/v1/separation/runtime", get(separation_assets))
         .route("/v1/separation/runtime/install", post(install_separation_asset))
+        .route("/v1/separation/runtime/cancel", post(cancel_separation_download))
         .route("/v1/separation/status", get(separation_status))
         .route("/v1/separation/settings", get(read_separation_settings).put(write_separation_settings))
         .route("/v1/separation/install", post(install_separation_model))
@@ -847,6 +850,27 @@ struct InstallSeparationAssetRequest {
 /// builds a recogniser out of these plus its own model files, so this is the
 /// one place the CUDA provider's parts are named.
 const CARD_ASSETS: [&str; 5] = ["onnxruntime-cuda", "cuda-cudart", "cuda-cublas", "cuda-cufft", "cuda-cudnn"];
+
+/// Stops a download. What arrived stays on disk: pressing this again later
+/// carries on from the last finished piece rather than starting the file over.
+///
+/// Two panels can be downloading at once, and until this existed the only way
+/// to stop one of them was to close the studio.
+async fn cancel_separation_download(State(state): State<AppState>) -> Json<Value> {
+    state.separator.downloader().cancel();
+    state.lyrics_sync.downloader().cancel();
+    Json(serde_json::json!({ "cancelled": true }))
+}
+
+async fn cancel_karaoke_download(State(state): State<AppState>) -> Json<Value> {
+    state.lyrics_sync.downloader().cancel();
+    Json(serde_json::json!({ "cancelled": true }))
+}
+
+async fn cancel_assistant_download(State(state): State<AppState>) -> Json<Value> {
+    state.assistant_runtime.cancel();
+    Json(serde_json::json!({ "cancelled": true }))
+}
 
 async fn install_separation_asset(
     State(state): State<AppState>,
