@@ -802,8 +802,26 @@ async fn separation_assets(State(state): State<AppState>) -> Json<Value> {
             "installed": runtime_installed,
         }
     ]);
+    let config = state.separation_config.read().await.clone();
+    let mut set: Vec<&'static lyrics_sync::Asset> = Vec::new();
+    if let Some(asset) = lyrics_sync::asset("onnxruntime") { set.push(asset); }
+    if !matches!(config.runtime, lyrics_sync::OnnxFlavour::Cpu) {
+        set.extend(CARD_ASSETS.iter().filter_map(|id| lyrics_sync::asset(id)));
+    }
+    let runtime_progress = set_progress(state.lyrics_sync.downloader(), &set);
+    let model_installed = state.separator.is_installed();
+    let bytes = runtime_progress["bytes"].as_u64().unwrap_or(0) + separation::MODEL.bytes;
+    let installed_bytes = runtime_progress["installed_bytes"].as_u64().unwrap_or(0)
+        + if model_installed { separation::MODEL.bytes } else { 0 };
     Json(serde_json::json!({
         "assets": assets,
+        "settings": { "runtime": config.runtime },
+        "set": {
+            "bytes": bytes,
+            "installed_bytes": installed_bytes,
+            "ready": installed_bytes == bytes,
+            "files": set.len() + 1,
+        },
         "active_download": state.separator.downloader().active().await.or(state.lyrics_sync.downloader().active().await),
     }))
 }
@@ -2535,9 +2553,32 @@ struct KaraokeRequest {
     language: Option<String>,
 }
 
-async fn karaoke_status(State(state): State<AppState>) -> Json<lyrics_sync::SyncStatus> {
+/// What the chosen engine would install: its files, their weight, and how much
+/// of it is already here.
+fn set_progress(downloader: &crate::downloads::Downloader, set: &[&'static lyrics_sync::Asset]) -> Value {
+    let total: u64 = set.iter().map(|asset| asset.bytes).sum();
+    let installed: u64 = set.iter().filter(|asset| downloader.is_installed(asset)).map(|asset| asset.bytes).sum();
+    serde_json::json!({
+        "bytes": total,
+        "installed_bytes": installed,
+        "ready": !set.is_empty() && installed == total,
+        "files": set.len(),
+    })
+}
+
+async fn karaoke_status(State(state): State<AppState>) -> Json<Value> {
     let config = state.lyrics_sync_config.read().await.clone();
-    Json(state.lyrics_sync.status(&config).await)
+    let status = state.lyrics_sync.status(&config).await;
+    let name = match config.provider {
+        lyrics_sync::AsrProvider::Whisper => "whisper",
+        _ => "parakeet",
+    };
+    let set = karaoke_set(name, config.runtime, config.whisper_model.as_deref());
+    let mut value = serde_json::to_value(&status).unwrap_or(Value::Null);
+    if let Value::Object(ref mut fields) = value {
+        fields.insert("set".into(), set_progress(state.lyrics_sync.downloader(), &set));
+    }
+    Json(value)
 }
 
 /// Every field optional, so a panel that changes one thing changes one thing.

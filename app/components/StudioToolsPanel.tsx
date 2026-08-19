@@ -284,38 +284,14 @@ export function StudioToolsPanel({ initialSongId }: { initialSongId?: string | n
                   cudaAvailable={Boolean(status?.cuda_runtime_installed)}
                 />
               </div>
+              {/* Where a capability is installed is one place: the models
+                  panel. This tool used to install the card runtime itself, with
+                  its own button and its own progress, and disagree with it. */}
               {!status?.cuda_runtime_installed && (
-                // One button for the whole card setup: it fetches whatever is
-                // still missing, in order, and reports itself while it does.
-                <div className="mt-2">
-                  {download && !download.done ? (
-                    <div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-black/30">
-                        <div
-                          className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-[width]"
-                          style={{ width: `${Math.round((download.downloaded_bytes / Math.max(1, download.total_bytes)) * 100)}%` }}
-                        />
-                      </div>
-                      <p className="mt-1 text-[11px] tabular-nums text-zinc-500">
-                        {t('separationInstallingGpu')} · {megabytes(download.downloaded_bytes)} / {megabytes(download.total_bytes)}
-                      </p>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => { setBusy(true); void fetch('/v1/separation/runtime/install', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ asset_id: 'card' }),
-                      }).catch(() => undefined).finally(() => setBusy(false)); }}
-                      disabled={busy}
-                      className="inline-flex items-center gap-2 rounded-lg border border-amber-400/50 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-700 hover:bg-amber-500/20 disabled:opacity-50 dark:text-amber-200"
-                    >
-                      <Download size={13} /> {t('separationInstallGpu')}
-                      {status?.card_missing_bytes ? ` · ${megabytes(status.card_missing_bytes)}` : ''}
-                    </button>
-                  )}
-                </div>
+                <p className="mt-2 text-[11px] leading-4 text-amber-600 dark:text-amber-300">
+                  {t('separationInstallGpu')}
+                  {status?.card_missing_bytes ? ` · ${megabytes(status.card_missing_bytes)}` : ''}
+                </p>
               )}
             </div>
 

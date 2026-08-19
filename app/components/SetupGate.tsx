@@ -61,8 +61,13 @@ type Profile = {
 type Catalog = { engine_id: string; recommended_profile_id: string; profiles: Profile[]; components: Music3Component[] };
 
 type OptionalAsset = { id: string; label: string; bytes: number; note: string; installed: boolean; kind: 'model' | 'runtime' };
+type SetProgress = { bytes: number; installed_bytes: number; ready: boolean; files: number };
 type OptionalStatus = {
   assets: OptionalAsset[];
+  /// What the chosen engine is made of, as the server counts it: the panel
+  /// used to add up every file in the group and show whichever download the
+  /// shared counter happened to hold.
+  set?: SetProgress;
   active_download?: { asset_id: string; downloaded_bytes: number; total_bytes: number; done: boolean; error?: string | null } | null;
 };
 
@@ -85,7 +90,7 @@ type EngineChoice = { id: string; label: string; device?: boolean };
  * names. `engines` turns the group into that choice, and the whole set is
  * installed and removed by one button.
  */
-const OptionalGroup: React.FC<{
+export const OptionalGroup: React.FC<{
   title: string;
   purpose: string;
   statusUrl: string;
@@ -180,6 +185,8 @@ const OptionalGroup: React.FC<{
     return true;
   });
   const chosenModel = model || models.find((asset) => asset.installed)?.id || models[0]?.id || '';
+  /// Engines that run here and therefore have something to download.
+  const localEngines = (engines ?? []).filter((choice) => choice.device !== false);
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/10 dark:bg-suno-card">
@@ -192,7 +199,11 @@ const OptionalGroup: React.FC<{
           <p className="mt-0.5 truncate text-xs text-zinc-500 dark:text-zinc-400">{purpose}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-xs text-zinc-500">
-          <span className="tabular-nums">{installed}/{assets.length}</span>
+          <span className="tabular-nums">
+            {engines && engines.length > 0
+              ? (installed > 0 ? t('installed') : t('notInstalledSuffix'))
+              : `${installed}/${assets.length}`}
+          </span>
           <ChevronDown size={15} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
         </div>
       </button>
@@ -293,11 +304,15 @@ const OptionalGroup: React.FC<{
                 );
               }
               const busy = Boolean(status?.active_download && !status.active_download.done);
-              const percent = busy && status?.active_download
-                ? Math.min(100, Math.round((status.active_download.downloaded_bytes / Math.max(1, status.active_download.total_bytes)) * 100))
-                : 0;
-              const ready = installed > 0 && installed === assets.length;
-              const setBytes = assets.reduce((total, asset) => total + asset.bytes, 0);
+              const modelBytes = models.find((asset) => asset.id === chosenModel)?.bytes ?? 0;
+              const setBytes = (status?.set?.bytes ?? 0) + modelBytes;
+              const haveBytes = (status?.set?.installed_bytes ?? 0)
+                + (models.find((asset) => asset.id === chosenModel)?.installed ? modelBytes : 0);
+              // Progress is what is on disk out of what this engine needs, not
+              // whatever file the shared counter is holding: eight downloads
+              // through one counter is what made the bar jump and reset.
+              const percent = setBytes > 0 ? Math.min(100, Math.round((haveBytes / setBytes) * 100)) : 0;
+              const ready = setBytes > 0 && haveBytes >= setBytes;
               return (
                 // One row, the way Dub Studio states it: what this is, what it
                 // weighs, whether it is here, which variant, and the two
@@ -346,7 +361,7 @@ const OptionalGroup: React.FC<{
                             void fetch(installUrl, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ asset_id: engines.length === 1 ? device : engine, model_id: chosenModel || undefined }),
+                              body: JSON.stringify({ asset_id: localEngines.length === 1 ? device : engine, model_id: chosenModel || undefined }),
                             })
                               .then(async (response) => {
                                 if (!response.ok) setFailed(await errorMessage(response));

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Check, Download, Loader2, PenLine, Square } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { ChoiceTabs } from './DevicePicker';
+import { OptionalGroup } from './SetupGate';
 import { loadNativeOpenRouterCatalog, refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
 /**
@@ -113,21 +114,6 @@ export const AssistantSettings: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [runtime?.active_download, loadRuntime]);
 
-  const install = async (assetId: string) => {
-    setMessage(null);
-    try {
-      const response = await fetch('/v1/assistant/runtime/install', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ asset_id: assetId }),
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(body?.error || String(response.status));
-      setRuntime(body);
-    } catch (reason) {
-      setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : String(reason) });
-    }
-  };
 
   const stopSidecar = async () => {
     await fetch('/v1/assistant/runtime/stop', { method: 'POST' }).catch(() => undefined);
@@ -224,55 +210,18 @@ export const AssistantSettings: React.FC = () => {
         {provider === 'managed' && (
           <div className="space-y-2">
             <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantManagedHint')}</p>
-            {runtime?.assets.map(asset => {
-              const active = runtime.active_download?.asset_id === asset.id && !runtime.active_download?.done;
-              const percent = active && runtime.active_download
-                ? Math.min(100, Math.round((runtime.active_download.downloaded_bytes / Math.max(1, runtime.active_download.total_bytes)) * 100))
-                : 0;
-              return (
-                <div key={asset.id} className="rounded-lg border border-zinc-200 p-3 dark:border-white/10">
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="flex min-w-0 items-center gap-2">
-                      {asset.kind === 'model' && (
-                        <input
-                          type="radio"
-                          name="managed-model"
-                          checked={managedModel === asset.id}
-                          onChange={() => setManagedModel(asset.id)}
-                          disabled={!asset.installed}
-                          className="h-4 w-4 accent-pink-500"
-                        />
-                      )}
-                      <span className="truncate text-sm font-medium text-zinc-900 dark:text-white">{asset.label}</span>
-                    </label>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="text-xs tabular-nums text-zinc-500">{gigabytes(asset.bytes)}</span>
-                      {asset.installed ? (
-                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-300">
-                          {t('installed')}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => void install(asset.id)}
-                          disabled={Boolean(runtime.active_download && !runtime.active_download.done)}
-                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-pink-400 disabled:opacity-40 dark:border-white/10 dark:text-zinc-300"
-                        >
-                          {active ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                          {active ? `${percent}%` : t('download')}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <p className="mt-1 text-[11px] leading-4 text-zinc-500">{ASSET_NOTE[asset.id] ? t(ASSET_NOTE[asset.id] as never) : asset.note}</p>
-                  {active && (
-                    <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                      <div className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-[width]" style={{ width: `${percent}%` }} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {/* The one place a capability is set up. This page used to draw
+                its own list of eight files, with its own buttons and its own
+                idea of progress, beside the same capability on the download
+                page - two controllers for one thing, disagreeing. */}
+            <OptionalGroup
+              title={t('assistantSection')}
+              purpose={t('assistantOptionalPurpose')}
+              statusUrl="/v1/assistant/runtime"
+              installUrl="/v1/assistant/runtime/install"
+              settingsUrl="/v1/assistant/status"
+              engines={[{ id: 'managed', label: 'llama.cpp' }]}
+            />
             <div className="rounded-lg border-2 border-dashed border-zinc-300 p-3 dark:border-white/10">
               <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400">{t('assistantOwnFile')}</label>
               <input

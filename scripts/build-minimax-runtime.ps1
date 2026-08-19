@@ -138,7 +138,12 @@ function Invoke-CustomCudaBuild {
     # into one: ggml picks it up on its own through GGML_CCACHE, and the CUDA
     # kernels - which are almost all of the time here - are what it caches.
     $ccache = if (Get-Command ccache -ErrorAction SilentlyContinue) { '-DGGML_CCACHE=ON' } else { '-DGGML_CCACHE=OFF' }
-    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --target neural-codec --parallel $parallelism"
+    # Flash attention kernels for every quantisation, not only the few ggml
+    # compiles by default. Without them a quant with no kernel falls back to the
+    # general path, which is the slow one - and the studio now offers quants
+    # down to Q3, exactly the ones left out. It costs build time, nothing else.
+    $flashAttention = '-DGGML_CUDA_FA_ALL_QUANTS=ON'
+    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $flashAttention $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --target neural-codec --parallel $parallelism"
     Push-Location $engineWorktree
     # The compiler's own output must not become this function's return value:
     # PowerShell returns everything a function writes, and the build directory

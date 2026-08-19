@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Check, Download, Loader2, Mic2 } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { ChoiceTabs, DevicePicker } from './DevicePicker';
+import { OptionalGroup } from './SetupGate';
 import { loadNativeOpenRouterCatalog, refreshNativeOpenRouterCatalog, type NativeOpenRouterModel } from '../services/nativeOpenRouter';
 
 /**
@@ -101,21 +102,6 @@ export const KaraokeSettings: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [status?.active_download, load]);
 
-  const install = async (assetId: string) => {
-    setMessage(null);
-    try {
-      const response = await fetch('/v1/karaoke/install', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ asset_id: assetId }),
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(body?.error || String(response.status));
-      setStatus(body);
-    } catch (reason) {
-      setMessage({ tone: 'error', text: reason instanceof Error ? reason.message : String(reason) });
-    }
-  };
 
   const remove = async (setId: string) => {
     setMessage(null);
@@ -252,47 +238,22 @@ export const KaraokeSettings: React.FC = () => {
               </div>
             )}
 
-            {relevant.length > 0 && (
-              <div className="space-y-2">
-                {relevant.map(asset => {
-                  const active = status?.active_download?.asset_id === asset.id && !status?.active_download?.done;
-                  const percent = active && status?.active_download
-                    ? Math.min(100, Math.round((status.active_download.downloaded_bytes / Math.max(1, status.active_download.total_bytes)) * 100))
-                    : 0;
-                  return (
-                    <div key={asset.id} className="rounded-lg border border-zinc-200 p-3 dark:border-white/10">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="truncate text-sm font-medium text-zinc-900 dark:text-white">{asset.label}</span>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <span className="text-xs tabular-nums text-zinc-500">{megabytes(asset.bytes)}</span>
-                          {asset.installed ? (
-                            <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-300">
-                              {t('installed')}
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => void install(asset.id)}
-                              disabled={Boolean(status?.active_download && !status.active_download.done)}
-                              className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-pink-400 disabled:opacity-40 dark:border-white/10 dark:text-zinc-300"
-                            >
-                              {active ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                              {active ? `${percent}%` : t('download')}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <p className="mt-1 text-[11px] leading-4 text-zinc-500">{asset.note}</p>
-                      {active && (
-                        <div className="mt-2 h-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                          <div className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-[width]" style={{ width: `${percent}%` }} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            {/* One place installs a recogniser. This page drew its own
+                list of files beside the same recogniser on the download page,
+                each with its own buttons and its own progress. */}
+            <OptionalGroup
+              title={t('karaokeSection')}
+              purpose={t('karaokeOptionalPurpose')}
+              statusUrl="/v1/karaoke/status"
+              installUrl="/v1/karaoke/install"
+              removeUrl="/v1/karaoke/remove"
+              settingsUrl="/v1/karaoke/status"
+              engines={[
+                { id: 'parakeet', label: 'Parakeet' },
+                { id: 'whisper', label: 'Whisper' },
+                { id: 'open_router', label: 'OpenRouter', device: false },
+              ]}
+            />
 
             {status?.active_download?.error && (
               <p className="text-xs text-red-600 dark:text-red-300">{status.active_download.error}</p>

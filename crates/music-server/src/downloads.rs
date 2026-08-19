@@ -202,31 +202,49 @@ impl Downloader {
         self.progress.lock().await.clone()
     }
 
-    /// Installs a whole set, in order, waiting for each file.
+    /// Installs a whole set, several files at a time.
     ///
-    /// The waiting used to be written out again at every call site - the
-    /// engine's libraries, the karaoke recognisers, the separator's CUDA
-    /// provider - three copies of one loop, and the one that was forgotten
-    /// started the engine before its libraries had arrived.
+    /// One at a time was the reason a recogniser took as long as its slowest
+    /// file and the panel showed whichever download happened to be current -
+    /// the progress is one figure per downloader, so a queue of eight made it
+    /// jump between them. Four at once saturates the line, and the set reports
+    /// itself by what is on disk rather than by whoever holds the counter.
     pub async fn install_all(&self, assets: &[&'static Asset]) -> Result<()> {
+        const AT_ONCE: usize = 4;
+        let pending: Vec<&'static Asset> = assets.iter().copied().filter(|asset| !self.is_installed(asset)).collect();
+        for batch in pending.chunks(AT_ONCE) {
+            let mut running = Vec::new();
+            for asset in batch {
+                running.push(self.fetch_now(asset));
+            }
+            for outcome in futures_util::future::join_all(running).await {
+                outcome?;
+            }
+        }
         for asset in assets {
-            if self.is_installed(asset) {
-                continue;
-            }
-            self.install(asset).await?;
-            loop {
-                let Some(progress) = self.active().await else { break };
-                if progress.done {
-                    if let Some(error) = progress.error {
-                        bail!("{} could not be downloaded: {error}", asset.label);
-                    }
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-            }
             if !self.is_installed(asset) {
                 bail!("{} finished downloading but its files are not on disk", asset.label);
             }
+        }
+        Ok(())
+    }
+
+    /// Downloads one asset and waits for it, without the single-slot rule that
+    /// `install` keeps for the panel's own buttons.
+    async fn fetch_now(&self, asset: &'static Asset) -> Result<()> {
+        if !asset.pick.is_empty() {
+            let destination = self.picked_into(asset);
+            let asset = *asset;
+            return tokio::task::spawn_blocking(move || {
+                crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |_| {}).map(|_| ())
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))?;
+        }
+        let target = self.path_of(asset);
+        fetch(&self.http, asset, &target, &self.progress).await?;
+        if let Some(flavour) = asset.unzip_into {
+            extract_zip(&target, &self.root.join("runtime").join(flavour))?;
         }
         Ok(())
     }
