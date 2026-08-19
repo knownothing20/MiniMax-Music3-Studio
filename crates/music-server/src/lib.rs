@@ -1300,11 +1300,12 @@ async fn ensure_local_recogniser(state: &AppState, config: &lyrics_sync::LyricsS
             .filter_map(|id| lyrics_sync::asset(id))
             .filter(|asset| !state.lyrics_sync.downloader().is_installed(asset))
             .collect(),
-        lyrics_sync::AsrProvider::Whisper => ["whisper-cuda", "whisper-cpu"]
-            .iter()
-            .filter_map(|id| lyrics_sync::asset(id))
-            .take(1)
-            .chain(config.whisper_model.as_deref().and_then(lyrics_sync::asset))
+        // Whatever the chosen recogniser is made of, by the same reckoning the
+        // panel uses. Naming the files here by hand is how this went on asking
+        // for `whisper-cuda` after that asset had ceased to exist, and then
+        // concluded that nothing was missing and nothing was ready.
+        lyrics_sync::AsrProvider::Whisper => karaoke_set("whisper", config.runtime, config.whisper_model.as_deref())
+            .into_iter()
             .filter(|asset| !state.lyrics_sync.downloader().is_installed(asset))
             .collect(),
         _ => Vec::new(),

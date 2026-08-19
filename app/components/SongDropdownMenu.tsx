@@ -78,8 +78,13 @@ function useKaraoke(song: Song, onSongUpdate?: (song: Song) => void) {
             .catch(() => setReady(false));
     }, []);
 
+    // A refusal used to be thrown out of an unawaited promise and land
+    // nowhere: the menu item stopped spinning and nothing else happened, which
+    // reads exactly like a button that does not work.
+    const [failed, setFailed] = useState<string | null>(null);
     const make = async () => {
         setBusy(true);
+        setFailed(null);
         try {
             const response = await fetch(`/v1/library/songs/${encodeURIComponent(song.id)}/karaoke`, {
                 method: 'POST',
@@ -87,14 +92,19 @@ function useKaraoke(song: Song, onSongUpdate?: (song: Song) => void) {
                 body: JSON.stringify({}),
             });
             const body = await response.json().catch(() => null);
-            if (!response.ok) throw new Error(karaokeReason(translate, body?.error) || String(response.status));
+            if (!response.ok) {
+                setFailed(karaokeReason(translate, body?.error) || `${response.status}`);
+                return;
+            }
             onSongUpdate?.({ ...song, lrcContent: body.lrc as string });
+        } catch (error) {
+            setFailed(error instanceof Error ? error.message : String(error));
         } finally {
             setBusy(false);
         }
     };
 
-    return { ready, busy, make };
+    return { ready, busy, make, failed };
 }
 
 export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
@@ -116,7 +126,7 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
 }) => {
     const { t } = useI18n();
     const menuRef = useRef<HTMLDivElement>(null);
-    const { ready: karaokeReady, busy: karaokeBusy, make: makeKaraoke } = useKaraoke(song, onSongUpdate);
+    const { ready: karaokeReady, busy: karaokeBusy, make: makeKaraoke, failed: karaokeFailed } = useKaraoke(song, onSongUpdate);
 
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -251,6 +261,9 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
                     onClick={() => void makeKaraoke()}
                     disabled={karaokeBusy}
                 />
+            )}
+            {karaokeFailed && (
+                <p className="px-3 py-1.5 text-[11px] leading-4 text-rose-600 dark:text-rose-300">{karaokeFailed}</p>
             )}
 
             <MenuDivider />

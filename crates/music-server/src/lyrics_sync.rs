@@ -785,8 +785,12 @@ impl LyricsSync {
     }
 
     /// Whether the Whisper model the configuration names is actually on disk.
+    /// A faster-whisper model is a directory, not a file - and
+    /// `whisper_model_path` has already checked that every file inside it
+    /// arrived. Asking whether that path is a file said no to a complete
+    /// installation, which is how a finished download still refused to run.
     pub fn whisper_model_ready(&self, config: &LyricsSyncConfig) -> bool {
-        self.whisper_model_path(config).is_some_and(|path| path.is_file())
+        self.whisper_model_path(config).is_some_and(|path| path.is_dir())
     }
 
     pub fn parakeet_dir(&self) -> PathBuf {
@@ -1583,5 +1587,37 @@ Third");
         assert!(!config.available());
         config.provider = AsrProvider::Whisper;
         assert!(config.available());
+    }
+}
+
+#[cfg(test)]
+mod live_recognition {
+    use super::*;
+
+    /// The whole recognition path against a real installation, when one is
+    /// pointed at: decode, run the recogniser, read its JSON, get words with
+    /// times. Checking the download and the binary separately is what let a
+    /// finished installation still refuse to run.
+    #[test]
+    fn recognising_a_real_track_end_to_end() {
+        let (Some(root), Some(track)) = (std::env::var_os("MM3_DATA_ROOT"), std::env::var_os("MM3_TEST_TRACK")) else { return };
+        let sync = LyricsSync::new(std::path::Path::new(&root));
+        let config = LyricsSyncConfig {
+            enabled: true,
+            provider: AsrProvider::Whisper,
+            whisper_model: Some("whisper-large-v3".into()),
+            runtime: OnnxFlavour::Cuda,
+            ..Default::default()
+        };
+        assert!(sync.whisper_binary().is_some(), "the recogniser is not installed");
+        assert!(sync.whisper_model_ready(&config), "the model is not considered ready");
+        let words = sync
+            .whisper_words(&config, std::path::Path::new(&track), Some("ru"), "")
+            .expect("recognition");
+        eprintln!("words: {}", words.len());
+        for (at, word) in words.iter().take(8) {
+            eprintln!("  {at:.2}s {word}");
+        }
+        assert!(!words.is_empty(), "nothing was recognised");
     }
 }
