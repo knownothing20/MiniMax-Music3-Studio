@@ -2551,8 +2551,20 @@ struct AssistantModelRequest {
     model_path: Option<String>,
 }
 
-async fn assistant_runtime_status(State(state): State<AppState>) -> Json<assistant_runtime::RuntimeStatus> {
-    Json(state.assistant_runtime.status().await)
+/// The runtime, and the choice it belongs to.
+///
+/// The panel reads this one address to draw itself, and the chosen engine is
+/// kept with the assistant's settings rather than with its files - so without
+/// it here the tabs came back to the first one on every open, whatever the user
+/// had picked.
+async fn assistant_runtime_status(State(state): State<AppState>) -> Json<Value> {
+    let status = state.assistant_runtime.status().await;
+    let provider = state.assistant.read().await.provider;
+    let mut value = serde_json::to_value(&status).unwrap_or(Value::Null);
+    if let Value::Object(ref mut fields) = value {
+        fields.insert("provider".into(), serde_json::to_value(provider).unwrap_or(Value::Null));
+    }
+    Json(value)
 }
 
 /// Starts one download. Nothing is fetched until this is called, and an
