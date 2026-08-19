@@ -3,6 +3,18 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## 2026-08-19 — 1.3.3
+
+### Fixed
+
+- **The installed executable had a different name from the portable one.** The
+  installer wrote `minimax-music3-studio-desktop.exe`, after the Rust crate,
+  while the portable build named the same binary `MiniMax-Music3-Studio.exe`:
+  one studio under two names depending on how it arrived. Both are now
+  `MiniMax-Music3-Studio.exe`, and the installer deletes the old name so an
+  updated folder is not left with a dead 52 MB copy and a shortcut pointing at
+  whichever was clicked first.
+
 ## 2026-08-19 — 1.3.2
 
 ### Fixed
