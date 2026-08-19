@@ -94,13 +94,130 @@ decoder, condition encoder, DiT and vocoder.
 
 | Your GPU | Recommended profile | Download |
 | --- | --- | --- |
-| 20 GB VRAM and above | Full Native — BF16 / BF16 / F32 | 28.6 GB |
-| 10 GB and above | Q8 Quality | 12.8 GB |
-| 9 GB tier | Light — for speed and low VRAM | 8.8 GB |
+| 30 GB VRAM and above | Full Native — BF16 / BF16 / F32 | 28.6 GB |
+| 15 GB and above | Quality — Q8_0 | 12.8 GB |
+| 11.5 GB and above | Balanced — Q6_K / Q8_0 / Q5_K_M | 9.8 GB |
+| 9.5 GB and above | Light — Q4_K_M / Q4_K_M / Q4_K_S | 7.7 GB |
+| 8 GB cards | Minimal — Q3_K_M | 6.5 GB |
 
 The studio detects your GPU and preselects the profile it can actually run, but the
 download is always your decision. Every component is checksum-verified against a pinned
 Hugging Face revision and downloads resume where they stopped.
+
+Every profile is the same five roles at a different quantisation. The heavier sets — Q5
+and up, and the original BF16/F32 weights — come from
+[Serveurperso/MiniMax-Music3-GGUF](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF);
+the lighter ones that let the studio fit an 8 GB card — Q4 and below, plus the two FP4
+formats — come from [scragnog/MiniMax-Music3-GGUF](https://huggingface.co/scragnog/MiniMax-Music3-GGUF).
+Both repositories are pinned to a fixed revision.
+
+The files are written to, and can be dropped into by hand at:
+
+- **Installed:** `%LOCALAPPDATA%\MiniMax Music3 Studio\models\minimaxmusic-cpp\`
+- **Portable:** `<the folder you unzipped>\models\minimaxmusic-cpp\`
+
+Filenames must match the catalogue exactly. The studio checks each file's size and SHA-256,
+so a file you place by hand is recognised as already installed and never re-downloaded.
+
+<details>
+<summary><b>Model zoo — every file, with direct download links</b></summary>
+
+Only the profile that matches your GPU is downloaded automatically; the rest are here for
+manual placement or for building a custom mix role-by-role in the model manager.
+
+**Language model (writes the audio-token stream)**
+
+| File | Size | Used by | Source |
+| --- | --- | --- | --- |
+| [`MiniMax-Music3-language_model-BF16.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-language_model-BF16.gguf) | 17.17 GB | Full native | Serveurperso |
+| [`MiniMax-Music3-language_model-Q8_0.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-language_model-Q8_0.gguf) | 9.13 GB | Quality | Serveurperso |
+| [`MiniMax-Music3-language_model-Q6_K.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-language_model-Q6_K.gguf) | 7.05 GB | Balanced | Serveurperso |
+| [`MiniMax-Music3-language_model-Q5_K_M.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-language_model-Q5_K_M.gguf) | 6.28 GB | Custom | Serveurperso |
+| [`mm3-lm-Q4_K_M.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-lm-Q4_K_M.gguf) | 5.51 GB | Light | scragnog |
+| [`mm3-lm-Q4_K_S.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-lm-Q4_K_S.gguf) | 5.29 GB | Custom | scragnog |
+| [`mm3-lm-Q3_K_M.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-lm-Q3_K_M.gguf) | 4.59 GB | Minimal | scragnog |
+| [`mm3-lm-MXFP4.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-lm-MXFP4.gguf) | 5.44 GB | Custom (FP4) | scragnog |
+| [`mm3-lm-NVFP4.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-lm-NVFP4.gguf) | 5.66 GB | Custom (Blackwell FP4) | scragnog |
+
+**DiT / transformer (the diffusion generator)**
+
+| File | Size | Used by | Source |
+| --- | --- | --- | --- |
+| [`MiniMax-Music3-transformer-F32.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-transformer-F32.gguf) | 9.73 GB | Full native | Serveurperso |
+| [`MiniMax-Music3-transformer-Q8_0.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-transformer-Q8_0.gguf) | 2.60 GB | Quality | Serveurperso |
+| [`MiniMax-Music3-transformer-Q6_K.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-transformer-Q6_K.gguf) | 2.01 GB | Custom | Serveurperso |
+| [`MiniMax-Music3-transformer-Q5_K_M.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-transformer-Q5_K_M.gguf) | 1.69 GB | Balanced | Serveurperso |
+| [`MiniMax-Music3-transformer-Q4_K_M.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-transformer-Q4_K_M.gguf) | 1.39 GB | Custom | Serveurperso |
+| [`mm3-dit-Q4_K_S.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-dit-Q4_K_S.gguf) | 1.39 GB | Light | scragnog |
+| [`mm3-dit-Q3_K_M.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-dit-Q3_K_M.gguf) | 1.14 GB | Minimal | scragnog |
+| [`mm3-dit-MXFP4.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-dit-MXFP4.gguf) | 1.31 GB | Custom (FP4) | scragnog |
+| [`mm3-dit-NVFP4.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-dit-NVFP4.gguf) | 1.38 GB | Custom (Blackwell FP4) | scragnog |
+
+**RVQ depth decoder**
+
+| File | Size | Used by | Source |
+| --- | --- | --- | --- |
+| [`MiniMax-Music3-rvq_depth_decoder-BF16.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-rvq_depth_decoder-BF16.gguf) | 1.29 GB | Full native | Serveurperso |
+| [`MiniMax-Music3-rvq_depth_decoder-Q8_0.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-rvq_depth_decoder-Q8_0.gguf) | 687 MB | Quality / Balanced | Serveurperso |
+| [`mm3-depth-Q6_K.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-depth-Q6_K.gguf) | 530 MB | Custom | scragnog |
+| [`mm3-depth-Q5_K_M.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-depth-Q5_K_M.gguf) | 466 MB | Custom | scragnog |
+| [`mm3-depth-Q4_K_M.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-depth-Q4_K_M.gguf) | 405 MB | Light / Minimal | scragnog |
+| [`mm3-depth-MXFP4.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-depth-MXFP4.gguf) | 384 MB | Custom (FP4) | scragnog |
+| [`mm3-depth-NVFP4.gguf`](https://huggingface.co/scragnog/MiniMax-Music3-GGUF/resolve/6781ce79b21beb7413f6b2358cd4adb355217c3d/mm3-depth-NVFP4.gguf) | 401 MB | Custom (Blackwell FP4) | scragnog |
+
+**Condition encoder** and **vocoder** — the same file in every profile:
+
+| File | Size | Used by | Source |
+| --- | --- | --- | --- |
+| [`MiniMax-Music3-condition_encoder-F32.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-condition_encoder-F32.gguf) | 101 MB | every profile | Serveurperso |
+| [`MiniMax-Music3-vocoder-F32.gguf`](https://huggingface.co/Serveurperso/MiniMax-Music3-GGUF/resolve/9cdffedb54de2509ae55a6831a677645fb353a7d/MiniMax-Music3-vocoder-F32.gguf) | 306 MB | every profile | Serveurperso |
+
+</details>
+
+## The engine and the DLLs it needs
+
+The generator is a native CUDA program, not a Python stack. `mm-server.exe` loads a short
+chain of libraries, and the studio's job before it starts the engine is to make sure every
+link in that chain is present:
+
+```text
+mm-server.exe
+  ├─ ggml.dll → ggml-base.dll, ggml-cpu.dll, ggml-cuda.dll     shipped inside the app
+  │                               └─ cublas64_13.dll, cublasLt64_13.dll   downloaded once
+  │                               └─ nvcuda.dll                           your NVIDIA driver
+  └─ vcruntime140.dll, msvcp140.dll, vcomp140.dll              Visual C++ runtime
+```
+
+**Shipped inside the app.** `mm-server.exe`, the four `ggml*.dll` files and
+`neural-codec.exe` are part of every release, in `resources\minimaxmusic-cpp\` beside the
+main executable. They are built from the pinned `minimaxmusic.cpp` commit and never
+downloaded.
+
+**Downloaded once, on the first engine start.**
+
+| File(s) | Where from | Size | Why |
+| --- | --- | --- | --- |
+| `cublas64_13.dll`, `cublasLt64_13.dll` | NVIDIA's redistributable [`libcublas-windows-x86_64-13.5.1.27-archive.zip`](https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-13.5.1.27-archive.zip) | 391 MB (zip) | The CUDA linear-algebra library `ggml-cuda.dll` is linked against. Too large, and under NVIDIA's own licence, to bundle — so it comes straight from NVIDIA. This is the **NVIDIA cuBLAS 13.5** item in the model panel. |
+| Visual C++ 2015–2022 runtime | Microsoft's permanent link [`vc_redist.x64.exe`](https://aka.ms/vs/17/release/vc_redist.x64.exe) | small installer | The C++ runtime the engine is compiled against. Run **only** when the DLLs are missing — most Windows machines already have it. |
+
+**Never downloaded.** `nvcuda.dll` is part of your NVIDIA driver; if the engine complains
+about it, update the driver. A machine that already has the CUDA Toolkit installed has
+cuBLAS on its `PATH` and downloads nothing at all.
+
+### If the automatic download can't reach out (proxy, firewall, offline)
+
+You can place the CUDA libraries by hand:
+
+1. Download the cuBLAS archive from the NVIDIA link above and open the `.zip`.
+2. Inside `libcublas-windows-x86_64-13.5.1.27-archive\bin\`, take `cublas64_13.dll` and
+   `cublasLt64_13.dll`.
+3. Drop both **next to `mm-server.exe`** — the `resources\minimaxmusic-cpp\` folder beside
+   the app's main `.exe`.
+4. If the engine still won't start, install the Visual C++ runtime from the Microsoft link,
+   and make sure your NVIDIA driver is current.
+
+On startup the engine reads its own import table and fetches only what is genuinely
+missing, so a hand-placed DLL is simply found and used.
 
 ## Architecture
 
@@ -147,10 +264,11 @@ scripts\build-minimax-runtime.ps1 -OutputDirectory .\build\engine -RuntimeBacken
 ### Release
 
 `scripts/build-release.ps1 -Version X.Y.Z` produces the NSIS installer, a portable
-archive and a signed `latest.json` for the in-app updater. It requires
-`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and
-`TAURI_UPDATER_PUBKEY`, and refuses to run without them. Model weights are never included
-in an installer.
+archive and a signed `latest.json` for the in-app updater. It needs the updater signing
+keys: it reads them from `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+and `TAURI_UPDATER_PUBKEY` if they are set, and otherwise from
+`%USERPROFILE%\.tauri\mm3-release.key`, its `.pub`, and `.password` beside them. It stops
+if it can find the key neither way. Model weights are never included in an installer.
 
 ## Other Projects by [@timoncool](https://github.com/timoncool)
 

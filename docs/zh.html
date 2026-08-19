@@ -180,9 +180,11 @@
           <th data-i18n="modelsSize"></th>
         </tr></thead>
         <tbody>
-          <tr><td>20 GB VRAM+</td><td data-i18n="profileFull"></td><td>28.6 GB</td></tr>
-          <tr><td>10 GB VRAM+</td><td data-i18n="profileQuality"></td><td>12.8 GB</td></tr>
-          <tr><td>9 GB VRAM</td><td data-i18n="profileLight"></td><td>8.8 GB</td></tr>
+          <tr><td>30 GB VRAM+</td><td data-i18n="profileFull"></td><td>28.6 GB</td></tr>
+          <tr><td>15 GB VRAM+</td><td data-i18n="profileQuality"></td><td>12.8 GB</td></tr>
+          <tr><td>11.5 GB VRAM+</td><td data-i18n="profileBalanced"></td><td>9.8 GB</td></tr>
+          <tr><td>9.5 GB VRAM+</td><td data-i18n="profileLight"></td><td>7.7 GB</td></tr>
+          <tr><td>8 GB VRAM</td><td data-i18n="profileMinimal"></td><td>6.5 GB</td></tr>
         </tbody>
       </table>
     </div>
@@ -293,7 +295,9 @@ const STRINGS = {
     modelsSize: 'Download',
     profileFull: 'Full Native — BF16 / BF16 / F32',
     profileQuality: 'Q8 Quality',
+    profileBalanced: 'Balanced — Q6 / Q8 / Q5',
     profileLight: 'Light — for speed and low VRAM',
+    profileMinimal: 'Minimal — Q3, for 8 GB cards',
     modelsNote: 'The studio detects your card and preselects the profile it can actually run, but the download is always your decision. Every file is checksum-verified against a pinned Hugging Face revision, and an interrupted download resumes where it stopped.',
     startTitle: 'Getting started',
     steps: [
@@ -324,7 +328,7 @@ const STRINGS = {
     insideSize: 'Size',
     inside: [
       ['MiniMax Music3 engine (minimaxmusic.cpp)', 'Your GPU, CUDA', 'bundled'],
-      ['Music3 model set - five components', 'Your GPU', '8.8-28.6 GB'],
+      ['Music3 model set - five components', 'Your GPU', '6.5-28.6 GB'],
       ['Karaoke timings - Parakeet or Whisper', 'Your machine', 'optional download'],
       ['Stem separation - HT-Demucs, six stems', 'Your GPU or CPU', '136 MB'],
       ['Writing assistant', 'Local GGUF or OpenRouter', 'your choice'],
@@ -371,7 +375,9 @@ const STRINGS = {
     modelsSize: 'Загрузка',
     profileFull: 'Full Native — BF16 / BF16 / F32',
     profileQuality: 'Q8 Quality',
+    profileBalanced: 'Balanced — Q6 / Q8 / Q5',
     profileLight: 'Light — ради скорости и малой VRAM',
+    profileMinimal: 'Minimal — Q3, для карт 8 ГБ',
     modelsNote: 'Студия определяет карту и заранее выбирает профиль, который на ней реально пойдёт, но скачивание — всегда ваше решение. Каждый файл сверяется по контрольной сумме с зафиксированной ревизией на Hugging Face, а прерванная загрузка продолжается с места остановки.',
     startTitle: 'С чего начать',
     steps: [
@@ -402,7 +408,7 @@ const STRINGS = {
     insideSize: 'Размер',
     inside: [
       ['Движок MiniMax Music3 (minimaxmusic.cpp)', 'Ваша видеокарта, CUDA', 'в комплекте'],
-      ['Набор моделей Music3 — пять компонентов', 'Ваша видеокарта', '8.8–28.6 ГБ'],
+      ['Набор моделей Music3 — пять компонентов', 'Ваша видеокарта', '6.5–28.6 ГБ'],
       ['Тайминги караоке — Parakeet или Whisper', 'Ваша машина', 'по желанию'],
       ['Разделение на стемы — HT-Demucs, шесть дорожек', 'Видеокарта или процессор', '136 МБ'],
       ['Ассистент-автор', 'Локальная GGUF или OpenRouter', 'на ваш выбор'],
@@ -449,7 +455,9 @@ const STRINGS = {
     modelsSize: '下载量',
     profileFull: 'Full Native — BF16 / BF16 / F32',
     profileQuality: 'Q8 Quality',
+    profileBalanced: 'Balanced — Q6 / Q8 / Q5',
     profileLight: 'Light — 追求速度与低显存',
+    profileMinimal: 'Minimal — Q3，用于 8 GB 显卡',
     modelsNote: '工作室会识别你的显卡并预选它真正跑得动的配置，但是否下载始终由你决定。每个文件都按固定的 Hugging Face 版本校验哈希，中断的下载会从断点继续。',
     startTitle: '快速开始',
     steps: [
@@ -480,7 +488,7 @@ const STRINGS = {
     insideSize: '大小',
     inside: [
       ['MiniMax Music3 引擎（minimaxmusic.cpp）', '你的显卡，CUDA', '已内置'],
-      ['Music3 模型组合 — 五个组件', '你的显卡', '8.8–28.6 GB'],
+      ['Music3 模型组合 — 五个组件', '你的显卡', '6.5–28.6 GB'],
       ['卡拉OK 时间轴 — Parakeet 或 Whisper', '你的电脑', '可选下载'],
       ['音轨分离 — HT-Demucs，六条音轨', '显卡或处理器', '136 MB'],
       ['写作助手', '本地 GGUF 或 OpenRouter', '由你选择'],
@@ -527,7 +535,9 @@ const STRINGS = {
     modelsSize: 'ダウンロード',
     profileFull: 'Full Native — BF16 / BF16 / F32',
     profileQuality: 'Q8 Quality',
+    profileBalanced: 'Balanced — Q6 / Q8 / Q5',
     profileLight: 'Light — 速度と省 VRAM 重視',
+    profileMinimal: 'Minimal — Q3、8 GB カード向け',
     modelsNote: 'スタジオはカードを検出し、実際に動くプロファイルをあらかじめ選びますが、ダウンロードするかどうかは常にあなたの判断です。各ファイルは固定した Hugging Face のリビジョンとハッシュ照合され、中断したダウンロードは途中から再開します。',
     startTitle: 'はじめかた',
     steps: [
@@ -558,7 +568,7 @@ const STRINGS = {
     insideSize: 'サイズ',
     inside: [
       ['MiniMax Music3 エンジン（minimaxmusic.cpp）', 'あなたの GPU、CUDA', '同梱'],
-      ['Music3 モデルセット — 5 コンポーネント', 'あなたの GPU', '8.8〜28.6 GB'],
+      ['Music3 モデルセット — 5 コンポーネント', 'あなたの GPU', '6.5〜28.6 GB'],
       ['カラオケのタイミング — Parakeet または Whisper', 'あなたの PC', '任意のダウンロード'],
       ['ステム分離 — HT-Demucs、6 ステム', 'GPU または CPU', '136 MB'],
       ['作詞・説明アシスタント', 'ローカル GGUF か OpenRouter', 'お好みで'],
@@ -605,7 +615,9 @@ const STRINGS = {
     modelsSize: '내려받기',
     profileFull: 'Full Native — BF16 / BF16 / F32',
     profileQuality: 'Q8 Quality',
+    profileBalanced: 'Balanced — Q6 / Q8 / Q5',
     profileLight: 'Light — 속도와 낮은 VRAM',
+    profileMinimal: 'Minimal — Q3, 8 GB 카드용',
     modelsNote: '스튜디오가 카드를 확인해 실제로 돌아가는 프로필을 미리 골라 주지만, 내려받을지는 언제나 사용자가 정합니다. 모든 파일은 고정된 Hugging Face 리비전과 체크섬으로 대조되고, 끊긴 다운로드는 멈춘 지점부터 이어집니다.',
     startTitle: '시작하기',
     steps: [
@@ -636,7 +648,7 @@ const STRINGS = {
     insideSize: '크기',
     inside: [
       ['MiniMax Music3 엔진 (minimaxmusic.cpp)', '내 GPU, CUDA', '기본 포함'],
-      ['Music3 모델 세트 — 다섯 구성 요소', '내 GPU', '8.8~28.6 GB'],
+      ['Music3 모델 세트 — 다섯 구성 요소', '내 GPU', '6.5~28.6 GB'],
       ['노래방 타이밍 — Parakeet 또는 Whisper', '내 컴퓨터', '선택 다운로드'],
       ['스템 분리 — HT-Demucs, 6개 스템', 'GPU 또는 CPU', '136 MB'],
       ['작성 어시스턴트', '로컬 GGUF 또는 OpenRouter', '선택 사항'],
