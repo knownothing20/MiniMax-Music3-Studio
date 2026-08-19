@@ -1273,6 +1273,7 @@ export const ja = {
     resetPrompt: 'リセット',
     promptFileInvalid: '有効なプロンプトファイルではありません。',
     promptBudget: 'プロンプト予算',
+    promptBudgetShort: '説明 + 歌詞',
     promptTooLong: '説明と歌詞が 5000 トークンの上限を超えています。短くしてください。',
     captionRequired: '生成前に説明を入力してください。',
     lyricsRequired: 'Music3 は明示的な歌詞を歌います。歌詞を書くか例を読み込んでください。',

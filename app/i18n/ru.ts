@@ -1277,6 +1277,7 @@ export const ru = {
     resetPrompt: 'Сбросить',
     promptFileInvalid: 'Это не корректный файл промпта.',
     promptBudget: 'Бюджет промпта',
+    promptBudgetShort: 'описание + текст',
     promptTooLong: 'Описание и текст превышают лимит промпта в 5000 токенов — сократите их.',
     captionRequired: 'Заполните описание перед генерацией.',
     lyricsRequired: 'Music3 поёт по явному тексту — напишите его или загрузите пример.',

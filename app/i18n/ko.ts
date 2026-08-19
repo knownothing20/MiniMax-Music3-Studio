@@ -1273,6 +1273,7 @@ export const ko = {
     resetPrompt: '초기화',
     promptFileInvalid: '올바른 프롬프트 파일이 아닙니다.',
     promptBudget: '프롬프트 예산',
+    promptBudgetShort: '설명 + 가사',
     promptTooLong: '설명과 가사가 5000 토큰 상한을 초과합니다. 줄여 주세요.',
     captionRequired: '생성 전에 설명을 입력하세요.',
     lyricsRequired: 'Music3 는 명시적인 가사를 노래합니다. 가사를 쓰거나 예시를 불러오세요.',

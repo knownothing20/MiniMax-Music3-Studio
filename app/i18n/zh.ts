@@ -1273,6 +1273,7 @@ export const zh = {
     resetPrompt: '重置',
     promptFileInvalid: '该文件不是有效的提示文件。',
     promptBudget: '提示预算',
+    promptBudgetShort: '描述 + 歌词',
     promptTooLong: '描述与歌词超过 5000 词元的提示上限，请缩短。',
     captionRequired: '生成前请填写描述。',
     lyricsRequired: 'Music3 按给定歌词演唱——请填写歌词或加载示例。',

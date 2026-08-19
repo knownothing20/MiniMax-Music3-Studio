@@ -1278,6 +1278,7 @@ export const en = {
     resetPrompt: 'Reset',
     promptFileInvalid: 'That file is not a valid prompt.',
     promptBudget: 'Prompt budget',
+    promptBudgetShort: 'caption + lyrics',
     promptTooLong: 'The caption and lyrics exceed the 5000 token prompt budget; shorten them.',
     captionRequired: 'Fill in the description before generating.',
     lyricsRequired: 'Music3 sings explicit lyrics — write them, or load an example.',
