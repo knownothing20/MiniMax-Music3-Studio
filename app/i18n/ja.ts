@@ -1322,7 +1322,7 @@ export const ja = {
     serviceUnavailableHint: 'ローカルサービスが起動していません。MiniMax Music3 Studio を再起動してください。ライブラリは失われません。',
     karaokeSection: 'カラオケのタイミング',
     karaokeHint: '曲自身の歌詞を認識器のタイムラインに乗せ、ビデオスタジオとプレイヤーが行を追えるようにします。既定はオフで、指示するまで何もダウンロードしません。',
-    karaokeEnable: 'カラオケを有効にする',
+    karaokeEnable: '新しいトラックに自動でタイミングを付ける',
     karaokeWhisperModel: 'Whisper モデル',
     karaokeRuntimeHint: 'CUDA ランタイムがあればそれを使い、CPU 版はどこでも動きます。',
     karaokeOpenRouterManual: 'モデル ID',

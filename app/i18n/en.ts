@@ -1327,7 +1327,7 @@ export const en = {
     serviceUnavailableHint: 'The local service is not running. Restart MiniMax Music3 Studio; nothing in your library is lost.',
     karaokeSection: 'Karaoke timings',
     karaokeHint: "The track's own lyrics are put on a recogniser's clock, so the video studio and the player can follow along. Off by default; nothing is downloaded until you ask.",
-    karaokeEnable: 'Enable karaoke',
+    karaokeEnable: 'Time every new track automatically',
     karaokeWhisperModel: 'Whisper model',
     karaokeRuntimeHint: 'The CUDA runtime is used when installed; the CPU one works everywhere.',
     karaokeOpenRouterManual: 'Model id',

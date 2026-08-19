@@ -1322,7 +1322,7 @@ export const ko = {
     serviceUnavailableHint: '로컬 서비스가 실행 중이 아닙니다. MiniMax Music3 Studio 를 다시 시작하세요. 라이브러리는 사라지지 않습니다.',
     karaokeSection: '노래방 타이밍',
     karaokeHint: '곡의 가사를 인식기의 타임라인에 올려 비디오 스튜디오와 플레이어가 줄을 따라가게 합니다. 기본은 꺼짐이며, 지시 전에는 아무것도 내려받지 않습니다.',
-    karaokeEnable: '노래방 켜기',
+    karaokeEnable: '새 트랙에 자동으로 타이밍 넣기',
     karaokeWhisperModel: 'Whisper 모델',
     karaokeRuntimeHint: 'CUDA 런타임이 있으면 그것을 쓰고, CPU 빌드는 어디서나 동작합니다.',
     karaokeOpenRouterManual: '모델 ID',

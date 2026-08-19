@@ -1322,7 +1322,7 @@ export const zh = {
     serviceUnavailableHint: '本地服务未运行。请重启 MiniMax Music3 Studio，曲库不会丢失。',
     karaokeSection: '卡拉OK 时间轴',
     karaokeHint: '把歌曲自身的歌词放到识别器的时间轴上，视频工作室与播放器即可逐行跟随。默认关闭，未经许可不下载任何内容。',
-    karaokeEnable: '启用卡拉OK',
+    karaokeEnable: '为新曲目自动生成时间轴',
     karaokeWhisperModel: 'Whisper 模型',
     karaokeRuntimeHint: '安装了 CUDA 运行时就用它；CPU 版本随处可用。',
     karaokeOpenRouterManual: '模型 ID',

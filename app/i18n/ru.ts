@@ -1326,7 +1326,7 @@ export const ru = {
     serviceUnavailableHint: 'Локальная служба не запущена. Перезапустите MiniMax Music3 Studio — библиотека при этом не теряется.',
     karaokeSection: 'Тайминги караоке',
     karaokeHint: 'Текст самой песни ставится на тайминги распознавателя — чтобы генератор видео и плеер вели строку. По умолчанию выключено, ничего не качается без вашей команды.',
-    karaokeEnable: 'Включить караоке',
+    karaokeEnable: 'Расставлять тайминги автоматически',
     karaokeWhisperModel: 'Модель Whisper',
     karaokeRuntimeHint: 'Если установлен CUDA-рантайм, берётся он; CPU-сборка работает везде.',
     karaokeOpenRouterManual: 'Идентификатор модели',
