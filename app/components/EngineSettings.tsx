@@ -133,22 +133,11 @@ export const EngineSettings: React.FC = () => {
         onChange={value => setOptions(current => ({ ...current, keep_loaded: value }))}
       />
 
+      {/* No batch ceiling here. It reserves KV cache for the whole batch when
+          the weights load - memory paid for on every single-song generation,
+          which is all but every generation - and the engine takes it only as a
+          launch flag, so it could never be a live control anyway. */}
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
-          <span className="mb-1.5 block">{t('maxBatchLabel')}</span>
-          <input
-            type="number"
-            min={1}
-            max={8}
-            value={options.max_batch ?? 1}
-            onChange={event => {
-              const value = Number(event.target.value);
-              setOptions(current => ({ ...current, max_batch: Number.isFinite(value) && value > 1 ? Math.min(8, value) : null }));
-            }}
-            className={CONTROL}
-          />
-          <span className="mt-1 block font-normal text-zinc-500">{t('maxBatchFieldHint')}</span>
-        </label>
         <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
           <span className="mb-1.5 block">{t('maxSeqLabel')}</span>
           <input

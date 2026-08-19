@@ -307,16 +307,16 @@ struct EngineOptions {
 }
 
 impl EngineOptions {
-    /// `--max-batch` defaults to 1 upstream, and `lm_batch_size` may not exceed
-    /// it, so this is also the number of songs one request can render.
+    /// How many songs one request may render, and the `--max-batch` the engine
+    /// is started with - `lm_batch_size` may not exceed it.
     ///
-    /// The studio asks for four. The language model is memory-bound - every
-    /// frame reads the whole weight set - so songs decoded together are nearly
-    /// free after the first, and leaving the upstream default of 1 in place
-    /// meant the variations slider was permanently disabled. What it costs is
-    /// KV cache, which scales with the batch and not with the weights.
+    /// One, like the engine's own default. The flag reserves KV cache for the
+    /// full batch when the weights load, whether or not anyone asks for it, so
+    /// a studio that quietly asked for four made every single-song generation
+    /// pay for three it would never render. Whoever wants more sets it, and the
+    /// engine restarts with the memory that choice costs.
     fn effective_max_batch(&self) -> u32 {
-        self.max_batch.unwrap_or(4).max(1)
+        self.max_batch.unwrap_or(1).max(1)
     }
 
     fn to_engine(self) -> music_engine::mm_server::MmServerOptions {
@@ -4422,16 +4422,14 @@ mod tests {
         assert_eq!(restored.engine_options.effective_max_batch(), 2);
         // Four by default: songs decoded together are nearly free after the
         // first, and the upstream default of 1 left the slider disabled.
-        assert_eq!(EngineOptions::default().effective_max_batch(), 4);
-        // And the engine is told. The request carries `lm_batch_size`, but the
-        // engine refuses anything above the ceiling it was loaded with, so
-        // offering four in the panel while launching with the upstream default
-        // of one made every request for two songs fail before it began.
-        assert_eq!(
-            EngineOptions::default().to_engine().max_batch,
-            Some(4),
-            "what the panel offers has to be what the engine was started with"
-        );
+        // Nothing is reserved that nobody asked for.
+        assert_eq!(EngineOptions::default().effective_max_batch(), 1);
+        // And whatever it is, the engine is started with it: the request
+        // carries `lm_batch_size`, and the engine refuses anything above the
+        // ceiling it was loaded with. Offering more in the panel than the
+        // engine was given is what made a request for two songs fail at once.
+        assert_eq!(EngineOptions::default().to_engine().max_batch, Some(1));
+        assert_eq!(EngineOptions { max_batch: Some(3), ..EngineOptions::default() }.to_engine().max_batch, Some(3));
         // The assistant is optional: it must survive a restart when configured,
         // and stay unavailable when it is not.
         assert!(restored.assistant.available());
