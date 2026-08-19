@@ -56,6 +56,70 @@ fn connections() -> &'static tokio::sync::Semaphore {
 /// on a twelve gigabyte file - seven hundred pieces - and a retry is cheap.
 const RETRIES: u32 = 8;
 
+/// How long a download may spend waiting to be let in before it gives up.
+///
+/// "Too many requests" is not a failure, it is a queue, and it must not count
+/// against the attempts above: eight retries four hundred milliseconds apart
+/// gave up after fourteen seconds and told the user their download was broken.
+/// Hugging Face's limits clear in minutes, so the download waits minutes.
+const RATE_LIMIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// Seconds the studio is currently waiting for a server to let it in, so a
+/// download that is queued rather than broken can say so. A bar at nought per
+/// cent with nothing under it is indistinguishable from a hang.
+static WAITING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long the download is being kept waiting, if it is.
+pub fn waiting_for_server() -> Option<u64> {
+    match WAITING.load(Ordering::Relaxed) {
+        0 => None,
+        seconds => Some(seconds),
+    }
+}
+
+/// What Hugging Face says about the window we are in.
+///
+/// It does not send `Retry-After`. It implements the IETF RateLimit header
+/// draft instead: `RateLimit: "resolvers";r=2871;t=143` - requests left in this
+/// window, and seconds until it resets. Waiting on a guess when the server has
+/// told you the number is how a download sits for fifteen seconds and walks
+/// straight back into the same refusal.
+fn window(response: &reqwest::Response) -> Option<Window> {
+    let header = response.headers().get("ratelimit")?.to_str().ok()?;
+    let field = |name: &str| {
+        header
+            .split(';')
+            .filter_map(|part| part.trim().split_once('='))
+            .find(|(key, _)| key.trim() == name)
+            .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+    };
+    Some(Window { remaining: field("r")?, resets_in: field("t").unwrap_or(300) })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    remaining: u64,
+    resets_in: u64,
+}
+
+/// Below this many requests left in the window, a download stops asking and
+/// waits for the window to turn over. Hitting nought means every request -
+/// including the ones already in flight - comes back 429, which is much more
+/// expensive than pausing for a minute.
+const KEEP_IN_RESERVE: u64 = 25;
+
+/// How long to wait when the window is spent, or when the server refused
+/// without saying why.
+fn asked_to_wait(response: &reqwest::Response) -> std::time::Duration {
+    let seconds = window(response).map(|window| window.resets_in).unwrap_or(30);
+    std::time::Duration::from_secs(seconds.clamp(1, 310))
+}
+
+/// Whether a status is the server asking for patience rather than refusing.
+fn is_busy(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
 /// What the server will let us do with this file.
 #[derive(Debug, Clone, Copy)]
 pub struct Plan {
@@ -81,14 +145,52 @@ pub async fn probe(http: &reqwest::Client, url: &str) -> Result<Plan> {
     Err(anyhow!("could not start {url} after {RETRIES} attempts: {last}"))
 }
 
+/// Sends one request, waiting out a server that is only busy.
+///
+/// The wait comes from the server's own `Retry-After` where it gives one. This
+/// is where "too many requests" stops being an error: the caller sees either a
+/// real answer or a real failure, never a queue.
+async fn send(http: &reqwest::Client, url: &str, range: Option<String>) -> Result<reqwest::Response> {
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        let _slot = connections().acquire().await.context("wait for a connection")?;
+        let mut request = http.get(url);
+        if let Some(range) = &range {
+            request = request.header(reqwest::header::RANGE, range);
+        }
+        let response = request.send().await.with_context(|| format!("request {url}"))?;
+        if !is_busy(response.status()) {
+            // Slow down before the wall, not after it. The window is five
+            // minutes long and shared by every request from this machine, so a
+            // download that spends the last of it earns a refusal for
+            // everything else the studio is doing.
+            if let Some(window) = window(&response) {
+                if window.remaining < KEEP_IN_RESERVE {
+                    let pause = std::time::Duration::from_secs(window.resets_in.clamp(1, 310));
+                    drop(_slot);
+                    WAITING.store(pause.as_secs(), Ordering::Relaxed);
+                    tokio::time::sleep(pause).await;
+                    WAITING.store(0, Ordering::Relaxed);
+                }
+            }
+            return Ok(response);
+        }
+        let pause = asked_to_wait(&response);
+        if waited + pause > RATE_LIMIT_BUDGET {
+            bail!("{url} answered {} for {} minutes", response.status(), waited.as_secs() / 60);
+        }
+        waited += pause;
+        // The permit is dropped before sleeping, so a server that is turning
+        // us away does not also hold the studio's connections shut.
+        drop(_slot);
+        WAITING.store(pause.as_secs().max(1), Ordering::Relaxed);
+        tokio::time::sleep(pause).await;
+        WAITING.store(0, Ordering::Relaxed);
+    }
+}
+
 async fn probe_once(http: &reqwest::Client, url: &str) -> Result<Plan> {
-    let _slot = connections().acquire().await.context("wait for a connection")?;
-    let response = http
-        .get(url)
-        .header(reqwest::header::RANGE, "bytes=0-0")
-        .send()
-        .await
-        .with_context(|| format!("probe {url}"))?;
+    let response = send(http, url, Some("bytes=0-0".into())).await?;
     if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
         let total = response
             .headers()
@@ -285,13 +387,7 @@ async fn once(
     written: &Arc<AtomicU64>,
     got: &mut u64,
 ) -> Result<()> {
-    let _slot = connections().acquire().await.context("wait for a connection")?;
-    let response = http
-        .get(url)
-        .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
-        .send()
-        .await
-        .with_context(|| format!("range {start}-{end}"))?;
+    let response = send(http, url, Some(format!("bytes={start}-{end}"))).await?;
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
         bail!("range {start}-{end}: answered {} where 206 was expected", response.status());
     }
@@ -316,8 +412,7 @@ async fn once(
 
 /// For a server that will not serve ranges: the body, in order, from the start.
 async fn whole(http: &reqwest::Client, url: &str, part: &Path, written: Arc<AtomicU64>, cancel: Arc<AtomicBool>) -> Result<()> {
-    let _slot = connections().acquire().await.context("wait for a connection")?;
-    let response = http.get(url).send().await.with_context(|| format!("request {url}"))?;
+    let response = send(http, url, None).await?;
     if !response.status().is_success() {
         bail!("{url} answered {}", response.status());
     }
@@ -347,6 +442,23 @@ mod tests {
         std::fs::write(manifest_path(&part), [0u64, CHUNK, CHUNK * 2].iter().flat_map(|offset| offset.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
         assert_eq!(completed_offsets(&part), vec![0, CHUNK, CHUNK * 2]);
         std::fs::remove_dir_all(&directory).ok();
+    }
+
+    /// The header as Hugging Face actually sends it, copied from a live
+    /// response rather than from the specification: what matters is what comes
+    /// down the wire.
+    #[test]
+    fn the_rate_limit_header_is_read_the_way_the_hub_writes_it() {
+        let header = "\"resolvers\";r=2819;t=216";
+        let field = |name: &str| {
+            header
+                .split(';')
+                .filter_map(|part| part.trim().split_once('='))
+                .find(|(key, _)| key.trim() == name)
+                .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+        };
+        assert_eq!(field("r"), Some(2819), "requests left in this five minute window");
+        assert_eq!(field("t"), Some(216), "seconds until the window resets");
     }
 
     #[test]

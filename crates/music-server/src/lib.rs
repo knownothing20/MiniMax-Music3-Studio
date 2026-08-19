@@ -833,6 +833,8 @@ async fn separation_assets(State(state): State<AppState>) -> Json<Value> {
         // Only this panel's own download. The recogniser shares this
         // downloader, and its gigabytes are not the separator's business.
         "active_download": state.separator.downloader().active_for("separation").await.or(state.lyrics_sync.downloader().active_for("separation").await),
+        // Not an error and not a stall: the file server is asking us to wait.
+        "waiting_for_server": crate::chunked::waiting_for_server(),
     }))
 }
 

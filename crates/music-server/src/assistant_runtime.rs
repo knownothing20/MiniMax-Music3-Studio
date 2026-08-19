@@ -239,7 +239,7 @@ impl AssistantRuntime {
     pub fn new(data_root: &Path) -> Self {
         Self {
             root: data_root.join("assistant"),
-            http: reqwest::Client::new(),
+            http: crate::sizes::client(),
             state: Arc::new(Mutex::new(RuntimeState::default())),
         }
     }

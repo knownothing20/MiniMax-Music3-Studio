@@ -154,7 +154,7 @@ impl ModelManager {
         Ok(Self {
             root,
             state_path,
-            http: reqwest::Client::new(),
+            http: crate::sizes::client(),
             state: Arc::new(RwLock::new(state)),
             cancelled: Arc::new(AtomicBool::new(false)),
         })

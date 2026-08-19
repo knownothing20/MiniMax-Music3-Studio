@@ -98,7 +98,7 @@ pub struct Downloader {
 
 impl Downloader {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, http: reqwest::Client::new(), progress: Arc::new(Mutex::new(None)) }
+        Self { root, http: crate::sizes::client(), progress: Arc::new(Mutex::new(None)) }
     }
 
     pub fn root(&self) -> &Path {

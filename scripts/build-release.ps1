@@ -40,6 +40,19 @@ Lose the private key and automatic updates end for everyone already running the
 studio: a new key means a new installer, installed by hand.
 '@
 
+# The key lives beside its password on the release machine, and this reads both
+# rather than only the password - which is what the help above always claimed it
+# did. Setting the variables by hand still wins, for CI, where the key comes
+# from a repository secret and never touches the disk.
+$keyFile = Join-Path $env:USERPROFILE '.tauri\mm3-release.key'
+$publicKeyFile = "$keyFile.pub"
+if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY) -and (Test-Path $keyFile)) {
+    $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw $keyFile).Trim()
+}
+if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY) -and (Test-Path $publicKeyFile)) {
+    $env:TAURI_UPDATER_PUBKEY = (Get-Content -Raw $publicKeyFile).Trim()
+}
+
 if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
     throw "TAURI_SIGNING_PRIVATE_KEY must contain the updater private key.`n`n$whereTheKeyIs"
 }

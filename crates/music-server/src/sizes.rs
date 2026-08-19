@@ -22,6 +22,18 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+/// The client every download uses.
+///
+/// It carries a name. Hugging Face is stricter with clients that do not send
+/// one, and `reqwest` sends none unless told to - which is the difference
+/// between this and the `ureq` these downloads were modelled on.
+pub fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("MiniMax-Music3-Studio/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .unwrap_or_default()
+}
+
 fn table() -> &'static Mutex<HashMap<String, u64>> {
     static KNOWN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
     KNOWN.get_or_init(|| Mutex::new(HashMap::new()))
@@ -55,26 +67,44 @@ pub fn learn(url: &str, bytes: u64) {
 /// slow one. Failures are silent on purpose - a machine with no network still
 /// has a panel to draw, and the listed figure is what it draws.
 pub fn ask(http: &reqwest::Client, urls: Vec<String>) {
-    let wanted: Vec<String> = urls.into_iter().filter(|url| known(url).is_none() && !url.contains("example.invalid")).collect();
+    // Asked once, whatever the answer. The first version of this only
+    // remembered successes, and the panel polls its status every second: two
+    // dozen URLs, asked again and again for as long as a page was open, until
+    // Hugging Face answered 429 to everything - including the download the user
+    // was waiting for. A size nobody could fetch is not worth one request per
+    // second, let alone twenty.
+    let wanted: Vec<String> = urls
+        .into_iter()
+        .filter(|url| !url.contains("example.invalid") && claim(url))
+        .collect();
     if wanted.is_empty() {
         return;
     }
     let http = http.clone();
     tokio::spawn(async move {
-        let asking = wanted.into_iter().map(|url| {
-            let http = http.clone();
-            async move {
-                if let Ok(response) = http.head(&url).send().await {
-                    if response.status().is_success() {
-                        if let Some(length) = response.content_length() {
-                            learn(&url, length);
-                        }
+        for url in wanted {
+            // One at a time, and not in a hurry. This is a caption on a panel,
+            // not the download; it must never compete with one.
+            if let Ok(response) = http.head(&url).send().await {
+                if response.status().is_success() {
+                    if let Some(length) = response.content_length() {
+                        learn(&url, length);
                     }
                 }
             }
-        });
-        futures_util::future::join_all(asking).await;
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     });
+}
+
+/// Takes responsibility for asking about a URL, once per run of the studio.
+fn claim(url: &str) -> bool {
+    static ASKED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let asked = ASKED.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    match asked.lock() {
+        Ok(mut asked) => known(url).is_none() && asked.insert(url.to_string()),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
