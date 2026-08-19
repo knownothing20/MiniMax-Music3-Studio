@@ -458,8 +458,21 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
 
   /// Optional. Nothing here is required to use the model: the manual form is
   /// the primary path, and the buttons stay disabled until a provider is set.
+  // A run in progress can be given up on. The request is a stream that can
+  // take minutes on a reasoning model, and without this the only way out of one
+  // that went quiet was to close the studio.
+  const assistRun = useRef<AbortController | null>(null);
+  const stopAssistant = () => {
+    assistRun.current?.abort();
+    assistRun.current = null;
+    setAssisting(null);
+    setAssistStage(null);
+    setAssistDraft('');
+  };
   const askAssistant = async (target: 'all' | 'lyrics' | 'prompt') => {
     if (!assistantReady || assisting) return;
+    const run = new AbortController();
+    assistRun.current = run;
     setAssisting(target);
     setError(null);
     try {
@@ -486,6 +499,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
+        signal: run.signal,
       });
       if (live.ok && live.body) {
         const reader = live.body.getReader();
@@ -544,8 +558,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       // assistant had written, but it moved the user off the screen they were
       // working on to do it, and they can look for themselves.
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // Giving up on a run is not an error to report back at the person who
+      // gave up on it.
+      const cancelled = reason instanceof DOMException && reason.name === 'AbortError';
+      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
+      assistRun.current = null;
       setAssisting(null);
       setAssistStage(null);
       setAssistDraft('');
@@ -654,6 +672,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 {assisting === 'all' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
                 {assisting === 'all' ? `${t('assistantWriting')} · ${assistSeconds} ${t('secondsShort')}` : t('writeEverything')}
               </button>
+              {assisting === 'all' && (
+                <button
+                  type="button"
+                  onClick={stopAssistant}
+                  className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-300 py-2 text-xs font-semibold text-zinc-600 transition-colors hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-300"
+                >
+                  <Square size={13} />
+                  {t('cancelDownload')}
+                </button>
+              )}
             </Card>
           )}
 

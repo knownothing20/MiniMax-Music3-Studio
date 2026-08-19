@@ -13,6 +13,7 @@ mod credentials;
 mod model_manager;
 mod presets;
 mod remote_zip;
+mod request_log;
 mod resources;
 mod chunked;
 mod separation;
@@ -506,6 +507,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/system/resources", get(system_resources))
         .route("/v1/proxy/image", get(proxy_image))
         .route("/v1/openrouter/settings", get(openrouter_settings).put(update_openrouter_settings))
+        .route("/v1/openrouter/logs", get(openrouter_logs))
         .route("/v1/assistant/status", get(assistant_status).put(update_assistant_settings))
         .route("/v1/assistant/write", post(assistant_write))
         .route("/v1/assistant/write/stream", post(assistant_write_stream))
@@ -2146,19 +2148,43 @@ async fn execute_openrouter_json(
     request: providers::openrouter::OpenRouterRequest,
 ) -> anyhow::Result<OpenRouterResponse> {
     let authenticated = providers::openrouter::authenticated_request_for(request)?;
+    // Every cloud request passes through here, so this is where they are all
+    // written down: which model, how long, and what came back when it was not
+    // a success.
+    let what = authenticated.request.path.trim_matches('/');
+    let model = authenticated
+        .request
+        .body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_string();
+    request_log::asked(what, &model, authenticated.request.body.to_string().chars().count());
+    let started = std::time::Instant::now();
     let response = reqwest::Client::new()
         .post(format!("{}{}", providers::openrouter::API_BASE_URL, authenticated.request.path))
         .bearer_auth(authenticated.api_key)
         .json(&authenticated.request.body)
         .send()
-        .await?
-        .error_for_status()?;
+        .await
+        .inspect_err(|error| request_log::failed(what, &model, &error.to_string()))?;
+    let status = response.status();
+    let response = match response.error_for_status_ref() {
+        Ok(_) => response,
+        Err(error) => {
+            let text = response.text().await.unwrap_or_default();
+            request_log::answered(what, &model, status.as_u16(), started.elapsed().as_secs_f64(), text.chars().count());
+            request_log::unusable(what, &model, &error.to_string(), &text);
+            return Err(error.into());
+        }
+    };
     let generation_id = response
         .headers()
         .get("X-Generation-Id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let body = response.json::<Value>().await?;
+    request_log::answered(what, &model, status.as_u16(), started.elapsed().as_secs_f64(), body.to_string().chars().count());
     Ok(OpenRouterResponse { body, generation_id })
 }
 
@@ -2561,8 +2587,12 @@ async fn assistant_runtime_status(State(state): State<AppState>) -> Json<Value> 
     let status = state.assistant_runtime.status().await;
     let provider = state.assistant.read().await.provider;
     let mut value = serde_json::to_value(&status).unwrap_or(Value::Null);
+    let chosen = state.assistant.read().await.managed_model.clone();
     if let Value::Object(ref mut fields) = value {
         fields.insert("provider".into(), serde_json::to_value(provider).unwrap_or(Value::Null));
+        // And which model, so the dropdown reopens on the one that was picked
+        // rather than on whichever happens to be installed first.
+        fields.insert("chosen_model".into(), serde_json::to_value(chosen).unwrap_or(Value::Null));
     }
     Json(value)
 }
@@ -3060,10 +3090,27 @@ async fn assistant_write_stream(
         // answer cannot come back as prose or as a list where a string belongs.
         let schema = matches!(config.provider, AssistantProvider::Managed | AssistantProvider::Local)
             .then(|| assistant::draft_schema(&required));
-        let mut body = assistant::chat_body_constrained(&model, &system, &user, config.reasoning_effort.as_deref(), None, schema);
+        // What the model publishes for itself, exactly as the non-streaming
+        // path uses it. Passing nothing here meant every streamed request went
+        // out with the studio's own temperature on top of models that had
+        // stated their own - a different request from the one the catalogue
+        // describes, and the streamed path is the one the window uses.
+        let published = if matches!(config.provider, AssistantProvider::OpenRouter) {
+            catalog_for(&state)
+                .await
+                .ok()
+                .and_then(|catalog| catalog.models.iter().find(|entry| entry.id == model).cloned())
+                .map(|entry| serde_json::to_value(&entry.defaults).unwrap_or(Value::Null))
+        } else {
+            None
+        };
+        let mut body =
+            assistant::chat_body_constrained(&model, &system, &user, config.reasoning_effort.as_deref(), published.as_ref(), schema);
         body["stream"] = Value::Bool(true);
 
         emit(sender.clone(), serde_json::json!({ "stage": "sent", "model": model })).await;
+        request_log::asked("assistant", &model, system.chars().count() + user.chars().count());
+        let started = std::time::Instant::now();
 
         let client = reqwest::Client::new();
         let mut outgoing = client
@@ -3080,6 +3127,7 @@ async fn assistant_write_stream(
         let response = match outgoing.send().await {
             Ok(response) => response,
             Err(error) => {
+                request_log::failed("assistant", &model, &error.to_string());
                 emit(sender.clone(), serde_json::json!({ "error": format!("the assistant is unreachable: {error}") })).await;
                 return;
             }
@@ -3087,6 +3135,8 @@ async fn assistant_write_stream(
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
+            request_log::answered("assistant", &model, status.as_u16(), started.elapsed().as_secs_f64(), text.chars().count());
+            request_log::unusable("assistant", &model, &format!("http {status}"), &text);
             emit(sender.clone(), serde_json::json!({ "error": format!("the assistant returned {status}: {text}") })).await;
             return;
         }
@@ -3121,6 +3171,10 @@ async fn assistant_write_stream(
                 }
                 if first {
                     first = false;
+                    // The moment the model started answering. Without it a log
+                    // of a run that never came back cannot say whether it was
+                    // thinking or simply gone.
+                    request_log::answered("assistant first token", &model, 200, started.elapsed().as_secs_f64(), 0);
                     emit(sender.clone(), serde_json::json!({ "stage": "writing" })).await;
                 }
                 whole.push_str(delta);
@@ -3128,6 +3182,13 @@ async fn assistant_write_stream(
             }
         }
 
+        request_log::answered("assistant", &model, 200, started.elapsed().as_secs_f64(), whole.chars().count());
+        // The answer is kept whenever it cannot be turned into a draft. That is
+        // the case this log exists for: the window shows one red line, and
+        // without this the text behind it is gone the moment it is closed.
+        if let Err(error) = assistant::parse_draft(&whole, &required) {
+            request_log::unusable("assistant", &model, &error.to_string(), &whole);
+        }
         emit(sender.clone(), serde_json::json!({ "stage": "done", "text": whole })).await;
         // The card belongs to whatever runs next unless the user asked for
         // everything to stay resident.
@@ -3249,8 +3310,16 @@ async fn assistant_write(
     };
 
     release_assistant_unless_kept(&state).await;
-    let content = assistant::content_of(&response).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
-    let draft = assistant::parse_draft(&content, required).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let content = assistant::content_of(&response).map_err(|error| {
+        request_log::unusable("assistant", "", &error.to_string(), &response.to_string());
+        api_error(StatusCode::BAD_GATEWAY, error.to_string())
+    })?;
+    let draft = assistant::parse_draft(&content, required).map_err(|error| {
+        // The answer, kept: this is the difference between "invalid JSON" and
+        // seeing that the model wrote an apology instead of a song.
+        request_log::unusable("assistant", "", &error.to_string(), &content);
+        api_error(StatusCode::BAD_GATEWAY, error.to_string())
+    })?;
     Ok(Json(serde_json::to_value(draft).unwrap_or(Value::Null)))
 }
 
@@ -3268,6 +3337,15 @@ async fn release_assistant_unless_kept(state: &AppState) {
     if state.assistant_runtime.base_url().await.is_some() {
         state.assistant_runtime.stop().await;
     }
+}
+
+/// What was asked of the cloud and what came back, newest last.
+///
+/// A failed draft used to leave one red line and nothing behind it; this is
+/// where the answer itself is kept, so a model that wrote almost the right
+/// thing can be told from one that wrote nothing.
+async fn openrouter_logs() -> Json<Value> {
+    Json(serde_json::json!({ "path": request_log::path().display().to_string(), "lines": request_log::tail(400) }))
 }
 
 async fn openrouter_settings() -> Json<Value> {

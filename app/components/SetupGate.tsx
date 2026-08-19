@@ -144,6 +144,7 @@ export const OptionalGroup: React.FC<{
       if (body.provider && engines?.some((choice) => choice.id === body.provider)) setEngine(body.provider);
       if (body.runtime) setDevice(body.runtime);
       if (body.whisper_model) setModel(body.whisper_model);
+      if (body.chosen_model) setModel(body.chosen_model);
       if (body.settings?.runtime) setDevice(body.settings.runtime);
     }
   }, [statusUrl, engines]);
@@ -175,12 +176,15 @@ export const OptionalGroup: React.FC<{
   useEffect(() => { void load().catch(() => undefined); }, [load]);
 
   useEffect(() => {
-    if (!engines?.some((choice) => choice.device === false)) return;
+    if (!open || !engines?.some((choice) => choice.device === false)) return;
     void fetch('/v1/openrouter/settings')
       .then((response) => (response.ok ? response.json() : null))
       .then((body: { configured?: boolean } | null) => setKeyStored(Boolean(body?.configured)))
       .catch(() => undefined);
-  }, [engines]);
+    // Asked whenever the panel is opened, not once for the life of the window:
+    // a key saved on another screen afterwards left this one sure there was
+    // none.
+  }, [engines, open]);
 
   useEffect(() => {
     const active = status?.active_download;
