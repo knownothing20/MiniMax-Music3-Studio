@@ -358,20 +358,15 @@ impl Downloader {
     /// the same time.
     async fn fetch_now(&self, asset: &'static Asset, cell: &Arc<Mutex<Option<DownloadProgress>>>) -> Result<()> {
         if !asset.pick.is_empty() {
-            let destination = self.picked_into(asset);
-            let reporter = cell.clone();
-            return tokio::task::spawn_blocking(move || {
-                crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |written| {
-                    if let Ok(mut guard) = reporter.try_lock() {
-                        if let Some(active) = guard.as_mut() {
-                            active.downloaded_bytes = written;
-                        }
-                    }
-                })
-                .map(|_| ())
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))?;
+            // The whole archive over the resumable downloader, then the wanted
+            // files extracted locally. Reading named files straight out of a
+            // remote zip over range requests was clever and fragile: a separate
+            // client with no resume, no retry and no rate-limit handling, so a
+            // slow or interrupted connection sat at nought bytes until a ten
+            // minute timeout. NVIDIA's cuBLAS archive is almost all the two
+            // libraries anyway - nineteen megabytes of difference bought a
+            // download that survives a bad line.
+            return download_and_extract_named(&self.http, asset, &self.picked_into(asset), cell, self.cancel.clone()).await;
         }
         let target = self.path_of(asset);
         fetch(&self.http, asset, &target, cell, self.cancel.clone()).await?;
@@ -406,26 +401,16 @@ impl Downloader {
         let progress = self.progress.clone();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
-            // An asset that names its files never downloads the archive: the
-            // wanted entries are read straight out of it over range requests.
+            // A named-file asset: the whole archive over the resumable
+            // downloader, then the wanted files extracted locally. The old path
+            // read them straight out of a remote zip with a client that could
+            // not resume or retry, so a bad connection sat at nought bytes.
             if !asset.pick.is_empty() {
                 let destination = match asset.unzip_into {
                     Some(flavour) => root.join("runtime").join(flavour),
                     None => root.clone(),
                 };
-                let reporter = progress.clone();
-                let outcome = tokio::task::spawn_blocking(move || {
-                    crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |written| {
-                        if let Ok(mut guard) = reporter.try_lock() {
-                            if let Some(active) = guard.as_mut() {
-                                active.downloaded_bytes = written;
-                            }
-                        }
-                    })
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))
-                .and_then(|inner| inner);
+                let outcome = download_and_extract_named(&http, asset, &destination, &progress, cancel).await;
                 let mut guard = progress.lock().await;
                 if let Some(active) = guard.as_mut() {
                     active.done = true;
@@ -505,6 +490,74 @@ async fn fetch(
 
 /// Unpacks a release zip. Entries are flattened into `destination` because the
 /// releases nest their binaries one or two directories deep.
+/// Downloads a whole archive with the resumable downloader and extracts the
+/// asset's named files, reporting progress into the shared cell.
+async fn download_and_extract_named(
+    http: &reqwest::Client,
+    asset: &'static Asset,
+    destination: &Path,
+    progress: &Arc<Mutex<Option<DownloadProgress>>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    fs::create_dir_all(destination).with_context(|| format!("create {}", destination.display()))?;
+    if asset.pick.iter().all(|name| destination.join(name).is_file()) {
+        return Ok(());
+    }
+    let archive = destination.join(format!("{}.part-archive", asset.id));
+    let plan = crate::chunked::probe(http, asset.url).await?;
+    let written = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reporter = {
+        let (written, progress) = (written.clone(), progress.clone());
+        tokio::spawn(async move {
+            loop {
+                let value = written.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some(active) = progress.lock().await.as_mut() {
+                    active.downloaded_bytes = value;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+    };
+    let outcome = crate::chunked::fetch(http, asset.url, &archive, plan, written, cancel).await;
+    reporter.abort();
+    outcome?;
+    let (archive_path, wanted, destination) = (archive.clone(), asset.pick, destination.to_path_buf());
+    let extracted = tokio::task::spawn_blocking(move || extract_named_local(&archive_path, wanted, &destination))
+        .await
+        .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))?;
+    fs::remove_file(&archive).ok();
+    extracted
+}
+
+/// Pulls named files out of a local archive, by base name, flattened into the
+/// destination. The archive stays where it is; the caller deletes it.
+fn extract_named_local(archive: &Path, wanted: &[&str], destination: &Path) -> Result<()> {
+    let file = fs::File::open(archive).with_context(|| format!("open {}", archive.display()))?;
+    let mut zip = zip::ZipArchive::new(file).with_context(|| format!("read {}", archive.display()))?;
+    let mut found: Vec<String> = Vec::new();
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index).context("read zip entry")?;
+        let Some(name) = entry.enclosed_name().and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string())) else {
+            continue;
+        };
+        if !wanted.iter().any(|candidate| candidate.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        let target = destination.join(&name);
+        let partial = target.with_extension("part");
+        let mut out = fs::File::create(&partial).with_context(|| format!("create {}", partial.display()))?;
+        io::copy(&mut entry, &mut out).with_context(|| format!("extract {name}"))?;
+        drop(out);
+        fs::rename(&partial, &target).with_context(|| format!("publish {}", target.display()))?;
+        found.push(name);
+    }
+    if found.len() != wanted.len() {
+        let missing: Vec<&str> = wanted.iter().copied().filter(|name| !found.iter().any(|got| got.eq_ignore_ascii_case(name))).collect();
+        bail!("{} did not contain {}", archive.display(), missing.join(", "));
+    }
+    Ok(())
+}
+
 pub fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
     // Packages ship every architecture they support; only this one belongs
     // here, and flattening the rest would overwrite it with an ARM build.

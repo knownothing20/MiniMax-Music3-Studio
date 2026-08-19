@@ -134,7 +134,6 @@ export const OptionalGroup: React.FC<{
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [keyStored, setKeyStored] = useState(false);
-  const [baseUrl, setBaseUrl] = useState('');
 
   const load = useCallback(async () => {
     const response = await fetch(statusUrl);
@@ -291,35 +290,11 @@ export const OptionalGroup: React.FC<{
                 // The cloud recogniser downloads nothing and needs one thing:
                 // the key. Sending the user to another page to type it, and
                 // back here to use it, is two pages for one field.
+                // The local server's own fields - address and model - live in
+                // the slot below, saved as they are typed, so there is no second
+                // Save button and nothing to forget to press.
                 if (serverField && engine === 'local') {
-                  return (
-                    <div className="flex items-center gap-2">
-                      <input
-                        value={baseUrl}
-                        onChange={(event) => setBaseUrl(event.target.value)}
-                        placeholder="http://127.0.0.1:8080/v1"
-                        className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs text-zinc-900 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFailed(null);
-                          void fetch('/v1/assistant/status', {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ provider: 'local', local_base_url: baseUrl.trim() || null }),
-                          })
-                            .then(async (response) => {
-                              if (!response.ok) setFailed(await errorMessage(response));
-                            })
-                            .catch((error: Error) => setFailed(error.message));
-                        }}
-                        className="shrink-0 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-200"
-                      >
-                        {t('save')}
-                      </button>
-                    </div>
-                  );
+                  return null;
                 }
                 return (
                   <div className="flex items-center gap-2">

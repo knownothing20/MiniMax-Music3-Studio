@@ -28,7 +28,10 @@ const INPUT =
 export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
   const { t } = useI18n();
 
+  const [localBaseUrl, setLocalBaseUrl] = useState('');
   const [localModel, setLocalModel] = useState('');
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [localBusy, setLocalBusy] = useState(false);
   const [openRouterModel, setOpenRouterModel] = useState('');
   const [managedPath, setManagedPath] = useState('');
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
@@ -47,14 +50,54 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
   useEffect(() => {
     void fetch('/v1/assistant/status')
       .then((response) => (response.ok ? response.json() : null))
-      .then((status: { local_model?: string | null; openrouter_model?: string | null; managed_path?: string | null } | null) => {
+      .then((status: { local_base_url?: string | null; local_model?: string | null; openrouter_model?: string | null; managed_path?: string | null } | null) => {
         if (!status) return;
+        setLocalBaseUrl(status.local_base_url ?? '');
         setLocalModel(status.local_model ?? '');
         setOpenRouterModel(status.openrouter_model ?? '');
         setManagedPath(status.managed_path ?? '');
       })
       .catch(() => undefined);
   }, []);
+
+  // The local server's settings save themselves as they change - no button to
+  // press, and none to forget. Debounced so a URL is stored once it is typed,
+  // not once per keystroke.
+  const saveLocal = React.useCallback((base: string, model: string) => {
+    void fetch('/v1/assistant/status', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'local', local_base_url: base.trim() || null, local_model: model.trim() || null }),
+    }).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    if (engine !== 'local') return;
+    const timer = window.setTimeout(() => saveLocal(localBaseUrl, localModel), 500);
+    return () => window.clearTimeout(timer);
+  }, [engine, localBaseUrl, localModel, saveLocal]);
+
+  // The models the server offers, asked of it through the studio so the browser
+  // never has to reach another origin. Typing the name by hand was a typo away
+  // from a server that answered nothing.
+  const fetchLocalModels = React.useCallback(async (base: string) => {
+    if (!base.trim()) return;
+    setLocalBusy(true);
+    try {
+      const response = await fetch(`/v1/assistant/local-models?base=${encodeURIComponent(base.trim())}`);
+      const body = await response.json().catch(() => null);
+      if (response.ok && Array.isArray(body?.models)) {
+        setLocalModels(body.models);
+        if (!localModel && body.models.length) setLocalModel(body.models[0]);
+      }
+    } finally {
+      setLocalBusy(false);
+    }
+  }, [localModel]);
+  useEffect(() => {
+    if (engine === 'local' && localBaseUrl.trim()) void fetchLocalModels(localBaseUrl);
+    // Only when the address changes, not on every model edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, localBaseUrl]);
 
   const loadRuntime = React.useCallback(async () => {
     const response = await fetch('/v1/assistant/runtime');
@@ -145,9 +188,34 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
       )}
 
       {engine === 'local' && (
-        <div className="space-y-1">
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400">{t('assistantBaseUrl')}</label>
+          <input
+            value={localBaseUrl}
+            onChange={(event) => setLocalBaseUrl(event.target.value)}
+            placeholder="http://127.0.0.1:1234/v1"
+            className={INPUT}
+          />
           <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400">{t('assistantModel')}</label>
-          <input value={localModel} onChange={(event) => setLocalModel(event.target.value)} placeholder="gemma-3-4b-it" className={INPUT} />
+          <div className="flex items-center gap-2">
+            {localModels.length > 0 ? (
+              <select value={localModel} onChange={(event) => setLocalModel(event.target.value)} className={INPUT}>
+                {localModel && !localModels.includes(localModel) && <option value={localModel}>{localModel}</option>}
+                {localModels.map((id) => <option key={id} value={id}>{id}</option>)}
+              </select>
+            ) : (
+              <input value={localModel} onChange={(event) => setLocalModel(event.target.value)} placeholder="gemma-3-4b-it" className={INPUT} />
+            )}
+            <button
+              type="button"
+              onClick={() => void fetchLocalModels(localBaseUrl)}
+              disabled={localBusy || !localBaseUrl.trim()}
+              title={t('refresh')}
+              className="shrink-0 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-600 transition-colors hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/10 dark:text-zinc-300"
+            >
+              {localBusy ? <Loader2 size={16} className="animate-spin" /> : t('refresh')}
+            </button>
+          </div>
           <p className="text-[11px] leading-4 text-zinc-500">{t('assistantLocalHint')}</p>
         </div>
       )}
@@ -176,15 +244,19 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
       )}
 
       <div className="flex items-center gap-3 pt-1">
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={busy !== null}
-          className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-semibold text-zinc-700 transition-colors hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
-        >
-          {busy === 'save' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-          {t('save')}
-        </button>
+        {/* The local server saves itself as its fields change, so it needs no
+            button; the others still keep their explicit Save. */}
+        {engine !== 'local' && (
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={busy !== null}
+            className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-semibold text-zinc-700 transition-colors hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
+          >
+            {busy === 'save' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            {t('save')}
+          </button>
+        )}
         {runtime?.running_model && (
           <button
             type="button"

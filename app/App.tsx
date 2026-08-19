@@ -852,11 +852,6 @@ function AppContent() {
   /// reports a phase rather than a percentage, so the card shows an honest
   /// stage name and an indeterminate bar instead of a fabricated progress
   /// number.
-  const NATIVE_STAGE: Record<string, string> = {
-    queued: 'stageWaitingInQueue',
-    running: 'stageGeneratingAudio',
-  };
-
   const beginPollingJob = useCallback((jobId: string, tempId: string) => {
     if (activeJobsRef.current.has(jobId)) return;
 
@@ -866,9 +861,13 @@ function AppContent() {
         if (!response.ok) throw new Error(`Job status request failed (${response.status})`);
         const job: Music3Job = await response.json();
 
-        setSongs(prev => prev.map(song => song.id === tempId
-          ? { ...song, stage: NATIVE_STAGE[job.status] ?? song.stage, queuePosition: job.status === 'queued' ? 0 : undefined }
-          : song));
+        // The stage is not set from this per-job status: mm-server reports
+        // every queued job as "running", so trusting it here would light every
+        // card up as generating. The engine-log poll has the global view - it
+        // knows which single job the engine is actually rendering - and owns the
+        // generating-vs-waiting distinction. This poll only reacts to the
+        // terminal states below.
+        void job;
 
         if (job.status === 'completed') {
           cleanupJob(jobId, tempId);
@@ -929,9 +928,24 @@ function AppContent() {
           }
         }
         if (cancelled || progress === undefined) return;
-        setSongs(prev => prev.map(song => song.isGenerating && song.jobId
-          ? { ...song, progress, stage: stage ?? song.stage }
-          : song));
+        // The engine renders one job at a time, strictly in the order they were
+        // submitted, and its log reports that one job's frames. mm-server marks
+        // every queued job "running" all the same, so applying this to each
+        // generating song gave them all the same bar - the exact report. Only
+        // the oldest still-generating song is actually being worked on; the rest
+        // wait at nought.
+        setSongs(prev => {
+          const generating = prev.filter(song => song.isGenerating && song.jobId);
+          if (generating.length === 0) return prev;
+          const active = generating.reduce((oldest, song) =>
+            (song.createdAt?.getTime() ?? 0) < (oldest.createdAt?.getTime() ?? 0) ? song : oldest,
+          );
+          return prev.map(song => {
+            if (!song.isGenerating || !song.jobId) return song;
+            if (song.id === active.id) return { ...song, progress, stage: stage ?? song.stage };
+            return { ...song, progress: 0, stage: 'stageWaitingInQueue' };
+          });
+        });
       } catch {
         // Progress detail is a nicety; the job status poll remains the truth.
       }
