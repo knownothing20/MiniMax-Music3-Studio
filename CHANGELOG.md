@@ -3,6 +3,33 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## 2026-08-19 — 1.4.0
+
+### Added
+
+- **The studio can read audio, not only write it.** MiniMax published Music 3
+  without the encoder that turns audio into the codes the model generates, so a
+  finished track could never be handed back to it. The encoder was reconstructed
+  by the community; it is exported to ONNX and published as
+  [nerualdreming/open-rvq-encoder-minimax-music3-169m-v4-onnx](https://huggingface.co/nerualdreming/open-rvq-encoder-minimax-music3-169m-v4-onnx),
+  verified against the PyTorch reference with every code identical. The path
+  runs on parts already here: `neural-codec` from the engine turns audio into
+  VAE latents, ONNX Runtime turns those into codes, and the engine renders from
+  them. What that gives today is a re-render of a whole track through the model.
+  Continuing past the end and repainting one section need the engine to accept
+  codes as a prefix or a masked span, and its replay path takes neither.
+- **Lighter quantisations for every role**, from a second community set: the
+  language model down to Q4_K_M, Q4_K_S and Q3_K_M, the DiT to Q4_K_S and
+  Q3_K_M, the depth decoder to Q4/Q5/Q6, plus MXFP4 and NVFP4 for all three -
+  ggml declares both types and the CUDA backend carries kernels for them.
+- **A Minimal profile** at about 6.4 GB, for 8 GB cards that were previously
+  told to use the cloud, and Light drops from 8.8 GB to 7.7 GB.
+- **Models you already have can be adopted** instead of downloaded again:
+  a folder picker matches files by name, then by exact size, and hard-links
+  them into place.
+- **Six Whisper models and both Parakeet precisions**, matching Dub Studio's
+  line-up, with the Gemma quantisations alongside them.
+
 ## 2026-08-19 — 1.3.5
 
 ### Fixed

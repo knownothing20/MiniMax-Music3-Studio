@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Download, FolderOpen, Loader2, Square, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, Download, FolderDown, FolderOpen, Loader2, Square, Trash2, X } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { DevicePicker, type Device } from './DevicePicker';
 import {
@@ -173,7 +173,10 @@ const OptionalGroup: React.FC<{
     if (asset.kind !== 'model') return false;
     if (!engines || engines.length === 0) return false;
     if (engine === 'whisper') return asset.id.startsWith('whisper-');
-    if (engine === 'parakeet' || engine === 'open_router') return false;
+    // Parakeet comes in two precisions; the rest of its files are shared, so
+    // only the encoders are a choice.
+    if (engine === 'parakeet') return asset.id === 'parakeet-tdt-int8' || asset.id === 'parakeet-tdt-fp32';
+    if (engine === 'open_router') return false;
     return true;
   });
   const chosenModel = model || models.find((asset) => asset.installed)?.id || models[0]?.id || '';
@@ -765,6 +768,24 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                 >
                   <FolderOpen size={13} />
                   {t('openFolder')}
+                </button>
+                {/* Anyone who has run Music3 elsewhere already has these files.
+                    Downloading ten gigabytes again to get them is a waste of a
+                    line and a disk. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void fetch('/setup/adopt', { method: 'POST' })
+                      .then((response) => (response.ok ? response.json() : null))
+                      .then((body: { picked?: boolean; adopted?: string[] } | null) => {
+                        if (body?.picked) void refresh();
+                      })
+                      .catch(() => undefined);
+                  }}
+                  className="ml-2 mt-2 inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+                >
+                  <FolderDown size={13} />
+                  {t('useExistingModels')}
                 </button>
               </div>
             )}

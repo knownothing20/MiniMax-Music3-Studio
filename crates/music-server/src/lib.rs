@@ -4,6 +4,7 @@ mod cover_prompt;
 mod providers;
 mod assistant;
 mod assistant_runtime;
+mod audio_input;
 mod audio_pcm;
 mod downloads;
 mod engine_runtime;
@@ -532,6 +533,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/setup/catalog", get(setup_catalog))
         .route("/setup/download", post(setup_download))
         .route("/setup/remove", post(setup_remove))
+        .route("/setup/adopt", post(setup_adopt))
         .route("/v1/open-data-directory", post(open_data_directory))
         .route("/setup/select", post(setup_select))
         .route("/setup/cancel", post(setup_cancel))
@@ -2617,7 +2619,13 @@ fn karaoke_set(name: &str, device: lyrics_sync::OnnxFlavour, whisper_model: Opti
             if !matches!(device, lyrics_sync::OnnxFlavour::Cpu) {
                 wanted.extend(CARD_ASSETS.map(String::from));
             }
-            wanted.extend(lyrics_sync::PARAKEET_ASSET_IDS.map(String::from));
+            // The precision is chosen the same way a Whisper model is: through
+            // the dropdown, which names one of the two encoders.
+            if whisper_model.is_some_and(|id| id.contains("fp32")) {
+                wanted.extend(lyrics_sync::PARAKEET_FP32_ASSET_IDS.map(String::from));
+            } else {
+                wanted.extend(lyrics_sync::PARAKEET_ASSET_IDS.map(String::from));
+            }
         }
         "whisper" => {
             wanted.push(if matches!(device, lyrics_sync::OnnxFlavour::Cpu) { "whisper-cpu" } else { "whisper-cuda" }.into());
@@ -3154,6 +3162,69 @@ async fn setup_remove(
     Ok(Json(serde_json::json!({
         "removed": report.removed,
         "freed_bytes": report.freed_bytes,
+    })))
+}
+
+/// Takes models the user already has instead of downloading them again.
+///
+/// Anyone who has run Music3 through ComfyUI or another build already has these
+/// weights on disk, and they are gigabytes each. This opens a folder picker,
+/// looks for the files the catalogue names - by name, then by matching size -
+/// and hard-links or copies them into the studio's own model directory.
+async fn setup_adopt(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let Some(models_root) = studio_data_root().map(|root| root.join("models").join(model_manager::ENGINE_ID)) else {
+        return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "the studio has no data directory".into()));
+    };
+    let catalog = state.model_manager.catalog();
+    let picked = tokio::task::spawn_blocking(move || {
+        rfd::FileDialog::new().set_title("Folder with Music3 models").pick_folder()
+    })
+    .await
+    .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let Some(folder) = picked else {
+        return Ok(Json(serde_json::json!({ "picked": false, "adopted": [] })));
+    };
+
+    let _ = std::fs::create_dir_all(&models_root);
+    let mut adopted: Vec<String> = Vec::new();
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&folder)
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+
+    for component in &catalog.components {
+        let target = models_root.join(component.filename);
+        if target.is_file() {
+            continue;
+        }
+        // The name first, because that is unambiguous; then the exact size,
+        // because other builds rename the same file.
+        let source = entries
+            .iter()
+            .find(|path| path.file_name().is_some_and(|name| name == component.filename))
+            .or_else(|| {
+                entries.iter().find(|path| {
+                    std::fs::metadata(path).map(|meta| meta.len() == component.bytes).unwrap_or(false)
+                })
+            });
+        let Some(source) = source else { continue };
+        // A hard link costs nothing and keeps one copy on disk; a folder on
+        // another drive cannot have one, so that falls back to a copy.
+        if std::fs::hard_link(source, &target).is_err() && std::fs::copy(source, &target).is_err() {
+            continue;
+        }
+        adopted.push(component.id.to_string());
+    }
+
+    let target = effective_install_target(&state).await;
+    let status = state.model_manager.status(target).await;
+    Ok(Json(serde_json::json!({
+        "picked": true,
+        "folder": folder.display().to_string(),
+        "adopted": adopted,
+        "status": compose_setup_status(&state, status).await,
     })))
 }
 

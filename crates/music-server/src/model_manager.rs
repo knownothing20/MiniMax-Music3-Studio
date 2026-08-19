@@ -16,6 +16,11 @@ use tokio::{io::AsyncWriteExt, sync::RwLock};
 pub const ENGINE_ID: &str = "minimaxmusic-cpp";
 const REPOSITORY: &str = "Serveurperso/MiniMax-Music3-GGUF";
 const REVISION: &str = "9cdffedb54de2509ae55a6831a677645fb353a7d";
+/// The lighter quantisations - Q4 and below for every role - come from a
+/// separate community set. Serveurperso's repository starts at Q5_K_M for the
+/// language model, which is what put the floor of the studio at 8.8 GB.
+const LIGHT_REPOSITORY: &str = "scragnog/MiniMax-Music3-GGUF";
+const LIGHT_REVISION: &str = "6781ce79b21beb7413f6b2358cd4adb355217c3d";
 
 /// The recommendation is a property of the machine, not of the catalog: a
 /// 24 GB card must land on Full Native and a 12 GB card on Q8 Quality. The
@@ -61,6 +66,10 @@ pub struct Component {
     pub filename: &'static str,
     pub bytes: u64,
     pub sha256: &'static str,
+    /// Where this file comes from. The lighter quantisations are published by
+    /// someone else, and a single hard-coded repository is what kept them out.
+    pub repository: &'static str,
+    pub revision: &'static str,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -351,8 +360,8 @@ impl ModelManager {
             return self.publish_verified_part(component, &part, &target).await;
         }
         let url = format!(
-            "https://huggingface.co/{REPOSITORY}/resolve/{REVISION}/{}?download=true",
-            component.filename
+            "https://huggingface.co/{}/resolve/{}/{}?download=true",
+            component.repository, component.revision, component.filename
         );
         let mut request = self.http.get(url);
         if offset > 0 {
@@ -642,7 +651,8 @@ fn part_path(path: &Path) -> PathBuf {
 
 fn profiles() -> Vec<Profile> {
     vec![
-        profile("recommended-light", "Light - Q5_K_M / Q8_0 / Q4_K_M (speed / low VRAM)", false, &["lm-q5", "depth-q8", "condition-f32", "dit-q4", "vocoder-f32"]),
+        profile("minimal", "Minimal - Q3_K_M / Q4_K_M / Q3_K_M (8 GB cards)", false, &["lm-q3", "depth-q4", "condition-f32", "dit-q3", "vocoder-f32"]),
+        profile("recommended-light", "Light - Q4_K_M / Q4_K_M / Q4_K_S (speed / low VRAM)", false, &["lm-q4", "depth-q4", "condition-f32", "dit-q4-s", "vocoder-f32"]),
         profile("balanced", "Balanced - Q6_K / Q8_0 / Q5_K_M", false, &["lm-q6", "depth-q8", "condition-f32", "dit-q5", "vocoder-f32"]),
         profile("quality-q8", "Recommended - Quality Q8_0", true, &["lm-q8", "depth-q8", "condition-f32", "dit-q8", "vocoder-f32"]),
         profile("native", "Full native - BF16 / F32 original weights", false, &["lm-bf16", "depth-bf16", "condition-f32", "dit-f32", "vocoder-f32"]),
@@ -673,11 +683,36 @@ fn components() -> Vec<Component> {
         c("dit-q6", "dit", "MiniMax-Music3-transformer-Q6_K.gguf", 2014946784, "9682694cd37d49361315204f69a25b054dbc817e4ed77487fc47d6f8ce7650ac"),
         c("dit-q8", "dit", "MiniMax-Music3-transformer-Q8_0.gguf", 2602401248, "cbadca0600f325ba9263ea4dcf0d71d0361abf0733303398b9995fbadac6b38e"),
         c("vocoder-f32", "vocoder", "MiniMax-Music3-vocoder-F32.gguf", 306102784, "4eaa451e54fa755cfe7b0fd15b0bfe64458db35b822e1d250488d0a2a363507d"),
+        // Below what Serveurperso publishes: the community set goes down to Q3
+        // for every role, which is what lets the studio fit on an 8 GB card.
+        q("lm-q4", "lm", "mm3-lm-Q4_K_M.gguf", 5512456544, "8d8e21098e1027b963776bbe9790609191e95610caa6e7cb53c26830b3efc94b"),
+        q("lm-q4-s", "lm", "mm3-lm-Q4_K_S.gguf", 5286685024, "8874ff5ed793ebb1a93d3a4373ba77f6a1732a21f3bd226be25d12fcbbfee878"),
+        q("lm-q3", "lm", "mm3-lm-Q3_K_M.gguf", 4589971808, "65a1ee35212547a95ed19067c5b3bc3492725d55e754729e693e4141396064a5"),
+        q("dit-q4-s", "dit", "mm3-dit-Q4_K_S.gguf", 1389823808, "e20449c3f6a73a8cc2672947f2ee41728b12f0dcfd351c1c9a34a04a1c193031"),
+        q("dit-q3", "dit", "mm3-dit-Q3_K_M.gguf", 1138427712, "f1a67119c34ede23e27240d3ebd630fa492247e1d0184263574482302ab48f3f"),
+        q("depth-q4", "depth", "mm3-depth-Q4_K_M.gguf", 404836256, "77e729d6e0599ed7928a3c0f13a36e1d3ef5f7de9259eaf01a19445549fa958e"),
+        q("depth-q5", "depth", "mm3-depth-Q5_K_M.gguf", 465653664, "82f6fd51fdb7bd4ee154492b24a358b718b40b121be15cc7afd7ed431a77b01c"),
+        q("depth-q6", "depth", "mm3-depth-Q6_K.gguf", 530272160, "6ab067c2d4589d39758e46a54cc8554c2145a1675b3dcfb570ab698d2ba26fc8"),
+        // The two four-bit float formats. ggml declares both - GGML_TYPE_MXFP4
+        // and GGML_TYPE_NVFP4 - and the CUDA backend carries kernels for them,
+        // so the pinned engine reads them. NVFP4 is the one Blackwell cards
+        // have hardware for.
+        q("lm-mxfp4", "lm", "mm3-lm-MXFP4.gguf", 5439166816, "a881bf6236bd517eb761814d06b43d95b6c68d5d2d7d2b0c0abccea683caaf0c"),
+        q("lm-nvfp4", "lm", "mm3-lm-NVFP4.gguf", 5656222048, "5d1e9e238c447cd5671d5695431d7df433d04ab18550d9f8ac6616b7c14e0e3e"),
+        q("dit-mxfp4", "dit", "mm3-dit-MXFP4.gguf", 1308286784, "e9ef42c62c319cfde635f7ecafff685b4c44767acb71ee85cf471dcff96f18a8"),
+        q("dit-nvfp4", "dit", "mm3-dit-NVFP4.gguf", 1383784256, "99fa7349f3e06fa79af4a4ab7b89dab490caeb034e543e83a51844353abf41ed"),
+        q("depth-mxfp4", "depth", "mm3-depth-MXFP4.gguf", 383668128, "34c80af745814c4f96ca8e744c39666480a0cdbfb862d51faac7d5f9c1a861e9"),
+        q("depth-nvfp4", "depth", "mm3-depth-NVFP4.gguf", 401493920, "33b9cf7b2324157ec13d5d9b105cc80e94104d93647229a9f83b9824efcba415"),
     ]
 }
 
 fn c(id: &'static str, kind: &'static str, filename: &'static str, bytes: u64, sha256: &'static str) -> Component {
-    Component { id, kind, filename, bytes, sha256 }
+    Component { id, kind, filename, bytes, sha256, repository: REPOSITORY, revision: REVISION }
+}
+
+/// A component from the community's own quantisation set.
+fn q(id: &'static str, kind: &'static str, filename: &'static str, bytes: u64, sha256: &'static str) -> Component {
+    Component { id, kind, filename, bytes, sha256, repository: LIGHT_REPOSITORY, revision: LIGHT_REVISION }
 }
 
 #[cfg(test)]
@@ -714,7 +749,7 @@ mod tests {
 
     #[test]
     fn catalog_contains_every_pinned_component_variant() {
-        assert_eq!(components().len(), 13);
+        assert_eq!(components().len(), 27);
         assert!(components().iter().all(|component| component.sha256.len() == 64));
     }
 
@@ -722,9 +757,9 @@ mod tests {
     fn light_profile_maps_to_the_exact_q5_q8_q4_component_files() {
         let selection = resolve_install(InstallRequest { profile_id: Some("recommended-light".into()), component_ids: vec![] }).unwrap();
         let file = |kind| selection.components.iter().find(|component| component.kind == kind).unwrap().filename;
-        assert_eq!(file("lm"), "MiniMax-Music3-language_model-Q5_K_M.gguf");
-        assert_eq!(file("depth"), "MiniMax-Music3-rvq_depth_decoder-Q8_0.gguf");
-        assert_eq!(file("dit"), "MiniMax-Music3-transformer-Q4_K_M.gguf");
+        assert_eq!(file("lm"), "mm3-lm-Q4_K_M.gguf");
+        assert_eq!(file("depth"), "mm3-depth-Q4_K_M.gguf");
+        assert_eq!(file("dit"), "mm3-dit-Q4_K_S.gguf");
     }
 
     #[test]
@@ -743,7 +778,7 @@ mod tests {
     async fn file_hashing_does_not_block_the_async_runtime() {
         let path = std::env::temp_dir().join(format!("mm3-hash-test-{}", uuid::Uuid::now_v7()));
         fs::File::create(&path).unwrap().set_len(8 * 1024 * 1024).unwrap();
-        let component = Component { id: "test", kind: "test", filename: "test", bytes: 8 * 1024 * 1024, sha256: "not-a-real-digest" };
+        let component = Component { id: "test", kind: "test", filename: "test", bytes: 8 * 1024 * 1024, sha256: "not-a-real-digest", repository: REPOSITORY, revision: REVISION };
         let hash_task = tokio::spawn(verified_file_async(path.clone(), component));
         tokio::time::timeout(std::time::Duration::from_secs(1), tokio::time::sleep(std::time::Duration::from_millis(1))).await.unwrap();
         assert!(!hash_task.await.unwrap().unwrap());

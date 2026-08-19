@@ -128,15 +128,17 @@ function Invoke-CustomCudaBuild {
     $vcvars = Get-VcVars64
     $buildDirectoryName = "build-cuda-$CudaArchitecture"
     $parallelism = [Math]::Max(1, [Environment]::ProcessorCount)
-    # Only the server is shipped. Building every target as well meant compiling
-    # and linking mm-lm, mm-synth, quantize, neural-codec and seven test
-    # binaries on every release, none of which leave the build directory.
+    # Two targets are shipped. mm-server is the engine; neural-codec turns a
+    # finished track back into VAE latents, which is the first half of handing
+    # audio back to the model - continuing a track, replacing a chorus, writing
+    # an intro in front of one. The rest - mm-lm, mm-synth, quantize and seven
+    # test binaries - never leave the build directory.
     #
     # ccache, when it is installed, is what turns a rebuild from twenty minutes
     # into one: ggml picks it up on its own through GGML_CCACHE, and the CUDA
     # kernels - which are almost all of the time here - are what it caches.
     $ccache = if (Get-Command ccache -ErrorAction SilentlyContinue) { '-DGGML_CCACHE=ON' } else { '-DGGML_CCACHE=OFF' }
-    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --parallel $parallelism"
+    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --target neural-codec --parallel $parallelism"
     Push-Location $engineWorktree
     # The compiler's own output must not become this function's return value:
     # PowerShell returns everything a function writes, and the build directory
@@ -180,6 +182,8 @@ if (-not $runtime) { throw 'minimaxmusic.cpp build completed without mm-server.e
 $resolvedOutputDirectory = Assert-SpecificOutputDirectory
 New-Item -ItemType Directory -Force -Path $resolvedOutputDirectory | Out-Null
 Copy-Item $runtime (Join-Path $resolvedOutputDirectory 'mm-server.exe') -Force
+$codec = Join-Path (Split-Path -Parent $runtime) 'neural-codec.exe'
+if (Test-Path $codec) { Copy-Item $codec (Join-Path $resolvedOutputDirectory 'neural-codec.exe') -Force }
 Get-ChildItem -Path (Split-Path -Parent $runtime) -Filter '*.dll' -File | Copy-Item -Destination $resolvedOutputDirectory -Force
 if (-not (Test-Path (Join-Path $resolvedOutputDirectory 'mm-server.exe'))) { throw 'mm-server.exe was not staged into the requested output directory.' }
 

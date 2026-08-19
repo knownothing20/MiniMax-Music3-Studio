@@ -1314,6 +1314,7 @@ export const en = {
     removeDownloaded: 'Delete the downloaded files and free the disk',
     dataFolder: 'Everything the studio keeps',
     openFolder: 'Open folder',
+    useExistingModels: 'Use models I already have',
     portableFolder: 'Portable copy: this folder is the whole studio. Delete it and nothing of the studio remains.',
     assetNoteGemmaE4b: 'The lighter of the two; quantisation-aware training keeps it usable at q4_0.',
     assetNoteGemma12b: 'Writes noticeably better captions; wants a card that is not already full of Music3.',

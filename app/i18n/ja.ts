@@ -1309,6 +1309,7 @@ export const ja = {
     removeDownloaded: 'ダウンロード済みのファイルを削除してディスクを空けます',
     dataFolder: 'スタジオが持っているもの',
     openFolder: 'フォルダを開く',
+    useExistingModels: 'すでにあるモデルを使う',
     portableFolder: 'ポータブル版：このフォルダがスタジオのすべてです。削除すれば何も残りません。',
     assetNoteGemmaE4b: '2 つのうち軽い方。量子化を考慮した学習により q4_0 でも実用的です。',
     assetNoteGemma12b: '説明の質が明らかに上。Music3 で埋まっていない GPU が必要です。',

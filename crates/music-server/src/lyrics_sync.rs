@@ -190,6 +190,34 @@ pub const ASSETS: &[Asset] = &[
         vram_gb: Some(2),
         note: "The encoder; the decoder and vocabulary come with it.",
     },
+    // The fp32 encoder, exactly as Dub Studio fetches it: the graph and its
+    // weights are two files, and the weights are the 2.4 GB half.
+    Asset {
+        id: "parakeet-tdt-fp32",
+        label: "Parakeet TDT 0.6B v3 (fp32)",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx",
+        relative_path: "models/parakeet-fp32/encoder-model.onnx",
+        bytes: 41_770_866,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: Some(4),
+        note: "Full precision: heavier than int8, and the most accurate of the two.",
+    },
+    Asset {
+        id: "parakeet-tdt-fp32-weights",
+        label: "Parakeet fp32 weights",
+        kind: AssetKind::Model,
+        url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx.data",
+        relative_path: "models/parakeet-fp32/encoder-model.onnx.data",
+        bytes: 2_435_420_160,
+        unzip_into: None,
+        marker: "",
+        pick: &[],
+        vram_gb: None,
+        note: "The weights the fp32 graph points at.",
+    },
     Asset {
         id: "parakeet-decoder",
         label: "Parakeet decoder",
@@ -350,6 +378,17 @@ pub enum OnnxFlavour {
 /// Every Parakeet file, because the model is useless without all of them.
 pub const PARAKEET_ASSET_IDS: [&str; 5] =
     ["parakeet-tdt-int8", "parakeet-decoder", "parakeet-features", "parakeet-vocab", "parakeet-config"];
+
+/// The same recogniser at full precision. The encoder is a graph plus a
+/// separate weights file; everything else is shared with the int8 set.
+pub const PARAKEET_FP32_ASSET_IDS: [&str; 6] = [
+    "parakeet-tdt-fp32",
+    "parakeet-tdt-fp32-weights",
+    "parakeet-decoder",
+    "parakeet-features",
+    "parakeet-vocab",
+    "parakeet-config",
+];
 
 pub fn asset(id: &str) -> Option<&'static Asset> {
     ASSETS.iter().find(|asset| asset.id == id)

@@ -1309,6 +1309,7 @@ export const zh = {
     removeDownloaded: '删除已下载的文件并释放磁盘空间',
     dataFolder: '工作室保存的全部内容',
     openFolder: '打开文件夹',
+    useExistingModels: '使用我已有的模型',
     portableFolder: '便携版：这个文件夹就是整个工作室。删除它，工作室不留任何痕迹。',
     assetNoteGemmaE4b: '两者中较轻的一个；量化感知训练让 q4_0 依然可用。',
     assetNoteGemma12b: '描述写得明显更好；需要一张没有被 Music3 占满的显卡。',

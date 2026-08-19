@@ -1309,6 +1309,7 @@ export const ko = {
     removeDownloaded: '내려받은 파일을 지우고 디스크를 비웁니다',
     dataFolder: '스튜디오가 보관하는 모든 것',
     openFolder: '폴더 열기',
+    useExistingModels: '이미 있는 모델 사용',
     portableFolder: '포터블 사본: 이 폴더가 스튜디오 전부입니다. 지우면 아무것도 남지 않습니다.',
     assetNoteGemmaE4b: '둘 중 가벼운 쪽. 양자화 인식 학습 덕분에 q4_0 에서도 쓸 만합니다.',
     assetNoteGemma12b: '설명 품질이 확실히 좋습니다. Music3 로 가득 차지 않은 GPU 가 필요합니다.',
