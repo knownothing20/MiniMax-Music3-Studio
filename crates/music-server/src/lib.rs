@@ -506,6 +506,7 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/assistant/runtime", get(assistant_runtime_status))
         .route("/v1/assistant/runtime/install", post(assistant_runtime_install))
         .route("/v1/assistant/runtime/cancel", post(cancel_assistant_download))
+        .route("/v1/assistant/runtime/remove", post(assistant_runtime_remove))
         .route("/v1/assistant/runtime/start", post(assistant_runtime_start))
         .route("/v1/assistant/runtime/stop", post(assistant_runtime_stop))
         .route("/v1/karaoke/status", get(karaoke_status).put(update_karaoke_settings))
@@ -865,6 +866,35 @@ async fn cancel_separation_download(State(state): State<AppState>) -> Json<Value
 async fn cancel_karaoke_download(State(state): State<AppState>) -> Json<Value> {
     state.lyrics_sync.downloader().cancel();
     Json(serde_json::json!({ "cancelled": true }))
+}
+
+/// Frees the disk an assistant takes: the model, the runtime and any half of
+/// either. Every other capability could be removed from its panel; this one
+/// could only be added.
+async fn assistant_runtime_remove(
+    State(state): State<AppState>,
+    Json(request): Json<AssistantAssetRequest>,
+) -> Result<Json<assistant_runtime::RuntimeStatus>, (StatusCode, Json<ApiError>)> {
+    // "managed" from the panel means the whole thing: whichever llama.cpp build
+    // is on disk, and the model that was chosen with it.
+    let ids: Vec<String> = if request.asset_id == "managed" || request.asset_id == "cuda" || request.asset_id == "cpu" {
+        let chosen = state.assistant.read().await.managed_model.clone();
+        ["llama-cuda", "llama-cuda-runtime", "llama-cpu"].iter().map(|id| id.to_string()).chain(chosen).collect()
+    } else {
+        vec![request.asset_id.clone()]
+    };
+    for id in &ids {
+        state
+            .assistant_runtime
+            .remove(id)
+            .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    }
+    {
+        let mut assistant = state.assistant.write().await;
+        assistant.managed_model = None;
+    }
+    let _ = persist_studio_settings(&state).await;
+    Ok(Json(state.assistant_runtime.status().await))
 }
 
 async fn cancel_assistant_download(State(state): State<AppState>) -> Json<Value> {
@@ -2534,6 +2564,17 @@ async fn assistant_runtime_install(
         _ => Vec::new(),
     };
     if !set.is_empty() {
+        // Downloading a model is choosing it. Nothing else recorded which one,
+        // so a freshly installed Gemma left the studio reporting that no
+        // assistant was set up - with the model sitting on the disk.
+        if let Some(model) = request.model_id.clone() {
+            let mut assistant = state.assistant.write().await;
+            assistant.managed_model = Some(model);
+            if assistant.provider == AssistantProvider::None {
+                assistant.provider = AssistantProvider::Managed;
+            }
+        }
+        let _ = persist_studio_settings(&state).await;
         let runtime = state.assistant_runtime.clone();
         // The whole thing - runtime, CUDA libraries, model - as one download.
         // Starting them one after another only looked like a queue: each call

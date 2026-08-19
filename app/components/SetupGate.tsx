@@ -380,11 +380,25 @@ export const OptionalGroup: React.FC<{
                         value={chosenModel}
                         onChange={(event) => {
                           setModel(event.target.value);
-                          if (settingsUrl && engine === 'whisper') {
+                          // Which model was picked is a setting, not a detail of
+                          // the download: the studio decides the assistant is
+                          // ready by reading it back. Saving it only for Whisper
+                          // is why a downloaded Gemma still counted as no
+                          // assistant at all.
+                          // Parakeet's two precisions are chosen through the
+                          // same field the recogniser reads for Whisper - which
+                          // is how the server decides which encoder to fetch.
+                          const field =
+                            engine === 'whisper' || engine === 'parakeet'
+                              ? 'whisper_model'
+                              : engine === 'managed'
+                                ? 'managed_model'
+                                : null;
+                          if (settingsUrl && field) {
                             void fetch(settingsUrl, {
                               method: 'PUT',
                               headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ whisper_model: event.target.value }),
+                              body: JSON.stringify({ [field]: event.target.value }),
                             }).catch(() => undefined);
                           }
                         }}
@@ -957,6 +971,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                 { id: 'none', label: t('assistantDisabled'), device: false },
               ]}
               settingsUrl="/v1/assistant/status"
+              removeUrl="/v1/assistant/runtime/remove"
               cancelUrl="/v1/assistant/runtime/cancel"
               serverField
             >
@@ -968,6 +983,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               statusUrl="/v1/separation/runtime"
               installUrl="/v1/separation/runtime/install"
               settingsUrl="/v1/separation/settings"
+              removeUrl="/v1/separation/remove"
               cancelUrl="/v1/separation/runtime/cancel"
               engines={[{ id: 'htdemucs', label: 'HT-Demucs' }]}
             />

@@ -372,6 +372,41 @@ impl AssistantRuntime {
     /// first file. That is why the runtime appeared and the model never did -
     /// the panel reported "installed" for the group and "not installed" for the
     /// set in the same breath, because both were true.
+    /// Deletes an installed asset and returns the disk it freed.
+    ///
+    /// The runtime is a directory of unpacked binaries, a model is one file,
+    /// and a half-finished download is a `.part` next to it - all three go.
+    pub fn remove(&self, id: &str) -> Result<u64> {
+        let asset = asset(id).ok_or_else(|| anyhow!("unknown assistant asset: {id}"))?;
+        let mut freed = 0u64;
+        if let Some(flavour) = asset.unzip_into {
+            let directory = self.root.join("runtime").join(flavour);
+            if let Ok(entries) = fs::read_dir(&directory) {
+                for entry in entries.flatten() {
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            freed += meta.len();
+                        }
+                    }
+                }
+            }
+            match fs::remove_dir_all(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).with_context(|| format!("remove {}", directory.display())),
+            }
+        }
+        for path in [self.path_of(asset), self.path_of(asset).with_extension("part")] {
+            if let Ok(meta) = fs::metadata(&path) {
+                freed += meta.len();
+                fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+            }
+            let manifest = PathBuf::from(format!("{}.done", path.display()));
+            fs::remove_file(manifest).ok();
+        }
+        Ok(freed)
+    }
+
     /// Stops whatever is downloading.
     pub fn cancel(&self) {
         self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
