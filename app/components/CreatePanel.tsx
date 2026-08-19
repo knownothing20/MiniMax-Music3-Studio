@@ -393,7 +393,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const buildRequest = () => {
     const request: Music3Request & { title?: string; cover_prompt?: string; audio_codes?: string; models?: Record<string, string> } = {
       caption: caption.trim(),
-      lyrics: lyrics.replace(/\r\n?/g, '\n').trim(),
+      // An instrumental has no words, whatever is still sitting in the box. The
+      // lyrics of the previous track stayed there, went to the engine and came
+      // back sung: the switch said instrumental and the track had vocals.
+      lyrics: instrumental ? '' : lyrics.replace(/\r\n?/g, '\n').trim(),
       duration_seconds: Math.min(numberOrUndefined(duration) ?? 60, MAX_DURATION_SECONDS),
       steps: numberOrUndefined(steps) ?? 30,
       seed: randomizeSeed ? undefined : numberOrUndefined(seed),

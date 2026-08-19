@@ -7,6 +7,10 @@ Windows build.
 
 ### Fixed
 
+- **An instrumental was sung.** The lyrics box keeps what was in it, so the
+  words of the previous track went to the engine even with the instrumental
+  switch on. An instrumental now submits no lyrics at all.
+
 - **A clean installation never started.** The engine was launched once, at
   startup, and only if a complete set of weights was already on disk - so a
   first install downloaded its models, nothing started them, and the window
