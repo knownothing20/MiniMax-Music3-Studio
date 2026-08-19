@@ -140,7 +140,7 @@ pub async fn probe(http: &reqwest::Client, url: &str) -> Result<Plan> {
         // Hugging Face answers 429 when it has had enough for the moment, and
         // a busy hour is not a broken download. Without this the whole install
         // died on the first refusal, with nothing to retry it.
-        tokio::time::sleep(std::time::Duration::from_millis(800 * (attempt as u64 + 1))).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500 << attempt.min(7))).await;
     }
     Err(anyhow!("could not start {url} after {RETRIES} attempts: {last}"))
 }
@@ -373,7 +373,11 @@ async fn piece(
         // The failed attempt's bytes are subtracted again, or the bar would
         // count them twice when the retry fetches the same range.
         written.fetch_sub(got.min(written.load(Ordering::Relaxed)), Ordering::Relaxed);
-        tokio::time::sleep(std::time::Duration::from_millis(400 * (attempt as u64 + 1))).await;
+        // Exponential, as the Hub's own download protocol asks for: half a
+        // second, then one, two, four - eight attempts spanning a minute
+        // instead of the three seconds a linear back-off gave a network that
+        // needs a moment to come back.
+        tokio::time::sleep(std::time::Duration::from_millis(500 << attempt.min(7))).await;
     }
     Err(anyhow!("range {start}-{end} failed after {RETRIES} attempts: {last}"))
 }
