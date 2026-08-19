@@ -13,7 +13,6 @@ import { useI18n } from '../context/I18nContext';
 
 interface EngineOptions {
   keep_loaded: boolean;
-  max_batch: number | null;
   max_seq: number | null;
   disable_flash_attention: boolean;
   split_cfg_forwards: boolean;
@@ -22,7 +21,6 @@ interface EngineOptions {
 
 const DEFAULTS: EngineOptions = {
   keep_loaded: false,
-  max_batch: null,
   max_seq: null,
   disable_flash_attention: false,
   split_cfg_forwards: false,
@@ -133,10 +131,10 @@ export const EngineSettings: React.FC = () => {
         onChange={value => setOptions(current => ({ ...current, keep_loaded: value }))}
       />
 
-      {/* No batch ceiling here. It reserves KV cache for the whole batch when
-          the weights load - memory paid for on every single-song generation,
-          which is all but every generation - and the engine takes it only as a
-          launch flag, so it could never be a live control anyway. */}
+      {/* The batch ceiling is not here and is not sent: it reserves KV cache
+          for the whole batch when the weights load - memory paid for on every
+          single-song generation, which is all but every generation - and the
+          engine takes it only as a launch flag. */}
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-300">
           <span className="mb-1.5 block">{t('maxSeqLabel')}</span>
