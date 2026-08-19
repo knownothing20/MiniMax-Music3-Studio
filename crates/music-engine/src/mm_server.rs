@@ -172,7 +172,29 @@ impl MmServerSupervisor {
         // Everything the engine says while it is starting - loading weights,
         // choosing a device, failing - happens before its HTTP log exists.
         // Without this the first-run screen has nothing to show but a spinner.
-        match std::fs::File::create(startup_log_path()) {
+        // Appended, never truncated. Creating this file fresh on every start
+        // meant the restart destroyed the evidence: an engine that died mid
+        // generation was replaced by one that had just booted, and its log
+        // began with "Listening on ..." as though nothing had happened. The
+        // reason a run failed is in the last lines of the process that failed,
+        // so those lines have to outlive it.
+        trim_log_if_huge();
+        // What happened to the previous one, if it is still here to ask. An
+        // engine that died on its own leaves an exit code - 0xc0000005 for an
+        // access violation, for instance - and that code is the difference
+        // between "it crashed" and knowing why.
+        if let Some(previous) = self.child.as_mut() {
+            match previous.try_wait() {
+                Ok(Some(status)) => note_in_log(&format!(
+                    "the previous engine had already exited: {status}{}",
+                    status.code().map(|code| format!(" (0x{:x})", code as u32)).unwrap_or_default()
+                )),
+                Ok(None) => note_in_log("the previous engine was still running and is being replaced"),
+                Err(error) => note_in_log(&format!("could not read the previous engine's exit status: {error}")),
+            }
+        }
+        note_in_log(&format!("---- starting {} ----", self.config.executable.display()));
+        match std::fs::OpenOptions::new().create(true).append(true).open(startup_log_path()) {
             Ok(log) => {
                 let err = log.try_clone().ok();
                 command.stdout(Stdio::from(log));
@@ -442,6 +464,32 @@ mod tests {
 
 /// Where the engine's startup output is kept: beside the studio's data, so the
 /// first-run screen can read it before the engine serves anything itself.
+/// Writes one line of the studio's own into the engine's log, so a reader can
+/// see what the studio did between two runs of the engine - started it, gave up
+/// on it, restarted it.
+pub fn note_in_log(line: &str) {
+    use std::io::Write;
+    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(startup_log_path()) {
+        let _ = writeln!(log, "[studio] {line}");
+    }
+}
+
+/// Keeps the log from growing without end: past eight megabytes, the older half
+/// goes. Losing the oldest half of a long history is nothing; losing the last
+/// page is the whole problem this file exists to solve.
+fn trim_log_if_huge() {
+    const LIMIT: u64 = 8 * 1024 * 1024;
+    let path = startup_log_path();
+    let Ok(meta) = std::fs::metadata(&path) else { return };
+    if meta.len() < LIMIT {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let keep = text.split_at(text.len() / 2).1;
+    let start = keep.find(char::is_control).map(|index| index + 1).unwrap_or(0);
+    let _ = std::fs::write(&path, &keep[start..]);
+}
+
 pub fn startup_log_path() -> PathBuf {
     let root = std::env::var_os("MINIMAX_STUDIO_DATA_ROOT")
         .map(PathBuf::from)

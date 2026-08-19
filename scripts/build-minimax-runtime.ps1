@@ -143,7 +143,14 @@ function Invoke-CustomCudaBuild {
     # general path, which is the slow one - and the studio now offers quants
     # down to Q3, exactly the ones left out. It costs build time, nothing else.
     $flashAttention = '-DGGML_CUDA_FA_ALL_QUANTS=ON'
-    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $flashAttention $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --target neural-codec --parallel $parallelism"
+    # Symbols, kept beside the binary rather than thrown away.
+    #
+    # An engine that dies leaves Windows an address and nothing else -
+    # "Exception code 0xc0000005, fault offset 0x1791c" - and without a program
+    # database that address cannot be turned into a line of code. It costs a
+    # file next to the executable and no speed: the optimiser is untouched.
+    $symbols = '-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=ProgramDatabase -DCMAKE_EXE_LINKER_FLAGS=/DEBUG -DCMAKE_SHARED_LINKER_FLAGS=/DEBUG'
+    $command = "call `"$vcvars`" >nul && cmake -S . -B `"$buildDirectoryName`" -DGGML_CUDA=ON $ccache $flashAttention $symbols $settings && cmake --build `"$buildDirectoryName`" --config Release --target mm-server --target neural-codec --parallel $parallelism"
     Push-Location $engineWorktree
     # The compiler's own output must not become this function's return value:
     # PowerShell returns everything a function writes, and the build directory
@@ -190,6 +197,10 @@ Copy-Item $runtime (Join-Path $resolvedOutputDirectory 'mm-server.exe') -Force
 $codec = Join-Path (Split-Path -Parent $runtime) 'neural-codec.exe'
 if (Test-Path $codec) { Copy-Item $codec (Join-Path $resolvedOutputDirectory 'neural-codec.exe') -Force }
 Get-ChildItem -Path (Split-Path -Parent $runtime) -Filter '*.dll' -File | Copy-Item -Destination $resolvedOutputDirectory -Force
+# The engine's own symbols travel with it, so a crash address on someone else's
+# machine can be read here.
+Get-ChildItem -Path (Split-Path -Parent $runtime) -Filter 'mm-server.pdb' -File -ErrorAction SilentlyContinue |
+    Copy-Item -Destination $resolvedOutputDirectory -Force
 if (-not (Test-Path (Join-Path $resolvedOutputDirectory 'mm-server.exe'))) { throw 'mm-server.exe was not staged into the requested output directory.' }
 
 # The Visual C++ runtime the engine imports is not staged here: the studio

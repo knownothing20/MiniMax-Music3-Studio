@@ -322,7 +322,13 @@ impl EngineOptions {
     fn to_engine(self) -> music_engine::mm_server::MmServerOptions {
         music_engine::mm_server::MmServerOptions {
             keep_loaded: self.keep_loaded,
-            max_batch: self.max_batch,
+            // The ceiling the studio offers, given to the engine that has to
+            // honour it. `--max-batch` sizes the language model's KV sets when
+            // the weights are loaded, and the engine refuses any request above
+            // it: leaving the flag off meant it loaded with the upstream
+            // default of one while the panel offered four, so asking for two
+            // songs failed before it started.
+            max_batch: Some(self.effective_max_batch()),
             max_seq: self.max_seq,
             disable_flash_attention: self.disable_flash_attention,
             split_cfg_forwards: self.split_cfg_forwards,
@@ -585,6 +591,12 @@ pub async fn serve() -> anyhow::Result<()> {
                 let ready = state.model_manager.status(effective_install_target(&state).await).await.ready;
                 let running = state.music_server.health().await;
                 if ready && !running {
+                    // Written where the engine writes, because this is the one
+                    // line that explains a log which suddenly starts again from
+                    // "Listening on": the engine stopped answering and was
+                    // replaced. Without it a crash mid-generation looked like
+                    // nothing had happened at all.
+                    music_engine::mm_server::note_in_log("the engine stopped answering; restarting it");
                     match restart_engine(&state).await {
                         Ok(()) => complained = false,
                         Err(error) => {
@@ -4411,6 +4423,15 @@ mod tests {
         // Four by default: songs decoded together are nearly free after the
         // first, and the upstream default of 1 left the slider disabled.
         assert_eq!(EngineOptions::default().effective_max_batch(), 4);
+        // And the engine is told. The request carries `lm_batch_size`, but the
+        // engine refuses anything above the ceiling it was loaded with, so
+        // offering four in the panel while launching with the upstream default
+        // of one made every request for two songs fail before it began.
+        assert_eq!(
+            EngineOptions::default().to_engine().max_batch,
+            Some(4),
+            "what the panel offers has to be what the engine was started with"
+        );
         // The assistant is optional: it must survive a restart when configured,
         // and stay unavailable when it is not.
         assert!(restored.assistant.available());
