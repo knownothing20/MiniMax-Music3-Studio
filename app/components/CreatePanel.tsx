@@ -540,7 +540,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       if (typeof body?.duration_seconds === 'number' && body.duration_seconds >= 10) {
         setDuration(String(Math.min(360, Math.round(body.duration_seconds))));
       }
-      setMode('studio');
+      // The tab stays where it was. Switching to Studio showed what the
+      // assistant had written, but it moved the user off the screen they were
+      // working on to do it, and they can look for themselves.
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
