@@ -82,7 +82,7 @@ impl AudioInput {
     }
 
     pub async fn install(&self) -> Result<()> {
-        self.downloader.install_all(&[&ENCODER]).await
+        self.downloader.install_all("audio-input", &[&ENCODER]).await
     }
 
     /// Turns a finished track into VAE latents.

@@ -272,7 +272,11 @@ export const ProviderSettings: React.FC = () => {
         <h4 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-white">
           <Cpu size={16} className="text-pink-500" /> {t('capabilitiesSection')}
         </h4>
-        {selections.map(selection => {
+        {/* Music and cover art only. Where the writing assistant and the
+            karaoke recogniser run is chosen where they are installed, on the
+            models page - and this page wrote the very same settings, so the two
+            screens could disagree about a decision that has one answer. */}
+        {selections.filter(selection => selection.capability === 'music_generation' || selection.capability === 'cover_art').map(selection => {
           const local = localEnginesFor(selection.capability);
           const cloud = cloudModelsFor(selection.capability);
           const hasLocal = local.length > 0;

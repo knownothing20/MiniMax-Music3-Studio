@@ -1,10 +1,13 @@
 //! Resumable downloads for the optional native extras.
 //!
 //! Every optional capability - the writing assistant, the karaoke aligner -
-//! fetches the same way: a pinned URL, an exact size read from the live
-//! endpoint, a `.part` file that survives an interrupted run, and a zip that
-//! unpacks into its own directory so two runtimes never mix. Nothing here
-//! starts on its own; a download happens only when the user asks for it.
+//! fetches the same way: a pinned URL, a `.part` file that survives an
+//! interrupted run, and a zip that unpacks into its own directory so two
+//! runtimes never mix. Nothing here starts on its own; a download happens only
+//! when the user asks for it.
+//!
+//! How much a file weighs is asked of the server serving it, never assumed -
+//! see `sizes` for what assuming it cost.
 
 use std::fs;
 use std::io;
@@ -34,7 +37,8 @@ pub struct Asset {
     pub url: &'static str,
     /// Where the file lands, relative to the capability's root.
     pub relative_path: &'static str,
-    /// Exact size in bytes, as reported by the origin.
+    /// About what it weighs, for showing a size before anything is fetched.
+    /// The real one comes from the server; see `sizes`.
     pub bytes: u64,
     /// Unpacked into this sub-directory of `runtime/` when set.
     pub unzip_into: Option<&'static str>,
@@ -64,9 +68,21 @@ pub struct AssetStatus {
     pub downloaded_bytes: u64,
 }
 
+/// What a whole set calls itself while it downloads. A capability is usually
+/// several files - a runtime, a provider, the weights - and they arrive as one
+/// thing, so they report as one thing.
+pub const SET: &str = "set";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgress {
     pub asset_id: String,
+    /// Which panel asked for this. The karaoke recogniser and the separator
+    /// share one downloader - they share the ONNX runtime and the CUDA
+    /// libraries on disk, so they must - and without this the separator's panel
+    /// showed the recogniser's download as its own: its button disappeared and
+    /// a percentage of somebody else's gigabytes appeared in its place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub done: bool,
@@ -107,8 +123,8 @@ impl Downloader {
         }
     }
 
-    /// A model is installed when its size matches exactly; a runtime when its
-    /// own marker file is present in the directory it unpacks into.
+    /// A model is installed when its file is there; a runtime when its own
+    /// marker file is present in the directory it unpacks into.
     pub fn is_installed(&self, asset: &Asset) -> bool {
         if !asset.pick.is_empty() {
             let destination = self.picked_into(asset);
@@ -124,7 +140,13 @@ impl Downloader {
                 })
                 .unwrap_or(false);
         }
-        fs::metadata(self.path_of(asset)).map(|meta| meta.len() == asset.bytes).unwrap_or(false)
+        // Presence, not size. A file only appears here after being downloaded
+        // into `.part` and checked against the length the server itself
+        // declared, so it being here is the proof that it arrived whole. Judging
+        // it by a figure compiled into the studio meant that re-uploading a file
+        // on someone else's repository - a routine thing, and none of our
+        // business - made it permanently un-installable.
+        fs::metadata(self.path_of(asset)).map(|meta| meta.len() > 0).unwrap_or(false)
     }
 
     pub fn partial_bytes(&self, asset: &Asset) -> u64 {
@@ -132,17 +154,20 @@ impl Downloader {
     }
 
     pub fn status_of(&self, assets: &[Asset]) -> Vec<AssetStatus> {
+        // Ask the servers what these actually weigh. The answers land in time
+        // for the next poll a second from now; nothing waits on them.
+        crate::sizes::ask(&self.http, assets.iter().map(|asset| asset.url.to_string()).collect());
         assets
             .iter()
             .map(|asset| AssetStatus {
                 id: asset.id,
                 label: asset.label,
                 kind: asset.kind,
-                bytes: asset.bytes,
+                bytes: crate::sizes::or_listed(asset.url, asset.bytes),
                 vram_gb: asset.vram_gb,
                 note: asset.note,
                 installed: self.is_installed(asset),
-                downloaded_bytes: if self.is_installed(asset) { asset.bytes } else { self.partial_bytes(asset) },
+                downloaded_bytes: if self.is_installed(asset) { crate::sizes::or_listed(asset.url, asset.bytes) } else { self.partial_bytes(asset) },
             })
             .collect()
     }
@@ -202,47 +227,135 @@ impl Downloader {
         self.progress.lock().await.clone()
     }
 
+    /// The running download, but only if this panel started it.
+    pub async fn active_for(&self, scope: &str) -> Option<DownloadProgress> {
+        self.active().await.filter(|progress| progress.scope.as_deref() == Some(scope))
+    }
+
     /// Installs a whole set, several files at a time.
     ///
     /// One at a time was the reason a recogniser took as long as its slowest
     /// file and the panel showed whichever download happened to be current -
     /// the progress is one figure per downloader, so a queue of eight made it
     /// jump between them. Four at once saturates the line, and the set reports
-    /// itself by what is on disk rather than by whoever holds the counter.
-    pub async fn install_all(&self, assets: &[&'static Asset]) -> Result<()> {
+    /// as one download: how much of everything it needs has arrived.
+    ///
+    /// That reporting is not decoration. The panel decides there is a download
+    /// running by looking at this one figure, so a set that downloaded without
+    /// touching it looked like nothing had happened at all: the request
+    /// succeeded, the files arrived, and the interface redrew the same row with
+    /// the same download button. That is what "the button does nothing" was.
+    pub async fn install_all(&self, scope: &str, assets: &[&'static Asset]) -> Result<()> {
         const AT_ONCE: usize = 4;
         let pending: Vec<&'static Asset> = assets.iter().copied().filter(|asset| !self.is_installed(asset)).collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let total: u64 = pending.iter().map(|asset| asset.bytes).sum();
+        *self.progress.lock().await = Some(DownloadProgress {
+            // A set of one is that one file, as far as anyone watching is
+            // concerned; only a real set needs a name of its own.
+            asset_id: if pending.len() == 1 { pending[0].id.to_string() } else { SET.to_string() },
+            scope: Some(scope.to_string()),
+            downloaded_bytes: pending.iter().map(|asset| self.partial_bytes(asset)).sum(),
+            total_bytes: total,
+            done: false,
+            error: None,
+        });
+
+        let mut finished = 0u64;
+        let mut failure = None;
         for batch in pending.chunks(AT_ONCE) {
-            let mut running = Vec::new();
-            for asset in batch {
-                running.push(self.fetch_now(asset));
-            }
-            for outcome in futures_util::future::join_all(running).await {
-                outcome?;
+            // One cell per download, summed by the reporter below: four
+            // downloads writing to one counter is what made the bar jump
+            // between files and reset.
+            let cells: Vec<Arc<Mutex<Option<DownloadProgress>>>> = batch
+                .iter()
+                .map(|asset| {
+                    Arc::new(Mutex::new(Some(DownloadProgress {
+                        asset_id: asset.id.to_string(),
+                        scope: Some(scope.to_string()),
+                        downloaded_bytes: self.partial_bytes(asset),
+                        total_bytes: asset.bytes,
+                        done: false,
+                        error: None,
+                    })))
+                })
+                .collect();
+            let reporter = self.publish_sum(finished, total, cells.clone());
+            let outcomes =
+                futures_util::future::join_all(batch.iter().zip(&cells).map(|(asset, cell)| self.fetch_now(asset, cell))).await;
+            reporter.abort();
+            finished += batch.iter().map(|asset| asset.bytes).sum::<u64>();
+            if let Some(error) = outcomes.into_iter().find_map(Result::err) {
+                failure = Some(error);
+                break;
             }
         }
-        for asset in assets {
-            if !self.is_installed(asset) {
-                bail!("{} finished downloading but its files are not on disk", asset.label);
+
+        let outcome = match failure {
+            Some(error) => Err(error),
+            None => match assets.iter().find(|asset| !self.is_installed(asset)) {
+                Some(asset) => Err(anyhow::anyhow!("{} finished downloading but its files are not on disk", asset.label)),
+                None => Ok(()),
+            },
+        };
+        if let Some(active) = self.progress.lock().await.as_mut() {
+            active.done = true;
+            active.error = outcome.as_ref().err().map(|error| error.to_string());
+            if outcome.is_ok() {
+                active.downloaded_bytes = total;
             }
         }
-        Ok(())
+        outcome
+    }
+
+    /// Reports what a running batch has fetched, as one figure for the set.
+    ///
+    /// Aborted by the caller when the batch ends, which is why it may loop for
+    /// ever: it has nothing to decide, only something to add up.
+    fn publish_sum(&self, finished: u64, total: u64, cells: Vec<Arc<Mutex<Option<DownloadProgress>>>>) -> tokio::task::JoinHandle<()> {
+        let progress = self.progress.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut written = finished;
+                for cell in &cells {
+                    if let Some(active) = cell.lock().await.as_ref() {
+                        written += active.downloaded_bytes;
+                    }
+                }
+                if let Some(active) = progress.lock().await.as_mut() {
+                    active.downloaded_bytes = written.min(total);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            }
+        })
     }
 
     /// Downloads one asset and waits for it, without the single-slot rule that
-    /// `install` keeps for the panel's own buttons.
-    async fn fetch_now(&self, asset: &'static Asset) -> Result<()> {
+    /// `install` keeps for the panel's own buttons. Reports into the cell it is
+    /// given rather than the downloader's own, because several of these run at
+    /// the same time.
+    async fn fetch_now(&self, asset: &'static Asset, cell: &Arc<Mutex<Option<DownloadProgress>>>) -> Result<()> {
         if !asset.pick.is_empty() {
             let destination = self.picked_into(asset);
-            let asset = *asset;
+            let reporter = cell.clone();
             return tokio::task::spawn_blocking(move || {
-                crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |_| {}).map(|_| ())
+                crate::remote_zip::extract_named(asset.url, asset.pick, &destination, |written| {
+                    if let Ok(mut guard) = reporter.try_lock() {
+                        if let Some(active) = guard.as_mut() {
+                            active.downloaded_bytes = written;
+                        }
+                    }
+                })
+                .map(|_| ())
             })
             .await
             .map_err(|error| anyhow::anyhow!("extraction task failed: {error}"))?;
         }
         let target = self.path_of(asset);
-        fetch(&self.http, asset, &target, &self.progress).await?;
+        fetch(&self.http, asset, &target, cell).await?;
         if let Some(flavour) = asset.unzip_into {
             extract_zip(&target, &self.root.join("runtime").join(flavour))?;
         }
@@ -259,6 +372,7 @@ impl Downloader {
             }
             *progress = Some(DownloadProgress {
                 asset_id: asset.id.to_string(),
+                scope: None,
                 downloaded_bytes: self.partial_bytes(asset),
                 total_bytes: asset.bytes,
                 done: false,
@@ -325,63 +439,44 @@ async fn fetch(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    if fs::metadata(target).map(|meta| meta.len() == asset.bytes).unwrap_or(false) {
+    if fs::metadata(target).map(|meta| meta.len() > 0).unwrap_or(false) {
         return Ok(());
+    }
+
+    // How big it is and whether it can be fetched in pieces, asked of the
+    // server rather than assumed - both answers come from one ranged byte.
+    let plan = crate::chunked::probe(http, asset.url).await?;
+    if plan.total > 0 {
+        crate::sizes::learn(asset.url, plan.total);
     }
 
     let part = target.with_extension("part");
-    let mut offset = fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-    if offset > asset.bytes {
-        fs::remove_file(&part).ok();
-        offset = 0;
+    let written = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // The panel reads one figure; the pieces write to another, from four tasks
+    // at once. This copies the second into the first while they work.
+    let reporter = {
+        let (written, progress) = (written.clone(), progress.clone());
+        tokio::spawn(async move {
+            loop {
+                let value = written.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some(active) = progress.lock().await.as_mut() {
+                    active.downloaded_bytes = value;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+    };
+    let outcome =
+        crate::chunked::fetch(http, asset.url, &part, plan, written.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false))).await;
+    reporter.abort();
+    outcome?;
+    if let Some(active) = progress.lock().await.as_mut() {
+        active.downloaded_bytes = written.load(std::sync::atomic::Ordering::Relaxed);
     }
-    // A part file that is already the whole file needs publishing, not another
-    // request: asking for the range after the last byte answers 416, which
-    // read as a failed download and left the file sitting there for ever.
-    if offset == asset.bytes {
-        fs::rename(&part, target).with_context(|| format!("publish {}", target.display()))?;
-        if let Some(active) = progress.lock().await.as_mut() {
-            active.downloaded_bytes = offset;
-        }
-        return Ok(());
-    }
-
-    let mut request = http.get(asset.url);
-    if offset > 0 {
-        request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
-    }
-    let response = request.send().await.with_context(|| format!("request {}", asset.url))?;
-    if !response.status().is_success() {
-        bail!("{} answered {}", asset.url, response.status());
-    }
-    let append = offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    if !append {
-        offset = 0;
-    }
-
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(append)
-        .truncate(!append)
-        .open(&part)
-        .with_context(|| format!("open {}", part.display()))?;
-
-    let mut stream = response.bytes_stream();
-    let mut written = offset;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("read download chunk")?;
-        io::Write::write_all(&mut file, &chunk).context("write download chunk")?;
-        written += chunk.len() as u64;
-        if let Some(active) = progress.lock().await.as_mut() {
-            active.downloaded_bytes = written;
-        }
-    }
-    drop(file);
 
     let size = fs::metadata(&part)?.len();
-    if size != asset.bytes {
-        bail!("{} downloaded {size} bytes, expected {}", asset.label, asset.bytes);
+    if plan.total > 0 && size != plan.total {
+        bail!("{} has {size} bytes, the server said {}", asset.label, plan.total);
     }
     fs::rename(&part, target).with_context(|| format!("publish {}", target.display()))?;
     Ok(())

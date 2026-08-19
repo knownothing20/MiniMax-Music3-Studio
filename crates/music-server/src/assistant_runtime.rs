@@ -6,8 +6,11 @@
 //! `llama-server` as a sidecar and talks to it over the same OpenAI-compatible
 //! API it would use for a server the user runs themselves.
 //!
-//! Sizes below were read from the live endpoints with HEAD requests, not
-//! guessed; a file is only considered installed when its size matches exactly.
+//! The sizes below are for showing a weight before anything has been fetched.
+//! They are not a rule: what a file weighs is whatever its server says today,
+//! and that is what the download is checked against - see `sizes`. Treating the
+//! compiled-in figure as the truth made three of these models impossible to
+//! install after their publisher re-uploaded them.
 
 use std::fs;
 use std::io;
@@ -40,7 +43,8 @@ pub struct Asset {
     pub url: &'static str,
     /// Where the file lands, relative to the assistant root.
     pub relative_path: &'static str,
-    /// Exact size in bytes, as reported by the origin.
+    /// About what it weighs, for showing a size before anything is fetched.
+    /// The real one comes from the server; see `sizes`.
     pub bytes: u64,
     /// Extracted into this runtime sub-directory when set. The CUDA build and
     /// the CPU fallback stay apart, and the CUDA libraries land next to the
@@ -89,7 +93,7 @@ pub const ASSETS: &[Asset] = &[
         kind: AssetKind::Model,
         url: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q5_K_M.gguf",
         relative_path: "models/gemma-4-12b-it-Q5_K_M.gguf",
-        bytes: 8_413_574_560,
+        bytes: 8_413_576_000,
         unzip_into: None,
         marker: "",
         vram_gb: Some(11),
@@ -101,7 +105,7 @@ pub const ASSETS: &[Asset] = &[
         kind: AssetKind::Model,
         url: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q6_K.gguf",
         relative_path: "models/gemma-4-12b-it-Q6_K.gguf",
-        bytes: 9_786_021_280,
+        bytes: 9_786_022_720,
         unzip_into: None,
         marker: "",
         vram_gb: Some(12),
@@ -113,7 +117,7 @@ pub const ASSETS: &[Asset] = &[
         kind: AssetKind::Model,
         url: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q8_0.gguf",
         relative_path: "models/gemma-4-12b-it-Q8_0.gguf",
-        bytes: 12_669_646_240,
+        bytes: 12_669_647_680,
         unzip_into: None,
         marker: "",
         vram_gb: Some(15),
@@ -308,7 +312,12 @@ impl AssistantRuntime {
                 })
                 .unwrap_or(false);
         }
-        fs::metadata(self.path_of(asset)).map(|meta| meta.len() == asset.bytes).unwrap_or(false)
+        // A file is installed when it is there. It gets there by one route
+        // only - downloaded into `.part`, checked against what the server said
+        // it was sending, and renamed - so its presence is the proof, and a
+        // stale figure in the catalogue can no longer declare a perfectly good
+        // model missing.
+        fs::metadata(self.path_of(asset)).map(|meta| meta.len() > 0).unwrap_or(false)
     }
 
     fn partial_bytes(&self, asset: &Asset) -> u64 {
@@ -317,6 +326,9 @@ impl AssistantRuntime {
     }
 
     pub async fn status(&self) -> RuntimeStatus {
+        // What these weigh is the servers' business, not a constant compiled in
+        // here; the answers arrive in time for the next poll.
+        crate::sizes::ask(&self.http, ASSETS.iter().map(|asset| asset.url.to_string()).collect());
         let mut state = self.state.lock().await;
         if state.server.as_mut().is_some_and(|server| !server.is_alive()) {
             state.server = None;
@@ -336,15 +348,87 @@ impl AssistantRuntime {
                     id: asset.id,
                     label: asset.label,
                     kind: asset.kind,
-                    bytes: asset.bytes,
+                    bytes: crate::sizes::or_listed(asset.url, asset.bytes),
                     vram_gb: asset.vram_gb,
                     note: asset.note,
                     installed: self.is_installed(asset),
-                    downloaded_bytes: if self.is_installed(asset) { asset.bytes } else { self.partial_bytes(asset) },
+                    downloaded_bytes: if self.is_installed(asset) { crate::sizes::or_listed(asset.url, asset.bytes) } else { self.partial_bytes(asset) },
                 })
                 .collect(),
             active_download: state.download.clone(),
         }
+    }
+
+    /// Installs a whole set - the runtime, its libraries, the model - as one
+    /// download, and waits for it.
+    ///
+    /// Asking for them one at a time did not work and could not: `install`
+    /// returns as soon as it has spawned, so the second call found the first
+    /// still running and was refused. The caller's loop then stopped at its
+    /// first file. That is why the runtime appeared and the model never did -
+    /// the panel reported "installed" for the group and "not installed" for the
+    /// set in the same breath, because both were true.
+    pub async fn install_all(&self, ids: &[String]) -> Result<()> {
+        let mut assets: Vec<&'static Asset> = Vec::new();
+        for id in ids {
+            assets.push(asset(id).ok_or_else(|| anyhow!("unknown assistant asset: {id}"))?);
+        }
+        let pending: Vec<&'static Asset> = assets.into_iter().filter(|asset| !self.is_installed(asset)).collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let total: u64 = pending.iter().map(|asset| asset.bytes).sum();
+        {
+            let mut state = self.state.lock().await;
+            if state.download.as_ref().is_some_and(|progress| !progress.done && progress.error.is_none()) {
+                bail!("another assistant download is already running");
+            }
+            state.download = Some(DownloadProgress {
+                asset_id: if pending.len() == 1 { pending[0].id.to_string() } else { crate::downloads::SET.to_string() },
+                downloaded_bytes: 0,
+                total_bytes: total,
+                done: false,
+                error: None,
+            });
+        }
+
+        // Sequential on purpose: the model is most of the set, and the two
+        // runtime files are small enough that fetching them at the same time
+        // buys nothing but a harder figure to report.
+        let mut base = 0u64;
+        let mut failure = None;
+        for asset in &pending {
+            let target = self.path_of(asset);
+            let outcome = match download_asset(&self.http, asset, &target, &self.state, base).await {
+                Ok(()) => match asset.unzip_into {
+                    Some(flavour) => extract_zip(&target, &self.root.join("runtime").join(flavour)),
+                    None => Ok(()),
+                },
+                Err(error) => Err(error),
+            };
+            if let Err(error) = outcome {
+                failure = Some(error);
+                break;
+            }
+            base += asset.bytes;
+            if let Some(progress) = self.state.lock().await.download.as_mut() {
+                progress.downloaded_bytes = base;
+            }
+        }
+
+        let outcome = match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        };
+        if let Some(progress) = self.state.lock().await.download.as_mut() {
+            progress.done = true;
+            progress.error = outcome.as_ref().err().map(|error| error.to_string());
+            if outcome.is_ok() {
+                progress.downloaded_bytes = total;
+            }
+        }
+        outcome
     }
 
     /// Starts one download in the background. Only one runs at a time, and an
@@ -370,7 +454,7 @@ impl AssistantRuntime {
         let state = self.state.clone();
         let root = self.root.clone();
         tokio::spawn(async move {
-            let outcome = download_asset(&http, asset, &target, &state).await;
+            let outcome = download_asset(&http, asset, &target, &state, 0).await;
             let mut guard = state.lock().await;
             match outcome {
                 Ok(()) => {
@@ -539,62 +623,57 @@ impl AssistantRuntime {
     }
 }
 
+/// `base` is what the rest of the set has already fetched, so a set of three
+/// files reports one rising figure instead of three that start again at nought.
+///
+/// The fetching itself is `chunked`: four connections over ranges, retried
+/// piece by piece, resumable down to the last sixteen megabytes. A seven
+/// gigabyte model over one connection was the studio waiting on a single TCP
+/// stream for no reason.
 async fn download_asset(
     http: &reqwest::Client,
     asset: &Asset,
     target: &Path,
     state: &Arc<Mutex<RuntimeState>>,
+    base: u64,
 ) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    if fs::metadata(target).map(|meta| meta.len() == asset.bytes).unwrap_or(false) {
+    if fs::metadata(target).map(|meta| meta.len() > 0).unwrap_or(false) {
         return Ok(());
     }
 
+    let plan = crate::chunked::probe(http, asset.url).await?;
+    if plan.total > 0 {
+        crate::sizes::learn(asset.url, plan.total);
+    }
+
     let part = target.with_extension("part");
-    let mut offset = fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-    if offset > asset.bytes {
-        fs::remove_file(&part).ok();
-        offset = 0;
+    let written = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reporter = {
+        let (written, state) = (written.clone(), state.clone());
+        tokio::spawn(async move {
+            loop {
+                let value = written.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some(progress) = state.lock().await.download.as_mut() {
+                    progress.downloaded_bytes = base + value;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+    };
+    let outcome =
+        crate::chunked::fetch(http, asset.url, &part, plan, written.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false))).await;
+    reporter.abort();
+    outcome?;
+    if let Some(progress) = state.lock().await.download.as_mut() {
+        progress.downloaded_bytes = base + written.load(std::sync::atomic::Ordering::Relaxed);
     }
-
-    let mut request = http.get(asset.url);
-    if offset > 0 {
-        request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
-    }
-    let response = request.send().await.with_context(|| format!("request {}", asset.url))?;
-    if !response.status().is_success() {
-        bail!("{} answered {}", asset.url, response.status());
-    }
-    let append = offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    if !append {
-        offset = 0;
-    }
-
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(append)
-        .truncate(!append)
-        .open(&part)
-        .with_context(|| format!("open {}", part.display()))?;
-
-    let mut stream = response.bytes_stream();
-    let mut written = offset;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("read download chunk")?;
-        io::Write::write_all(&mut file, &chunk).context("write download chunk")?;
-        written += chunk.len() as u64;
-        if let Some(progress) = state.lock().await.download.as_mut() {
-            progress.downloaded_bytes = written;
-        }
-    }
-    drop(file);
 
     let size = fs::metadata(&part)?.len();
-    if size != asset.bytes {
-        bail!("{} downloaded {size} bytes, expected {}", asset.label, asset.bytes);
+    if plan.total > 0 && size != plan.total {
+        bail!("{} has {size} bytes, the server said {}", asset.label, plan.total);
     }
     fs::rename(&part, target).with_context(|| format!("publish {}", target.display()))?;
     Ok(())

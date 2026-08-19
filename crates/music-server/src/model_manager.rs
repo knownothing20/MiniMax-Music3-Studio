@@ -344,48 +344,52 @@ impl ModelManager {
         }
     }
 
+    /// Fetches one component over four connections at once.
+    ///
+    /// Eleven gigabytes down a single TCP stream was the studio waiting on a
+    /// fraction of the line for no reason. `chunked` cuts the file into pieces,
+    /// retries them one by one, and remembers which of them landed - so an
+    /// interrupted install resumes to within sixteen megabytes instead of
+    /// starting the file again.
+    ///
+    /// Components are still fetched one after another, because four connections
+    /// is the whole budget: Hugging Face's Xet storage drops them above that,
+    /// and a dropped range leaves a hole in a file of exactly the right size.
     async fn download_component(&self, component: &Component) -> Result<()> {
         let target = self.root.join(component.filename);
         let part = part_path(&target);
-        let existing = fs::metadata(&part).map(|metadata| metadata.len()).unwrap_or(0);
-        if existing > component.bytes {
-            fs::remove_file(&part)?;
-        }
-        let offset = fs::metadata(&part).map(|metadata| metadata.len()).unwrap_or(0);
-        // A resumed part can already hold the whole file — for example when the
-        // process stopped between the last chunk and the rename. Asking for
-        // `bytes=<size>-` is unsatisfiable and the server answers 416, so verify
-        // and publish what is on disk instead of restarting the transfer.
-        if offset == component.bytes {
-            return self.publish_verified_part(component, &part, &target).await;
-        }
         let url = format!(
             "https://huggingface.co/{}/resolve/{}/{}?download=true",
             component.repository, component.revision, component.filename
         );
-        let mut request = self.http.get(url);
-        if offset > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
-        }
-        let response = request.send().await?.error_for_status()?;
-        let append = offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-        let mut file = if append {
-            tokio::fs::OpenOptions::new().append(true).open(&part).await?
-        } else {
-            tokio::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&part).await?
+
+        let plan = crate::chunked::probe(&self.http, &url).await?;
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        // The job's bar counts bytes as they arrive; the pieces count their own.
+        // This turns the second into the first without double counting, which is
+        // what a shared counter written by four tasks would do.
+        let reporter = {
+            let (written, manager) = (written.clone(), self.clone());
+            tokio::spawn(async move {
+                let mut reported = 0u64;
+                loop {
+                    let value = written.load(Ordering::Relaxed);
+                    if value > reported {
+                        let _ = manager.add_progress(value - reported).await;
+                        reported = value;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+            })
         };
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            if self.cancelled.load(Ordering::SeqCst) {
-                file.flush().await?;
-                bail!("cancelled");
-            }
-            let chunk = chunk?;
-            file.write_all(&chunk).await?;
-            self.add_progress(chunk.len() as u64).await?;
+        let outcome = crate::chunked::fetch(&self.http, &url, &part, plan, written, self.cancelled.clone()).await;
+        reporter.abort();
+        if self.cancelled.load(Ordering::SeqCst) {
+            bail!("cancelled");
         }
-        file.flush().await?;
-        drop(file);
+        outcome?;
+
         self.publish_verified_part(component, &part, &target).await
     }
 
@@ -393,10 +397,9 @@ impl ModelManager {
     /// Hugging Face LFS oid, so a truncated or corrupted transfer can never be
     /// presented to the engine as an installed component.
     async fn publish_verified_part(&self, component: &Component, part: &Path, target: &Path) -> Result<()> {
-        let actual = fs::metadata(part)?.len();
-        if actual != component.bytes {
-            bail!("{} has {actual} bytes, expected {}", component.filename, component.bytes);
-        }
+        // No size comparison here: the SHA-256 below is the check, and it is a
+        // real one. A byte count compiled into the studio can only ever add a
+        // way to reject a perfectly good file.
         if !verified_file_async(part.to_path_buf(), component.clone()).await? {
             fs::remove_file(part).ok();
             bail!("{} SHA-256 does not match the pinned Hugging Face LFS oid; the partial file was discarded so the next attempt starts clean", component.filename);
@@ -609,10 +612,14 @@ fn status_snapshot(root: PathBuf, active: Option<DownloadJob>, target: Option<In
     }
 }
 
-fn published_component(path: &Path, component: &Component) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.len() == component.bytes)
-        .unwrap_or(false)
+/// A component counts as installed when its file is there.
+///
+/// It gets there by one route: downloaded to `.part`, hashed against the
+/// pinned Hugging Face LFS oid, and only then renamed. So presence is the
+/// proof, and the alternative - re-hashing eleven gigabytes on every status
+/// poll - is not one.
+fn published_component(path: &Path, _component: &Component) -> bool {
+    fs::metadata(path).map(|metadata| metadata.is_file() && metadata.len() > 0).unwrap_or(false)
 }
 
 async fn verified_file_async(path: PathBuf, component: Component) -> Result<bool> {
@@ -627,7 +634,7 @@ fn profile_complete(profile_id: &str, root: &Path) -> bool {
 }
 
 fn verified_file(path: &Path, component: &Component) -> Result<bool> {
-    if fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0) != component.bytes {
+    if fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0) == 0 {
         return Ok(false);
     }
     let mut file = fs::File::open(path)?;

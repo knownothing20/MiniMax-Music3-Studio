@@ -109,7 +109,7 @@ impl EngineRuntime {
     /// Fetches whatever is missing and waits for it.
     pub async fn install_missing(&self) -> Result<()> {
         ensure_vc_runtime().await?;
-        self.downloader.install_all(&self.missing()).await
+        self.downloader.install_all("engine", &self.missing()).await
     }
 }
 

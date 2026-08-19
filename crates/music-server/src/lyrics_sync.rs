@@ -513,7 +513,7 @@ impl LyricsSync {
             openrouter_model: config.openrouter_model.clone(),
             installed_models: self.installed_models().iter().map(|asset| asset.id.to_string()).collect(),
             assets: self.downloader.status_of(ASSETS),
-            active_download: self.downloader.active().await,
+            active_download: self.downloader.active_for("karaoke").await,
         }
     }
 

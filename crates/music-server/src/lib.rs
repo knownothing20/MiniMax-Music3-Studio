@@ -14,7 +14,9 @@ mod model_manager;
 mod presets;
 mod remote_zip;
 mod resources;
+mod chunked;
 mod separation;
+mod sizes;
 mod skill;
 mod library;
 mod mm_result;
@@ -828,7 +830,9 @@ async fn separation_assets(State(state): State<AppState>) -> Json<Value> {
             "ready": installed_bytes == bytes,
             "files": set.len() + 1,
         },
-        "active_download": state.separator.downloader().active().await.or(state.lyrics_sync.downloader().active().await),
+        // Only this panel's own download. The recogniser shares this
+        // downloader, and its gigabytes are not the separator's business.
+        "active_download": state.separator.downloader().active_for("separation").await.or(state.lyrics_sync.downloader().active_for("separation").await),
     }))
 }
 
@@ -862,11 +866,11 @@ async fn install_separation_asset(
             runtime.extend(CARD_ASSETS.iter().filter_map(|id| lyrics_sync::asset(id)));
         }
         tokio::spawn(async move {
-            if let Err(error) = separator.downloader().install_all(&[&separation::MODEL]).await {
+            if let Err(error) = separator.downloader().install_all("separation", &[&separation::MODEL]).await {
                 eprintln!("the separator model could not be installed: {error}");
                 return;
             }
-            if let Err(error) = sync.downloader().install_all(&runtime).await {
+            if let Err(error) = sync.downloader().install_all("separation", &runtime).await {
                 eprintln!("the separator runtime could not be installed: {error}");
             }
         });
@@ -876,7 +880,7 @@ async fn install_separation_asset(
         let sync = state.lyrics_sync.clone();
         let card: Vec<&'static lyrics_sync::Asset> = CARD_ASSETS.iter().filter_map(|id| lyrics_sync::asset(id)).collect();
         tokio::spawn(async move {
-            if let Err(error) = sync.downloader().install_all(&card).await {
+            if let Err(error) = sync.downloader().install_all("separation", &card).await {
                 eprintln!("the card path could not be installed: {error}");
             }
         });
@@ -2505,13 +2509,18 @@ async fn assistant_runtime_install(
     };
     if !set.is_empty() {
         let runtime = state.assistant_runtime.clone();
-        let model = request.model_id.clone();
+        // The whole thing - runtime, CUDA libraries, model - as one download.
+        // Starting them one after another only looked like a queue: each call
+        // returned before its file had arrived, so the next one was refused and
+        // the model, always last, was never fetched at all.
+        let ids: Vec<String> = set
+            .into_iter()
+            .map(str::to_string)
+            .chain(request.model_id.clone())
+            .collect();
         tokio::spawn(async move {
-            for id in set.into_iter().chain(model.as_deref()) {
-                if let Err(error) = runtime.install(id).await {
-                    eprintln!("the assistant runtime could not be installed: {error}");
-                    return;
-                }
+            if let Err(error) = runtime.install_all(&ids).await {
+                eprintln!("the assistant could not be installed: {error}");
             }
         });
         return Ok(Json(state.assistant_runtime.status().await));
@@ -2698,7 +2707,7 @@ async fn karaoke_install(
         // gigabyte arrives; the whole set is one button, not eight.
         let sync = state.lyrics_sync.clone();
         tokio::spawn(async move {
-            if let Err(error) = sync.downloader().install_all(&set).await {
+            if let Err(error) = sync.downloader().install_all("karaoke", &set).await {
                 eprintln!("the karaoke recogniser could not be installed: {error}");
             }
         });

@@ -2,6 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Tailwind 3 resets buttons to the default arrow cursor, which is why nothing
+   in this interface felt clickable: the hover colours were there, the pointer
+   never was. Tailwind 4 changed this default for the same reason. */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+label:has(> input[type='checkbox']),
+select:not(:disabled),
+summary {
+  cursor: pointer;
+}
+
 /* Studio chrome. Everything here is local: a desktop build must render
    identically with no network, so no CDN stylesheet and no remote font. */
 :root {

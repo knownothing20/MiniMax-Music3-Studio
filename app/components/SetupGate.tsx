@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, Download, FolderDown, FolderOpen, Loader2, Square, Trash2, X } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { DevicePicker, type Device } from './DevicePicker';
+import { AssistantExtras } from './AssistantSettings';
+import { KaraokeExtras } from './KaraokeSettings';
 import {
   componentKindLabel,
   componentPrecision,
@@ -101,10 +103,27 @@ export const OptionalGroup: React.FC<{
   settingsUrl?: string;
   /** Whether one of the engines is a server the user runs themselves. */
   serverField?: boolean;
-}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl, serverField }) => {
+  /**
+   * On a settings page this is the page, so it drops its own heading and stays
+   * open. Wrapping it in a second collapsible titled the same thing is how one
+   * capability ended up with two rows of tabs and two ideas of what was
+   * installed.
+   */
+  embedded?: boolean;
+  /**
+   * Anything only this page has: a path to a file, a button to unload. Given
+   * the chosen engine, because a field that belongs to OpenRouter has no
+   * business appearing under llama.cpp.
+   */
+  children?: React.ReactNode | ((engine: string) => React.ReactNode);
+}> = ({ title, purpose, statusUrl, installUrl, removeUrl, engines, settingsUrl, serverField, embedded, children }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<OptionalStatus | null>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(embedded));
+  // A download starts in the background, so the server's progress cell appears
+  // a moment after the request is answered. Until it does the row showed
+  // nothing at all, which read as a button that does not work.
+  const [starting, setStarting] = useState(false);
   // A refused download used to be silent: the request failed, the reply was
   // thrown away, and the button simply did nothing twice in a row.
   const [failed, setFailed] = useState<string | null>(null);
@@ -163,10 +182,25 @@ export const OptionalGroup: React.FC<{
 
   useEffect(() => {
     const active = status?.active_download;
-    if (!active || active.done) return;
-    const timer = window.setInterval(() => void load().catch(() => undefined), 1500);
+    const running = Boolean(active && !active.done);
+    if (!running && !starting) return;
+    const timer = window.setInterval(() => void load().catch(() => undefined), 1000);
     return () => window.clearInterval(timer);
-  }, [status?.active_download, load]);
+  }, [status?.active_download, starting, load]);
+
+  // The moment the server admits a download is running, the press has landed
+  // and the real figures take over. If it never does - a refusal, a dead
+  // request - the row stops pretending after a few seconds rather than sitting
+  // at nought for ever.
+  useEffect(() => {
+    if (!starting) return;
+    if (status?.active_download && !status.active_download.done) {
+      setStarting(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setStarting(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [status, starting]);
 
   const assets = status?.assets ?? [];
   if (assets.length === 0) return null;
@@ -189,8 +223,9 @@ export const OptionalGroup: React.FC<{
   const localEngines = (engines ?? []).filter((choice) => choice.device !== false);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/10 dark:bg-suno-card">
-      <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
+    <div className={embedded ? '' : 'overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/10 dark:bg-suno-card'}>
+      {!embedded && (
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-white/5">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold text-zinc-900 dark:text-white">{title}</span>
@@ -207,8 +242,9 @@ export const OptionalGroup: React.FC<{
           <ChevronDown size={15} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
         </div>
       </button>
+      )}
       {open && (
-        <div className="space-y-2 border-t border-zinc-100 p-3 dark:border-white/5">
+        <div className={embedded ? 'space-y-2' : 'space-y-2 border-t border-zinc-100 p-3 dark:border-white/5'}>
           {engines && engines.length > 0 && (
             <div className="space-y-2 pb-1">
               <div className="grid grid-cols-3 gap-1.5">
@@ -220,7 +256,7 @@ export const OptionalGroup: React.FC<{
                     className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
                       engine === choice.id
                         ? 'border-pink-500 bg-pink-500/10 text-zinc-900 dark:text-white'
-                        : 'border-zinc-200 text-zinc-500 hover:text-zinc-900 dark:border-white/10 dark:hover:text-white'
+                        : 'border-zinc-200 text-zinc-500 hover:border-pink-300 hover:bg-pink-500/5 hover:text-zinc-900 dark:border-white/10 dark:hover:border-pink-500/40 dark:hover:text-white'
                     }`}
                   >
                     {choice.label}
@@ -238,6 +274,10 @@ export const OptionalGroup: React.FC<{
             // studio's business, not a list to read.
             (() => {
               const chosen = engines.find((choice) => choice.id === engine);
+              // Off is a choice, not a thing to install: no files, no key, no
+              // server. Without it here the only way to switch the assistant
+              // off was the page this control replaced.
+              if (engine === 'none') return null;
               if (chosen?.device === false) {
                 // The cloud recogniser downloads nothing and needs one thing:
                 // the key. Sending the user to another page to type it, and
@@ -303,15 +343,20 @@ export const OptionalGroup: React.FC<{
                   </div>
                 );
               }
-              const busy = Boolean(status?.active_download && !status.active_download.done);
+              const running = status?.active_download && !status.active_download.done ? status.active_download : null;
+              const busy = Boolean(running) || starting;
               const modelBytes = models.find((asset) => asset.id === chosenModel)?.bytes ?? 0;
               const setBytes = (status?.set?.bytes ?? 0) + modelBytes;
               const haveBytes = (status?.set?.installed_bytes ?? 0)
                 + (models.find((asset) => asset.id === chosenModel)?.installed ? modelBytes : 0);
-              // Progress is what is on disk out of what this engine needs, not
-              // whatever file the shared counter is holding: eight downloads
-              // through one counter is what made the bar jump and reset.
-              const percent = setBytes > 0 ? Math.min(100, Math.round((haveBytes / setBytes) * 100)) : 0;
+              // While a download runs, progress is that download - the server
+              // reports a whole set as one figure. Between downloads it is what
+              // is on disk out of what this engine needs. Reading only the
+              // second is why a seven-gigabyte file sat at nought per cent from
+              // the first byte to the last.
+              const percent = running && running.total_bytes > 0
+                ? Math.min(100, Math.round((running.downloaded_bytes / running.total_bytes) * 100))
+                : setBytes > 0 ? Math.min(100, Math.round((haveBytes / setBytes) * 100)) : 0;
               const ready = setBytes > 0 && haveBytes >= setBytes;
               return (
                 // One row, the way Dub Studio states it: what this is, what it
@@ -358,6 +403,7 @@ export const OptionalGroup: React.FC<{
                           type="button"
                           onClick={() => {
                             setFailed(null);
+                            setStarting(true);
                             void fetch(installUrl, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
@@ -370,7 +416,7 @@ export const OptionalGroup: React.FC<{
                               .catch((error: Error) => setFailed(error.message));
                           }}
                           title={t('download')}
-                          className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+                          className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-600 transition-colors hover:border-pink-400 hover:bg-pink-500/10 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
                         >
                           <Download size={13} />
                         </button>
@@ -391,7 +437,7 @@ export const OptionalGroup: React.FC<{
                                 .catch((error: Error) => setFailed(error.message));
                             }}
                             title={t('remove')}
-                            className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-500 hover:border-rose-400 hover:text-rose-600 dark:border-white/15 dark:text-zinc-400"
+                            className="shrink-0 rounded-md border border-zinc-300 p-1.5 text-zinc-500 transition-colors hover:border-rose-400 hover:bg-rose-500/10 hover:text-rose-600 dark:border-white/15 dark:text-zinc-400"
                           >
                             <Trash2 size={13} />
                           </button>
@@ -484,6 +530,7 @@ export const OptionalGroup: React.FC<{
               })}
             </>
           )}
+          {typeof children === 'function' ? (children as (engine: string) => React.ReactNode)(engine) : children}
           {failed && <p className="text-xs text-rose-600 dark:text-rose-300">{failed}</p>}
           {status?.active_download?.error && <p className="text-xs text-rose-600 dark:text-rose-300">{status.active_download.error}</p>}
         </div>
@@ -558,6 +605,9 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
     () => selectedComponentBytes(catalog?.components || [], chosenIds ?? chosenValues),
     [catalog, chosenIds, chosenValues],
   );
+  /// The set the studio would pick for this card, by name, so the sentence at
+  /// the top says the same thing as the list underneath.
+  const recommended = catalog?.profiles.find((profile) => profile.id === status?.recommended_profile_id);
   const active = status?.active;
   const progress = active && active.total_bytes > 0 ? Math.min(100, (active.downloaded_bytes / active.total_bytes) * 100) : 0;
   const installedIds = status?.installed_components ?? [];
@@ -586,16 +636,25 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
     else await refresh().catch(() => undefined);
   };
 
+  // The request takes about a second to answer, and for that second the button
+  // looked untouched: people pressed it again and could not tell which press
+  // counted.
+  const [starting, setStarting] = useState(false);
   const download = async () => {
-    if (!chosenIds) return;
+    if (!chosenIds || starting) return;
     setError(null);
-    const response = await fetch('/setup/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ component_ids: chosenIds }),
-    });
-    if (!response.ok) setError(await errorMessage(response));
-    else await refresh().catch(() => undefined);
+    setStarting(true);
+    try {
+      const response = await fetch('/setup/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ component_ids: chosenIds }),
+      });
+      if (!response.ok) setError(await errorMessage(response));
+      else await refresh().catch(() => undefined);
+    } finally {
+      setStarting(false);
+    }
   };
 
   // Ten gigabytes arrived on request; they leave on request too, without
@@ -641,7 +700,14 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
 
         {mode === 'first-run' && <div className="mt-5 rounded-xl border border-pink-300/50 bg-pink-50 px-4 py-3 text-sm text-zinc-700 dark:border-pink-500/25 dark:bg-pink-500/10 dark:text-zinc-200">
           <span className="font-semibold text-pink-600 dark:text-pink-400">{t('recommendedForMachine')}</span>{' '}
-          {status?.hardware?.reason || t('recommendedFallback')}. {t('setupResumable')}
+          {/* The card, its memory, and the set that fits - named as the set is
+              named in the list below. The server's own sentence was English
+              prose in a Russian window, and it called the answer "Native
+              quality", which reads as the unquantised weights it is not. */}
+          {recommended
+            ? `${status?.hardware?.gpuName ?? ''}${status?.hardware?.totalVramGb ? `, ${status.hardware.totalVramGb.toFixed(1)} GB` : ''} — ${recommended.label} · ${bytes(recommended.total_bytes)}`
+            : status?.hardware?.reason || t('recommendedFallback')}
+          . {t('setupResumable')}
         </div>}
 
 
@@ -831,10 +897,10 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
             <button
               type="button"
               onClick={() => void download()}
-              disabled={!chosenIds || missing.length === 0}
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={starting || !chosenIds || missing.length === 0}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Download size={16} />
+              {starting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
               {missing.length === 0 ? t('everythingInstalled') : `${t('downloadSelectedProfile')} · ${bytes(selectedComponentBytes(catalog?.components || [], missing))}`}
             </button>
           )}
@@ -868,10 +934,13 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                 { id: 'managed', label: 'llama.cpp' },
                 { id: 'local', label: t('assistantLocal'), device: false },
                 { id: 'open_router', label: 'OpenRouter', device: false },
+                { id: 'none', label: t('assistantDisabled'), device: false },
               ]}
               settingsUrl="/v1/assistant/status"
               serverField
-            />
+            >
+              {(engine) => <AssistantExtras engine={engine} />}
+            </OptionalGroup>
             <OptionalGroup
               title={t('stemsTitle')}
               purpose={t('separationSectionHint')}
@@ -892,7 +961,9 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
                 { id: 'whisper', label: 'Whisper' },
                 { id: 'open_router', label: 'OpenRouter', device: false },
               ]}
-            />
+            >
+              {(engine) => <KaraokeExtras engine={engine} />}
+            </OptionalGroup>
           </div>
         </div>
       </div>
