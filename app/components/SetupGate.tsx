@@ -186,7 +186,72 @@ const OptionalGroup: React.FC<{
               )}
             </div>
           )}
-          {assets.map((asset) => {
+          {engines && engines.length > 0 ? (
+            // One recogniser, one button. What it is made of - a runtime and
+            // five model files, or two files, depending on the card - is the
+            // studio's business, not a list to read.
+            (() => {
+              const chosen = engines.find((choice) => choice.id === engine);
+              if (chosen?.device === false) {
+                return <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{purpose}</p>;
+              }
+              const busy = Boolean(status?.active_download && !status.active_download.done);
+              const percent = busy && status?.active_download
+                ? Math.min(100, Math.round((status.active_download.downloaded_bytes / Math.max(1, status.active_download.total_bytes)) * 100))
+                : 0;
+              const ready = installed > 0 && installed === assets.length;
+              return (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFailed(null);
+                      void fetch(installUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ asset_id: engines.length === 1 ? device : engine }),
+                      })
+                        .then(async (response) => {
+                          if (!response.ok) setFailed(await errorMessage(response));
+                          return load();
+                        })
+                        .catch((error: Error) => setFailed(error.message));
+                    }}
+                    disabled={busy}
+                    className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-200"
+                  >
+                    {busy ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                    {busy ? `${percent}%` : t('download')}
+                  </button>
+                  {removeUrl && ready && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFailed(null);
+                        void fetch(removeUrl, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ asset_id: engine }),
+                        })
+                          .then(async (response) => {
+                            if (!response.ok) setFailed(await errorMessage(response));
+                            return load();
+                          })
+                          .catch((error: Error) => setFailed(error.message));
+                      }}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-500 hover:border-rose-400 hover:text-rose-600 disabled:opacity-40 dark:border-white/15 dark:text-zinc-400"
+                    >
+                      <Trash2 size={13} />
+                      {t('remove')}
+                    </button>
+                  )}
+                </div>
+              );
+            })()
+          ) : (
+            <>
+              {assets.map((asset) => {
             const active = status?.active_download?.asset_id === asset.id && !status?.active_download?.done;
             const percent = active && status?.active_download
               ? Math.min(100, Math.round((status.active_download.downloaded_bytes / Math.max(1, status.active_download.total_bytes)) * 100))
@@ -258,7 +323,9 @@ const OptionalGroup: React.FC<{
                 )}
               </div>
             );
-          })}
+              })}
+            </>
+          )}
           {failed && <p className="text-xs text-rose-600 dark:text-rose-300">{failed}</p>}
           {status?.active_download?.error && <p className="text-xs text-rose-600 dark:text-rose-300">{status.active_download.error}</p>}
         </div>
@@ -621,6 +688,7 @@ export const SetupGate: React.FC<{ onReady?: () => void; mode?: 'first-run' | 's
               purpose={t('assistantOptionalPurpose')}
               statusUrl="/v1/assistant/runtime"
               installUrl="/v1/assistant/runtime/install"
+              engines={[{ id: 'llama', label: 'llama.cpp' }]}
             />
             <OptionalGroup
               title={t('stemsTitle')}

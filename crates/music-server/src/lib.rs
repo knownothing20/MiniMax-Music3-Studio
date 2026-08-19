@@ -2406,10 +2406,37 @@ async fn assistant_runtime_status(State(state): State<AppState>) -> Json<assista
 
 /// Starts one download. Nothing is fetched until this is called, and an
 /// interrupted file resumes where it stopped.
+/// The llama.cpp build for a device, with the CUDA libraries it needs.
+///
+/// The card build is useless without its runtime companion - two downloads
+/// that are one decision, the same way a recogniser is.
+fn assistant_set(device: &str) -> Vec<&'static str> {
+    match device {
+        "cpu" => vec!["llama-cpu"],
+        _ => vec!["llama-cuda", "llama-cuda-runtime"],
+    }
+}
+
 async fn assistant_runtime_install(
     State(state): State<AppState>,
     Json(request): Json<AssistantAssetRequest>,
 ) -> Result<Json<assistant_runtime::RuntimeStatus>, (StatusCode, Json<ApiError>)> {
+    let set = match request.asset_id.as_str() {
+        "auto" | "cuda" | "cpu" => assistant_set(&request.asset_id),
+        _ => Vec::new(),
+    };
+    if !set.is_empty() {
+        let runtime = state.assistant_runtime.clone();
+        tokio::spawn(async move {
+            for id in set {
+                if let Err(error) = runtime.install(id).await {
+                    eprintln!("the assistant runtime could not be installed: {error}");
+                    return;
+                }
+            }
+        });
+        return Ok(Json(state.assistant_runtime.status().await));
+    }
     state
         .assistant_runtime
         .install(&request.asset_id)
