@@ -23,7 +23,12 @@ The updater signing key is kept in two places:
         gh secret list -R timoncool/MiniMax-Music3-Studio
     (values cannot be read back - use the local copy below, or the workflow).
 
-  * On the release machine: %USERPROFILE%\.tauri\mm3-release.key and its .pub.
+  * On the release machine: %USERPROFILE%\.tauri\mm3-release.key, its .pub, and
+    its password in mm3-release.key.password beside them. This script reads
+    that file on its own, so a release needs no environment variable at all.
+    A password that exists only in a GitHub secret cannot be read back, and
+    losing it means losing automatic updates for everyone already running the
+    studio - so it lives next to the key it opens.
 
 Set them for a manual build:
     $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw "$env:USERPROFILE\.tauri\mm3-release.key").Trim()
@@ -50,6 +55,10 @@ if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY)) {
 # the password on stdin, the build runs with no console, and the whole release
 # sits there in silence after the installers are already on disk. That happened,
 # and it looked exactly like a slow build.
+$passwordFile = Join-Path $env:USERPROFILE '.tauri\mm3-release.key.password'
+if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) -and (Test-Path $passwordFile)) {
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Raw $passwordFile).Trim()
+}
 $decodedKey = try { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TAURI_SIGNING_PRIVATE_KEY)) } catch { $env:TAURI_SIGNING_PRIVATE_KEY }
 if ($decodedKey -match 'encrypted secret key' -and [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
     throw "The signing key is encrypted and TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty. Tauri would wait for it on stdin and this build would hang.`n`n$whereTheKeyIs"
