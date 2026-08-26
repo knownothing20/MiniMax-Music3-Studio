@@ -114,7 +114,7 @@ Both repositories are pinned to a fixed revision.
 The files are written to, and can be dropped into by hand at:
 
 - **Installed:** `%LOCALAPPDATA%\MiniMax Music3 Studio\models\minimaxmusic-cpp\`
-- **Portable:** `<the folder you unzipped>\models\minimaxmusic-cpp\`
+- **Portable:** `<the folder you unzipped>\data\models\minimaxmusic-cpp\`
 
 Filenames must match the catalogue exactly. The studio checks each file's size and SHA-256,
 so a file you place by hand is recognised as already installed and never re-downloaded.
