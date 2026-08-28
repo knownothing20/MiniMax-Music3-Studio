@@ -23,6 +23,31 @@ export const StemPlayer: React.FC<{ src: string; label: string }> = ({ src, labe
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [length, setLength] = useState(0);
+  const [mediaSrc, setMediaSrc] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setMediaSrc('');
+    void fetch(src)
+      .then(response => response.ok
+        ? response.blob()
+        : Promise.reject(new Error(`Stem request failed (${response.status})`)))
+      .then(blob => {
+        objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = null;
+          return;
+        }
+        setMediaSrc(objectUrl);
+      })
+      .catch(() => setMediaSrc(''));
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src]);
 
   useEffect(() => {
     const element = audio.current;
@@ -107,7 +132,7 @@ export const StemPlayer: React.FC<{ src: string; label: string }> = ({ src, labe
         </div>
       </div>
       <span className="w-11 shrink-0 text-[11px] tabular-nums text-zinc-500">{clock(length)}</span>
-      <audio ref={audio} src={src} preload="metadata" className="hidden" />
+      <audio ref={audio} src={mediaSrc} preload="metadata" className="hidden" />
     </div>
   );
 };

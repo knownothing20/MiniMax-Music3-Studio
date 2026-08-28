@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { hasSungLines, karaokeReason } from '../services/karaoke';
 import { Song } from '../types';
 import { useI18n } from '../context/I18nContext';
-import { openExternal } from '../services/externalLinks';
+import { openExternalAudioEditor } from '../services/externalLinks';
 import { apiUrl } from '../services/apiBase';
 import {
     Clapperboard,
@@ -166,9 +166,8 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
         const audioUrl = song.audioUrl.startsWith('http')
             ? song.audioUrl
             : `${window.location.origin}${song.audioUrl}`;
-        // AudioMass is a fully client-side editor shipped as static assets, so
-        // it runs without any backend service.
-        void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`));
+        // Protected /v1 media cannot carry the in-memory Tauri session header into a system browser.
+        void openExternalAudioEditor(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`));
         onClose();
     };
 

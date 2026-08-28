@@ -1,4 +1,4 @@
-import { apiUrl } from './apiBase';
+import { apiUrl, authenticatedObjectUrl } from './apiBase';
 import { Song } from '../types';
 
 interface NativeLibrarySong {
@@ -97,7 +97,20 @@ export async function loadNativeLibrarySongs(): Promise<Song[]> {
     throw new Error(`Native library request failed (${response.status})`);
   }
   const songs: NativeLibrarySong[] = await response.json();
-  return songs.map(mapNativeLibrarySong);
+  return Promise.all(songs.map(async (song) => {
+    const mapped = mapNativeLibrarySong(song);
+    if (typeof song.metadata?.cover_filename !== 'string' || !mapped.coverUrl) return mapped;
+    try {
+      // <img> cannot attach the Studio session header. Keep the credential in
+      // memory and hand the element a browser-local URL instead.
+      mapped.coverUrl = await authenticatedObjectUrl(mapped.coverUrl);
+    } catch {
+      // The deterministic public placeholder remains a safe visual fallback;
+      // the protected cover endpoint is never retried without authorization.
+      mapped.coverUrl = `https://picsum.photos/seed/${encodeURIComponent(song.id)}/400/400`;
+    }
+    return mapped;
+  }));
 }
 
 export function mapNativePlaylist(playlist: NativePlaylist): import('../types').Playlist {

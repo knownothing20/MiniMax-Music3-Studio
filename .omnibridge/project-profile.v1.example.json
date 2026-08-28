@@ -1,0 +1,19 @@
+{
+  "schema": "omnibridge.project-profile.v1",
+  "project_id": "music-maker",
+  "profile_revision": 1,
+  "bindings": {
+    "cloud_music_generation": {
+      "selector": {
+        "type": "route",
+        "id": "route:music:cloud"
+      },
+      "operation": "audio.music.generate",
+      "required_capabilities": [
+        "music_generation"
+      ],
+      "mode": "durable",
+      "revision_policy": "pinned_for_run"
+    }
+  }
+}

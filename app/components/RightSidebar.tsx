@@ -5,7 +5,7 @@ import { Heart, Share2, Play, Pause, MoreHorizontal, X, Copy, Wand2, MoreVertica
 import { updateNativeSong } from '../services/nativeLibrary';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
-import { openExternal } from '../services/externalLinks';
+import { canOpenExternalAudioSource, openExternalAudioEditor } from '../services/externalLinks';
 import { apiUrl } from '../services/apiBase';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
@@ -350,7 +350,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                             onClick={() => {
                                 if (!song?.audioUrl) return;
                                 const audioUrl = song.audioUrl.startsWith('http') ? song.audioUrl : `${window.location.origin}${song.audioUrl}`;
-                                void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`));
+                                void openExternalAudioEditor(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(audioUrl)}`));
                             }}
                             title={t('openInEditor')}
                             className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"
@@ -367,6 +367,10 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                         <button
                             onClick={() => {
                                 if (!song?.audioUrl) return;
+                                if (!canOpenExternalAudioSource(song.audioUrl)) {
+                                    window.alert('Protected Studio media cannot be sent to Demucs without exposing the session credential.');
+                                    return;
+                                }
                                 const baseUrl = window.location.port === '3000'
                                     ? `${window.location.protocol}//${window.location.hostname}:3001`
                                     : window.location.origin;

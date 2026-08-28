@@ -526,31 +526,45 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     };
   }, [backgroundType, videoUrl]);
 
-  // Load Custom Album Art
+  // Protected service images must be fetched with the in-memory session
+  // header; DOM image elements cannot attach it themselves.
   useEffect(() => {
-    if (!customAlbumArt) {
+    const albumArtSource = customAlbumArt || song?.coverUrl;
+    if (!albumArtSource) {
       customAlbumArtImageRef.current = null;
       return;
     }
-
-    // Clear ref immediately so we don't show stale image
     customAlbumArtImageRef.current = null;
-
     const img = new Image();
-    img.crossOrigin = 'anonymous';
-
-    // Use proxy for external URLs to avoid CORS issues
-    const isExternal = customAlbumArt.startsWith('http');
-    img.src = isExternal ? `/v1/proxy/image?url=${encodeURIComponent(customAlbumArt)}` : customAlbumArt;
-
+    let disposed = false;
+    let objectUrl: string | null = null;
     img.onload = () => {
-      customAlbumArtImageRef.current = img;
+      if (!disposed) customAlbumArtImageRef.current = img;
     };
     img.onerror = () => {
-      console.error('Failed to load custom album art:', customAlbumArt);
-      customAlbumArtImageRef.current = null;
+      if (!disposed) customAlbumArtImageRef.current = null;
     };
-  }, [customAlbumArt]);
+    void (async () => {
+      try {
+        const source = albumArtSource.startsWith('http')
+          ? `/v1/proxy/image?url=${encodeURIComponent(albumArtSource)}`
+          : albumArtSource;
+        const response = await fetch(source);
+        if (!response.ok) throw new Error(`Album art request failed (${response.status})`);
+        const blob = await response.blob();
+        if (blob.size === 0) throw new Error('Album art response was empty');
+        objectUrl = URL.createObjectURL(blob);
+        img.src = objectUrl;
+      } catch {
+        if (!disposed) customAlbumArtImageRef.current = null;
+      }
+    })();
+    return () => {
+      disposed = true;
+      customAlbumArtImageRef.current = null;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [customAlbumArt, song?.coverUrl]);
 
   // Initialize Audio & Canvas
   useEffect(() => {
@@ -564,8 +578,25 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
 
     // Audio Setup
     const audio = new Audio();
+    let disposed = false;
+    let audioObjectUrl: string | null = null;
     audio.crossOrigin = "anonymous";
-    audio.src = song.audioUrl || '';
+    if (song.audioUrl) {
+      void fetch(song.audioUrl)
+        .then(response => response.ok
+          ? response.blob()
+          : Promise.reject(new Error(`Audio preview request failed (${response.status})`)))
+        .then(blob => {
+          audioObjectUrl = URL.createObjectURL(blob);
+          if (disposed) {
+            URL.revokeObjectURL(audioObjectUrl);
+            audioObjectUrl = null;
+            return;
+          }
+          audio.src = audioObjectUrl;
+        })
+        .catch(() => { audio.src = ''; });
+    }
     audioRef.current = audio;
 
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -589,7 +620,9 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     renderLoop();
 
     return () => {
+      disposed = true;
       audio.pause();
+      if (audioObjectUrl) URL.revokeObjectURL(audioObjectUrl);
       if (audioContextRef.current?.state !== 'closed') {
         audioContextRef.current?.close();
       }
@@ -1507,12 +1540,7 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     drawParticles(ctx, width, height, time, bass, currentConfig.particleCount, currentConfig.primaryColor);
 
     if (['NCS Circle', 'Hexagon', 'Orbital', 'Shockwave'].includes(currentConfig.preset)) {
-        const rawAlbumArtUrl = customAlbumArt || song.coverUrl;
-        // Proxy external URLs to avoid CORS issues in fallback
-        const albumArtUrl = rawAlbumArtUrl.startsWith('http')
-            ? `/v1/proxy/image?url=${encodeURIComponent(rawAlbumArtUrl)}`
-            : rawAlbumArtUrl;
-        drawAlbumArt(ctx, centerX, centerY, pulse, albumArtUrl, currentConfig.primaryColor, customAlbumArtImageRef.current);
+        drawAlbumArt(ctx, centerX, centerY, pulse, currentConfig.primaryColor, customAlbumArtImageRef.current);
     }
 
     // Pixelate effect (applied before text so text stays sharp)
@@ -2165,7 +2193,7 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
       ctx.shadowBlur = 0;
   };
 
-  const drawAlbumArt = (ctx: CanvasRenderingContext2D, cx: number, cy: number, pulse: number, url: string, borderColor: string, preloadedImage?: HTMLImageElement | null) => {
+  const drawAlbumArt = (ctx: CanvasRenderingContext2D, cx: number, cy: number, pulse: number, borderColor: string, preloadedImage?: HTMLImageElement | null) => {
     ctx.save();
     ctx.translate(cx, cy);
     ctx.scale(pulse, pulse);
@@ -2179,18 +2207,11 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     ctx.stroke();
     ctx.clip();
 
-    // Use preloaded image if available, otherwise try to draw from URL
     if (preloadedImage && preloadedImage.complete) {
         ctx.drawImage(preloadedImage, -150, -150, 300, 300);
     } else {
-        const img = new Image();
-        img.src = url;
-        if (img.complete) {
-            ctx.drawImage(img, -150, -150, 300, 300);
-        } else {
-            ctx.fillStyle = '#111';
-            ctx.fillRect(-150, -150, 300, 300);
-        }
+        ctx.fillStyle = '#111';
+        ctx.fillRect(-150, -150, 300, 300);
     }
     ctx.restore();
   };

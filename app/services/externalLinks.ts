@@ -11,34 +11,53 @@
  * the ones inside news items, so nothing has to remember to be special.
  */
 
-type Opener = { openUrl?: (url: string) => Promise<void> };
-type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
-
-function bridge(): { opener?: Opener; core?: { invoke?: Invoke } } | null {
-  return (window as unknown as { __TAURI__?: { opener?: Opener; core?: { invoke?: Invoke } } }).__TAURI__ ?? null;
-}
+import { invoke, isTauri } from '@tauri-apps/api/core';
 
 /** True inside the desktop shell. */
 export function isDesktop(): boolean {
-  return Boolean(bridge());
+  return isTauri();
 }
 
 /** Opens one URL wherever it belongs. */
 export async function openExternal(url: string): Promise<void> {
-  const tauri = bridge();
-  // Two ways in, because which one exists depends on how the shell is built:
-  // the plugin's own binding, or the command behind it.
-  const open = tauri?.opener?.openUrl;
-  if (open) {
-    await open(url).catch(() => fallback(url));
-    return;
-  }
-  const invoke = tauri?.core?.invoke;
-  if (invoke) {
-    await invoke('plugin:opener|open_url', { url }).catch(() => fallback(url));
+  if (isTauri()) {
+    await invoke('plugin:opener|open_url', { url });
     return;
   }
   fallback(url);
+}
+
+/** Protected/blob media cannot be handed to another browser context. */
+export function canOpenExternalAudioSource(source: string): boolean {
+  try {
+    const media = new URL(source, window.location.href);
+    return media.protocol !== 'blob:'
+      && !['/v1/', '/setup/', '/engine/'].some(prefix => media.pathname.startsWith(prefix));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opens the bundled editor only when its input can be fetched without the
+ * private Studio session header. A system browser cannot inherit the Tauri
+ * webview's in-memory token, and putting that token in this URL is forbidden.
+ */
+export async function openExternalAudioEditor(url: string): Promise<void> {
+  try {
+    const editor = new URL(url, window.location.href);
+    const source = editor.searchParams.get('audioUrl');
+    if (!source) throw new Error('missing audio source');
+    const media = new URL(source, editor.origin);
+    if (!canOpenExternalAudioSource(media.href)) {
+      window.alert('Protected Studio media is not available in the external audio editor yet.');
+      return;
+    }
+  } catch {
+    window.alert('This audio source cannot be opened safely in the external editor.');
+    return;
+  }
+  await openExternal(url);
 }
 
 function fallback(url: string): void {

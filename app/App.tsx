@@ -70,6 +70,26 @@ import { StudioToolsPanel } from './components/StudioToolsPanel';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
 
 const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
+const SUBMISSION_UNKNOWN_MESSAGE = '提交状态未知，禁止自动重试；请恢复查询或人工确认后再处理。';
+const CANCEL_RECOVERY_MESSAGE = '远程任务未确认取消，已保留恢复卡；请继续查询，禁止重新提交。';
+const POLL_BASE_DELAY_MS = 1500;
+const POLL_MAX_DELAY_MS = 30_000;
+
+type ActiveMusicJob = {
+  tempId: string;
+  pollInterval?: ReturnType<typeof setTimeout>;
+  submissionUnknown?: boolean;
+};
+
+type CancelJobResult = {
+  ok: boolean;
+  message?: string;
+};
+
+function isSubmissionUnknown(job: Pick<Music3Job, 'status' | 'phase'>): boolean {
+  const phase = typeof job.phase === 'string' ? job.phase.toLowerCase() : '';
+  return job.status === 'unknown' || phase === 'unknown' || phase === 'submission_unknown';
+}
 
 function loadNativeLikedSongIds(): Set<string> {
   try {
@@ -152,7 +172,7 @@ function AppContent() {
   }, []);
 
   // Track multiple concurrent generation jobs
-  const activeJobsRef = useRef<Map<string, { tempId: string; pollInterval: ReturnType<typeof setInterval> }>>(new Map());
+  const activeJobsRef = useRef<Map<string, ActiveMusicJob>>(new Map());
   const nativeReplayPollersRef = useRef<Map<string, ReturnType<typeof window.setInterval>>>(new Map());
   const [activeJobCount, setActiveJobCount] = useState(0);
 
@@ -413,7 +433,7 @@ function AppContent() {
     return () => {
       // Clear all polling intervals when component unmounts
       activeJobsRef.current.forEach(({ pollInterval }) => {
-        clearInterval(pollInterval);
+        if (pollInterval !== undefined) clearInterval(pollInterval);
       });
       activeJobsRef.current.clear();
     };
@@ -658,6 +678,11 @@ function AppContent() {
 
     return () => {
       audio.pause();
+      const objectUrl = audio.dataset.studioObjectUrl;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        delete audio.dataset.studioObjectUrl;
+      }
       audio.removeEventListener('timeupdate', onTimeUpdate);
       audio.removeEventListener('loadedmetadata', onLoadedMetadata);
       audio.removeEventListener('canplay', onCanPlay);
@@ -688,9 +713,27 @@ function AppContent() {
 
     if (currentSongIdRef.current !== currentSong.id) {
       currentSongIdRef.current = currentSong.id;
-      audio.src = currentSong.audioUrl;
-      audio.load();
-      if (isPlaying) playAudio();
+      const expectedId = currentSong.id;
+      void fetch(currentSong.audioUrl)
+        .then(response => response.ok ? response.blob() : Promise.reject(new Error(`Audio request failed (${response.status})`)))
+        .then(blob => {
+          const objectUrl = URL.createObjectURL(blob);
+          if (currentSongIdRef.current !== expectedId) {
+            URL.revokeObjectURL(objectUrl);
+            return;
+          }
+          const previous = audio.dataset.studioObjectUrl;
+          if (previous) URL.revokeObjectURL(previous);
+          audio.dataset.studioObjectUrl = objectUrl;
+          audio.src = objectUrl;
+          audio.load();
+          if (isPlaying) void playAudio();
+        })
+        .catch((reason) => {
+          if (reason instanceof Error && reason.name === 'AbortError') return;
+          console.error('Authenticated audio load failed.');
+          setIsPlaying(false);
+        });
     } else {
       if (isPlaying) playAudio();
       else audio.pause();
@@ -739,7 +782,7 @@ function AppContent() {
   const cleanupJob = useCallback((jobId: string, tempId: string) => {
     const jobData = activeJobsRef.current.get(jobId);
     if (jobData) {
-      clearInterval(jobData.pollInterval);
+      if (jobData.pollInterval !== undefined) clearInterval(jobData.pollInterval);
       activeJobsRef.current.delete(jobId);
     }
 
@@ -768,11 +811,21 @@ function AppContent() {
   /// One handler for both card kinds: a pre-flight placeholder only has a
   /// tempId (no engine job yet, so there is nothing to cancel remotely), while
   /// a submitted card carries the mm-server job id.
-  const stopEngineJob = useCallback(async (jobId: string) => {
+  const stopEngineJob = useCallback(async (jobId: string): Promise<CancelJobResult> => {
     try {
-      await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`, { method: 'POST' });
+      const response = await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`, { method: 'POST' });
+      if (response.ok) return { ok: true };
+      const body = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      return {
+        ok: false,
+        message: body.message || body.error || `Cancel request failed (${response.status})`,
+      };
     } catch (error) {
-      console.error('Cancel request failed:', error);
+      console.error('Cancel request failed.');
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Cancel request failed',
+      };
     }
   }, []);
 
@@ -787,10 +840,19 @@ function AppContent() {
       return;
     }
 
-    await stopEngineJob(id);
+    const cancelled = await stopEngineJob(id);
     const jobData = activeJobsRef.current.get(id);
+    if (!cancelled.ok) {
+      if (jobData) {
+        setSongs(prev => prev.map(song => song.id === jobData.tempId
+          ? { ...song, isGenerating: true, stage: CANCEL_RECOVERY_MESSAGE }
+          : song));
+      }
+      showToast(cancelled.message || CANCEL_RECOVERY_MESSAGE, 'error');
+      return;
+    }
     if (jobData) {
-      clearInterval(jobData.pollInterval);
+      if (jobData.pollInterval !== undefined) clearInterval(jobData.pollInterval);
       activeJobsRef.current.delete(id);
       setActiveJobCount(activeJobsRef.current.size);
       if (activeJobsRef.current.size === 0) setIsGenerating(false);
@@ -816,8 +878,15 @@ function AppContent() {
       return;
     }
 
-    await stopEngineJob(id);
-    clearInterval(jobData.pollInterval);
+    const cancelled = await stopEngineJob(id);
+    if (!cancelled.ok) {
+      setSongs(prev => prev.map(song => song.id === jobData.tempId
+        ? { ...song, isGenerating: true, stage: CANCEL_RECOVERY_MESSAGE }
+        : song));
+      showToast(cancelled.message || CANCEL_RECOVERY_MESSAGE, 'error');
+      return;
+    }
+    if (jobData.pollInterval !== undefined) clearInterval(jobData.pollInterval);
     activeJobsRef.current.delete(id);
     setSongs(prev => prev.filter(song => song.id !== jobData.tempId));
     setActiveJobCount(activeJobsRef.current.size);
@@ -826,19 +895,34 @@ function AppContent() {
   }, [drainQueueWaiters, stopEngineJob]);
 
   const cancelAllGenerations = useCallback(async () => {
+    const preflightIds = new Set(preflightAbortersRef.current.keys());
     preflightAbortersRef.current.forEach(aborter => aborter.abort());
     preflightAbortersRef.current.clear();
 
     const running = [...activeJobsRef.current.entries()];
-    await Promise.all(running.map(([jobId]) => stopEngineJob(jobId)));
-    running.forEach(([, { pollInterval }]) => clearInterval(pollInterval));
-    const tempIds = new Set(running.map(([, job]) => job.tempId));
-    activeJobsRef.current.clear();
-    setSongs(prev => prev.filter(song => !tempIds.has(song.id) && !(song.isGenerating && !song.jobId)));
-    setActiveJobCount(0);
-    setIsGenerating(false);
+    const results = await Promise.all(running.map(async ([jobId, job]) => ({
+      jobId,
+      job,
+      result: await stopEngineJob(jobId),
+    })));
+    const cancelled = results.filter(item => item.result.ok);
+    const retained = results.filter(item => !item.result.ok);
+    cancelled.forEach(({ jobId, job: { pollInterval } }) => {
+      if (pollInterval !== undefined) clearInterval(pollInterval);
+      activeJobsRef.current.delete(jobId);
+    });
+    const cancelledTempIds = new Set(cancelled.map(item => item.job.tempId));
+    const retainedTempIds = new Set(retained.map(item => item.job.tempId));
+    setSongs(prev => prev
+      .filter(song => !cancelledTempIds.has(song.id) && !preflightIds.has(song.id))
+      .map(song => retainedTempIds.has(song.id)
+        ? { ...song, isGenerating: true, stage: CANCEL_RECOVERY_MESSAGE }
+        : song));
+    setActiveJobCount(activeJobsRef.current.size);
+    setIsGenerating(activeJobsRef.current.size > 0);
     drainQueueWaiters();
     setPendingClickCount(0);
+    if (retained.length > 0) showToast(CANCEL_RECOVERY_MESSAGE, 'error');
   }, [drainQueueWaiters, stopEngineJob]);
 
   const resetGeneration = cancelAllGenerations;
@@ -855,46 +939,125 @@ function AppContent() {
   const beginPollingJob = useCallback((jobId: string, tempId: string) => {
     if (activeJobsRef.current.has(jobId)) return;
 
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`);
-        if (!response.ok) throw new Error(`Job status request failed (${response.status})`);
-        const job: Music3Job = await response.json();
+    let consecutiveFailures = 0;
+    activeJobsRef.current.set(jobId, { tempId });
 
-        // The stage is not set from this per-job status: mm-server reports
-        // every queued job as "running", so trusting it here would light every
-        // card up as generating. The engine-log poll has the global view - it
-        // knows which single job the engine is actually rendering - and owns the
-        // generating-vs-waiting distinction. This poll only reacts to the
-        // terminal states below.
-        void job;
+    const schedulePoll = (delayMs: number) => {
+      const pollInterval = window.setTimeout(async () => {
+        const activeJob = activeJobsRef.current.get(jobId);
+        if (!activeJob || activeJob.tempId !== tempId) return;
+        try {
+          const response = await fetch(`/v1/music/jobs/${encodeURIComponent(jobId)}`);
+          if (!response.ok) throw new Error(`Job status request failed (${response.status})`);
+          const job: Music3Job = await response.json();
+          consecutiveFailures = 0;
 
-        if (job.status === 'completed') {
-          cleanupJob(jobId, tempId);
-          setSongs(prev => prev.filter(song => song.id !== tempId));
-          await refreshSongsList();
-          const finished = job.songs?.[0] ?? job.song;
-          if (finished?.id) setSelectedSong(current => current?.id === tempId ? null : current);
-          showToast(job.songs && job.songs.length > 1
-            ? `${job.songs.length} ${t('tracksReady') || 'tracks ready'}`
-            : (t('trackReady') || 'Track ready'));
-          if (window.innerWidth < 768) setMobileShowList(true);
-        } else if (job.status === 'failed' || job.status === 'cancelled') {
-          cleanupJob(jobId, tempId);
-          setSongs(prev => prev.filter(song => song.id !== tempId));
-          showToast(job.message || `${t('generationFailed')}`, job.status === 'failed' ? 'error' : 'info');
+          if (isSubmissionUnknown(job)) {
+            activeJobsRef.current.set(jobId, { tempId, submissionUnknown: true });
+            setSongs(prev => prev.map(song => song.id === tempId
+              ? {
+                ...song,
+                jobId,
+                isGenerating: true,
+                stage: SUBMISSION_UNKNOWN_MESSAGE,
+                progress: undefined,
+                queuePosition: undefined,
+              }
+              : song));
+            showToast(SUBMISSION_UNKNOWN_MESSAGE, 'error');
+            return;
+          }
+
+          if (job.status === 'completed') {
+            cleanupJob(jobId, tempId);
+            setSongs(prev => prev.filter(song => song.id !== tempId));
+            await refreshSongsList();
+            const finished = job.songs?.[0] ?? job.song;
+            if (finished?.id) setSelectedSong(current => current?.id === tempId ? null : current);
+            showToast(job.songs && job.songs.length > 1
+              ? `${job.songs.length} ${t('tracksReady') || 'tracks ready'}`
+              : (t('trackReady') || 'Track ready'));
+            if (window.innerWidth < 768) setMobileShowList(true);
+            return;
+          }
+          if (job.status === 'failed' || job.status === 'cancelled') {
+            cleanupJob(jobId, tempId);
+            setSongs(prev => prev.filter(song => song.id !== tempId));
+            showToast(job.message || `${t('generationFailed')}`, job.status === 'failed' ? 'error' : 'info');
+            return;
+          }
+          schedulePoll(POLL_BASE_DELAY_MS);
+        } catch (error) {
+          consecutiveFailures += 1;
+          const retryDelay = Math.min(
+            POLL_BASE_DELAY_MS * (2 ** (consecutiveFailures - 1)),
+            POLL_MAX_DELAY_MS,
+          );
+          console.error(`Polling temporarily unavailable for job ${jobId}.`);
+          setSongs(prev => prev.map(song => song.id === tempId
+            ? { ...song, isGenerating: true, stage: `状态查询暂时失败，${Math.ceil(retryDelay / 1000)} 秒后继续恢复查询。` }
+            : song));
+          if (consecutiveFailures === 1) {
+            showToast(error instanceof Error ? error.message : 'Job status is temporarily unavailable', 'error');
+          }
+          schedulePoll(retryDelay);
         }
-      } catch (error) {
-        console.error(`Polling error for job ${jobId}:`, error);
-        cleanupJob(jobId, tempId);
-        setSongs(prev => prev.filter(song => song.id !== tempId));
-        showToast(error instanceof Error ? error.message : String(error), 'error');
-      }
-    }, 1500);
+      }, delayMs);
+      const current = activeJobsRef.current.get(jobId);
+      if (current) activeJobsRef.current.set(jobId, { ...current, pollInterval });
+    };
 
-    activeJobsRef.current.set(jobId, { tempId, pollInterval });
+    schedulePoll(POLL_BASE_DELAY_MS);
     setActiveJobCount(activeJobsRef.current.size);
   }, [cleanupJob, refreshSongsList, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch('/v1/music/jobs');
+        if (!response.ok) return;
+        const jobs: Music3Job[] = await response.json();
+        const recoverable = jobs.filter(job =>
+          job.id.startsWith('omnibridge-')
+          && ['queued', 'running', 'unknown'].includes(job.status),
+        );
+        if (cancelled || recoverable.length === 0) return;
+        setSongs(previous => {
+          const knownJobIds = new Set(previous.map(song => song.jobId).filter(Boolean));
+          const recovered = recoverable
+            .filter(job => !knownJobIds.has(job.id))
+            .map(job => ({
+              id: `recovered-${job.id}`,
+              jobId: job.id,
+              title: job.title?.trim() || t('generating') || 'Generating...',
+              lyrics: job.lyrics || '',
+              style: job.caption || '',
+              coverUrl: '',
+              duration: '--:--',
+              createdAt: new Date(),
+              isGenerating: true,
+              stage: isSubmissionUnknown(job) ? SUBMISSION_UNKNOWN_MESSAGE : job.message,
+              tags: ['music3'],
+            } satisfies Song));
+          return [...recovered, ...previous];
+        });
+        recoverable.forEach(job => {
+          const tempId = `recovered-${job.id}`;
+          if (isSubmissionUnknown(job)) {
+            activeJobsRef.current.set(job.id, { tempId, submissionUnknown: true });
+          } else {
+            beginPollingJob(job.id, tempId);
+          }
+        });
+        setActiveJobCount(activeJobsRef.current.size);
+        setIsGenerating(activeJobsRef.current.size > 0);
+      } catch {
+        // Startup recovery is retried on the next launch; never resubmit.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [beginPollingJob, t]);
 
   /// mm-server reports a phase, not a percentage, but its log ring counts the
   /// autoregressive frames and the flow-matching steps. Reading that gives the
@@ -935,13 +1098,17 @@ function AppContent() {
         // the oldest still-generating song is actually being worked on; the rest
         // wait at nought.
         setSongs(prev => {
-          const generating = prev.filter(song => song.isGenerating && song.jobId);
+          const generating = prev.filter(song =>
+            song.isGenerating
+            && song.jobId
+            && !activeJobsRef.current.get(song.jobId)?.submissionUnknown);
           if (generating.length === 0) return prev;
           const active = generating.reduce((oldest, song) =>
             (song.createdAt?.getTime() ?? 0) < (oldest.createdAt?.getTime() ?? 0) ? song : oldest,
           );
           return prev.map(song => {
             if (!song.isGenerating || !song.jobId) return song;
+            if (activeJobsRef.current.get(song.jobId)?.submissionUnknown) return song;
             if (song.id === active.id) return { ...song, progress, stage: stage ?? song.stage };
             return { ...song, progress: 0, stage: 'stageWaitingInQueue' };
           });
@@ -978,26 +1145,66 @@ function AppContent() {
     }
 
     setIsGenerating(true);
+    const clientRequestId = tempId;
+    const recoveryJobId = `omnibridge-${clientRequestId}`;
+    setSongs(prev => prev.map(song => song.id === tempId ? { ...song, jobId: recoveryJobId } : song));
+    let rejectionMessage: string | null = null;
     try {
       const { _tempId, ...request } = params;
       const response = await fetch('/v1/music/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
+        body: JSON.stringify({ ...request, client_request_id: clientRequestId }),
       });
       const job: Music3Job & { error?: string; message?: string } = await response.json().catch(() => ({}) as Music3Job);
       if (!response.ok || job.status === 'failed') {
-        throw new Error(job.message || job.error || `Music3 rejected this request (${response.status})`);
+        rejectionMessage = job.message || job.error || `Music3 rejected this request (${response.status})`;
+        throw new Error(rejectionMessage);
       }
+      if (!job.id) throw new Error('Music3 submission response did not contain a recovery handle.');
       setSongs(prev => prev.map(song => song.id === tempId ? { ...song, jobId: job.id } : song));
+      if (isSubmissionUnknown(job)) {
+        activeJobsRef.current.set(job.id, { tempId, submissionUnknown: true });
+        setActiveJobCount(activeJobsRef.current.size);
+        setSongs(prev => prev.map(song => song.id === tempId
+          ? {
+            ...song,
+            isGenerating: true,
+            stage: SUBMISSION_UNKNOWN_MESSAGE,
+            progress: undefined,
+            queuePosition: undefined,
+          }
+          : song));
+        decrementPendingClicks(1);
+        showToast(SUBMISSION_UNKNOWN_MESSAGE, 'error');
+        return;
+      }
       beginPollingJob(job.id, tempId);
       decrementPendingClicks(1);
     } catch (error) {
-      console.error('Generation error:', error);
-      setSongs(prev => prev.filter(song => song.id !== tempId));
+      if (rejectionMessage) {
+        console.error('Generation request was rejected.');
+        setSongs(prev => prev.filter(song => song.id !== tempId));
+        if (activeJobsRef.current.size === 0) setIsGenerating(false);
+        showToast(rejectionMessage, 'error');
+        decrementPendingClicks(1);
+        return;
+      }
+      console.error('Generation submission result is unknown; automatic replay is disabled.');
+      beginPollingJob(recoveryJobId, tempId);
+      setActiveJobCount(activeJobsRef.current.size);
+      setSongs(prev => prev.map(song => song.id === tempId
+        ? {
+          ...song,
+          jobId: recoveryJobId,
+          isGenerating: true,
+          stage: SUBMISSION_UNKNOWN_MESSAGE,
+          progress: undefined,
+          queuePosition: undefined,
+        }
+        : song));
       decrementPendingClicks(1);
-      if (activeJobsRef.current.size === 0) setIsGenerating(false);
-      showToast(error instanceof Error ? error.message : t('generationFailed'), 'error');
+      showToast(SUBMISSION_UNKNOWN_MESSAGE, 'error');
     }
   };
 

@@ -3,8 +3,8 @@ import { Check, Copy, Download, FileAudio, Loader2, Music, Play, RefreshCw, Scis
 import { useI18n } from '../context/I18nContext';
 import { DevicePicker } from './DevicePicker';
 import { transcribeWithNativeOpenRouter } from '../services/nativeOpenRouter';
-import { apiUrl } from '../services/apiBase';
-import { openExternal } from '../services/externalLinks';
+import { apiUrl, authenticatedObjectUrl } from '../services/apiBase';
+import { openExternalAudioEditor } from '../services/externalLinks';
 import { StemPlayer } from './StemPlayer';
 
 /**
@@ -378,14 +378,24 @@ export function StudioToolsPanel({ initialSongId }: { initialSongId?: string | n
                     <div className="min-w-0 flex-1">
                       <StemPlayer src={url} label={t(`stem_${stem}` as never) || stem} />
                     </div>
-                    <a
-                      href={url}
-                      download={`${songs.find(song => song.id === songId)?.title ?? 'track'} - ${stem}.wav`}
+                    <button
+                      type="button"
+                      onClick={() => void (async () => {
+                        const objectUrl = await authenticatedObjectUrl(url);
+                        try {
+                          const anchor = document.createElement('a');
+                          anchor.href = objectUrl;
+                          anchor.download = `${songs.find(song => song.id === songId)?.title ?? 'track'} - ${stem}.wav`;
+                          anchor.click();
+                        } finally {
+                          URL.revokeObjectURL(objectUrl);
+                        }
+                      })()}
                       className="shrink-0 text-zinc-400 hover:text-pink-500"
                       title={t('download')}
                     >
                       <Download size={15} />
-                    </a>
+                    </button>
                   </div>
                 );
               })}
@@ -409,7 +419,7 @@ export function StudioToolsPanel({ initialSongId }: { initialSongId?: string | n
               onClick={() => {
                 if (!songId) return;
                 const url = apiUrl(`/v1/library/media/${encodeURIComponent(songId)}`);
-                void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`));
+                void openExternalAudioEditor(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`));
               }}
               disabled={!songId}
               className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 hover:border-pink-400 hover:text-pink-600 disabled:opacity-50 dark:border-white/15 dark:text-zinc-200"
@@ -422,7 +432,7 @@ export function StudioToolsPanel({ initialSongId }: { initialSongId?: string | n
                 type="button"
                 onClick={() => {
                   const url = apiUrl(`/v1/library/songs/${encodeURIComponent(songId)}/stems/${stem}`);
-                  void openExternal(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`));
+                  void openExternalAudioEditor(apiUrl(`/editor/index.html?audioUrl=${encodeURIComponent(url)}`));
                 }}
                 className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/10 dark:text-zinc-300"
               >

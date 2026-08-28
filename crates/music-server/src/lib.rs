@@ -20,6 +20,8 @@ mod skill;
 mod library;
 mod mm_result;
 mod openrouter_stream;
+mod omnibridge;
+mod security;
 
 use std::{collections::HashMap, env, fs, net::SocketAddr, path::PathBuf, sync::Arc};
 use anyhow::Context;
@@ -28,7 +30,8 @@ use futures_util::StreamExt;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, State},
     body::Body,
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    middleware,
     routing::{get, post},
     Json, Router,
 };
@@ -37,9 +40,37 @@ use model_manager::{InstallRequest, ModelManager};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 const PRIMARY_MUSIC_ENGINE_ID: &str = "minimaxmusic-cpp";
+const JSON_BODY_LIMIT: usize = 2 * 1024 * 1024;
+const COVER_BODY_LIMIT: usize = 32 * 1024 * 1024;
+const AUDIO_BODY_LIMIT: usize = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MusicExecutionTarget {
+    Configuration,
+    OmniBridge,
+}
+
+fn music_execution_target() -> Result<MusicExecutionTarget, String> {
+    match env::var("MUSIC_MAKER_MUSIC_EXECUTION_TARGET")
+        .unwrap_or_else(|_| "configuration".to_owned())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "configuration" | "legacy" => Ok(MusicExecutionTarget::Configuration),
+        "omnibridge" => Ok(MusicExecutionTarget::OmniBridge),
+        _ => Err("MUSIC_MAKER_MUSIC_EXECUTION_TARGET must be configuration or omnibridge".to_owned()),
+    }
+}
+
+/// Returned only through the in-process Tauri command. The HTTP API never
+/// exposes this value and the type's Debug representation is redacted.
+pub fn desktop_session_token() -> String {
+    security::SessionToken::global().expose_for_desktop_bridge()
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -52,6 +83,7 @@ struct AppState {
     settings_path: PathBuf,
     openrouter_catalog: Arc<RwLock<OpenRouterCatalogState>>,
     library: library::Library,
+    omnibridge_store: Arc<tokio::sync::Mutex<omnibridge::OmniBridgeMusicStore>>,
     /// Owned local engine process, when this service started one.
     engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
     engine_options: Arc<RwLock<EngineOptions>>,
@@ -86,6 +118,8 @@ struct MmServerClient {
 
 #[derive(Debug, Clone, Deserialize)]
 struct CreateMusicJobRequest {
+    #[serde(default)]
+    client_request_id: Option<String>,
     caption: String,
     lyrics: String,
     duration_seconds: f64,
@@ -138,6 +172,7 @@ enum MusicJobStatus {
     Completed,
     Failed,
     Cancelled,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +181,7 @@ enum MusicJobDispatch {
     NotConfigured,
     Local,
     OpenRouter,
+    OmniBridge,
     Cancelled,
 }
 
@@ -157,6 +193,7 @@ enum MusicJobPhase {
     Completed,
     Failed,
     Cancelled,
+    SubmissionUnknown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -430,6 +467,15 @@ struct OpenRouterResponse {
 /// in-process, so a release is a single executable rather than a launcher that
 /// has to start a second binary and keep it alive.
 pub async fn serve() -> anyhow::Result<()> {
+    let address = SocketAddr::from(([127, 0, 0, 1], listen_port()));
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    serve_with_listener(listener).await
+}
+
+/// Runs the service on a listener whose ownership has already been established.
+/// The desktop shell binds synchronously before exposing its session credential,
+/// so an unrelated process cannot win the loopback-port race and impersonate it.
+pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::Result<()> {
     let settings_path = studio_settings_path();
     let persisted = load_studio_settings(&settings_path);
     let model_manager = ModelManager::from_environment()?;
@@ -445,11 +491,14 @@ pub async fn serve() -> anyhow::Result<()> {
             .and_then(|settings| settings.selected_profile_id.clone())
             .or_else(|| Some(presets::recommended_local_profile().into()))
     };
+    let data_root = studio_data_root().unwrap_or_else(|| PathBuf::from("."));
+    let omnibridge_store = omnibridge::OmniBridgeMusicStore::new(data_root.join("omnibridge").join("music-jobs.json"));
+    let restored_jobs = restore_omnibridge_jobs(&omnibridge_store)?;
     let state = AppState {
         configuration: Arc::new(RwLock::new(sanitize_persisted_configuration(
             persisted.as_ref().map(|settings| settings.configuration.clone()).unwrap_or_else(initial_configuration),
         ))),
-        jobs: Arc::new(RwLock::new(HashMap::new())),
+        jobs: Arc::new(RwLock::new(restored_jobs)),
         music_server: MmServerClient::from_environment(),
         model_manager,
         cover_templates: Arc::new(RwLock::new(
@@ -478,6 +527,7 @@ pub async fn serve() -> anyhow::Result<()> {
         settings_path,
         openrouter_catalog: Arc::new(RwLock::new(OpenRouterCatalogState::default())),
         library: library::Library::open_default()?,
+        omnibridge_store: Arc::new(tokio::sync::Mutex::new(omnibridge_store)),
         engine: Arc::new(tokio::sync::Mutex::new(None)),
         engine_options: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.engine_options).unwrap_or_default())),
         engine_runtime: Arc::new(engine_runtime::EngineRuntime::new(&engine_bundle_root())),
@@ -493,8 +543,34 @@ pub async fn serve() -> anyhow::Result<()> {
         )),
     };
 
+    let session_token = security::SessionToken::global();
+    let mut allowed_origins = vec![
+        HeaderValue::from_static("http://tauri.localhost"),
+        HeaderValue::from_static("https://tauri.localhost"),
+        HeaderValue::from_static("tauri://localhost"),
+        HeaderValue::from_static("http://127.0.0.1:8765"),
+    ];
+    let allow_dev_origins = cfg!(debug_assertions)
+        || env::var("MINIMAX_STUDIO_ALLOW_DEV_ORIGINS").as_deref() == Ok("1");
+    if allow_dev_origins {
+        allowed_origins.extend([
+            HeaderValue::from_static("http://127.0.0.1:3000"),
+            HeaderValue::from_static("http://localhost:3000"),
+        ]);
+    }
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed_origins))
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+        .allow_headers([
+            header::ACCEPT,
+            header::CONTENT_TYPE,
+            header::HeaderName::from_static("x-studio-session"),
+        ])
+        .expose_headers([header::CONTENT_LENGTH, header::CONTENT_TYPE]);
+
     let app = Router::new()
         .route("/health", get(health))
+        .route("/v1/integrations/omnibridge", get(omnibridge_integration_status))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/configuration", get(configuration).put(update_configuration))
         .route("/engine/presets", get(engine_presets))
@@ -523,7 +599,10 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/library/songs/{id}/karaoke", post(create_song_karaoke).delete(delete_song_karaoke))
         .route("/v1/openrouter/catalog", get(openrouter_catalog))
         .route("/v1/openrouter/catalog/refresh", post(refresh_openrouter_catalog))
-        .route("/v1/openrouter/transcriptions", post(create_openrouter_transcription))
+        .route(
+            "/v1/openrouter/transcriptions",
+            post(create_openrouter_transcription).layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT)),
+        )
         .route("/v1/openrouter/covers", post(create_openrouter_cover))
         .route("/editor", get(|| async { axum::response::Redirect::permanent("/editor/index.html") }))
         .route("/editor/{*path}", get(editor_asset))
@@ -542,10 +621,16 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/v1/cover-templates/render", post(render_cover_template))
         .route("/v1/openrouter/completions", post(create_openrouter_completion))
         .route("/v1/library/songs", get(library_songs).post(create_library_song))
-        .route("/v1/library/import", post(import_library_audio))
+        .route(
+            "/v1/library/import",
+            post(import_library_audio).layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT)),
+        )
         .route("/v1/library/songs/{id}", get(library_song).put(update_library_song).delete(delete_library_song))
         .route("/v1/library/media/{song_id}", get(library_media))
-        .route("/v1/library/songs/{id}/cover", get(library_cover).put(store_library_cover))
+        .route(
+            "/v1/library/songs/{id}/cover",
+            get(library_cover).put(store_library_cover).layer(DefaultBodyLimit::max(COVER_BODY_LIMIT)),
+        )
         .route("/v1/library/playlists", get(library_playlists).post(create_library_playlist))
         .route("/v1/library/playlists/{id}", get(library_playlist).put(update_library_playlist).delete(delete_library_playlist))
         .route("/setup/status", get(setup_status))
@@ -557,19 +642,19 @@ pub async fn serve() -> anyhow::Result<()> {
         .route("/setup/select", post(setup_select))
         .route("/setup/cancel", post(setup_cancel))
         .route("/v1/local-models/music", get(local_music_model_catalog))
-        .route("/v1/music/jobs", post(create_music_job))
+        .route("/v1/music/jobs", get(list_music_jobs).post(create_music_job))
         .route("/v1/music/replay", post(replay_music_job))
         .route(
             "/v1/music/jobs/{job_id}",
             get(music_job_status).post(cancel_music_job),
         )
         .with_state(state.clone())
-        // Covers and imported audio are megabytes, not kilobytes. The default
-        // two-megabyte cap rejected a generated cover by dropping the
-        // connection, which reaches the interface as "Failed to fetch".
-        .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http());
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(
+            session_token,
+            security::require_session,
+        ))
+        .layer(cors);
 
     // The provider catalog is public and small; reading it once at startup
     // means the settings panel is right the first time it is opened, instead
@@ -622,8 +707,7 @@ pub async fn serve() -> anyhow::Result<()> {
         });
     }
 
-    let address = SocketAddr::from(([127, 0, 0, 1], listen_port()));
-    let listener = tokio::net::TcpListener::bind(address).await?;
+    let address = listener.local_addr()?;
     println!("music-server listening on http://{address}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
@@ -1737,7 +1821,15 @@ async fn store_library_cover(
     Ok(Json(song))
 }
 
-async fn create_library_song(State(state):State<AppState>,Json(input):Json<library::SongInput>)->Result<(StatusCode,Json<library::Song>),(StatusCode,Json<ApiError>)>{state.library.create_song(input).map(|s|(StatusCode::CREATED,Json(s))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))}
+async fn create_library_song(State(state):State<AppState>,Json(input):Json<library::SongInput>)->Result<(StatusCode,Json<library::Song>),(StatusCode,Json<ApiError>)>{
+    if input.audio_path.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "audio_path cannot be supplied through the JSON API; upload audio instead".into(),
+        ));
+    }
+    state.library.create_song(input).map(|s|(StatusCode::CREATED,Json(s))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))
+}
 async fn import_library_audio(State(state): State<AppState>, mut multipart: Multipart) -> Result<(StatusCode, Json<library::Song>), (StatusCode, Json<ApiError>)> {
     let mut title = None; let mut caption = String::new(); let mut lyrics = String::new(); let mut audio = None; let mut filename = None;
     while let Some(field) = multipart.next_field().await.map_err(|e| api_error(StatusCode::BAD_REQUEST, format!("read import form: {e}")))? {
@@ -1754,6 +1846,12 @@ async fn import_library_audio(State(state): State<AppState>, mut multipart: Mult
     Ok((StatusCode::CREATED, Json(song)))
 }
 async fn update_library_song(State(state):State<AppState>,Path(id):Path<String>,Json(input):Json<library::SongInput>)->Result<Json<library::Song>,(StatusCode,Json<ApiError>)>{
+    if input.audio_path.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "audio_path cannot be supplied through the JSON API; upload audio instead".into(),
+        ));
+    }
     let song = state.library.update_song(&id,input).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))?.ok_or_else(||api_error(StatusCode::NOT_FOUND,"Song not found".into()))?;
     // A rename is a title change, and the file carries the title.
     tag_stored_song(&state, &id).await;
@@ -1790,6 +1888,36 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
             "reachable": engine_ready,
         }
     }))
+}
+
+/// Reports only local integration readiness. It never calls a Provider and it
+/// never returns the Gateway credential. Route publication and real capability
+/// evidence must still be verified by OmniBridge before paid generation is enabled.
+async fn omnibridge_integration_status() -> Json<Value> {
+    match omnibridge::OmniBridgeConfig::from_env() {
+        Ok(config) => Json(serde_json::json!({
+            "schema": "music-maker.omnibridge-integration-status.v1",
+            "configured": true,
+            "contract_client": "temporary-rust-adapter",
+            "base_url": config.base_url,
+            "platform_id": config.platform_id,
+            "music_route": config.music_route,
+            "operation": "audio.music.generate",
+            "kind": "audio.music_generation",
+            "execution_target": format!("{:?}", music_execution_target().unwrap_or(MusicExecutionTarget::Configuration)).to_ascii_lowercase(),
+            "route_readiness": "unverified",
+            "real_generation_verified": false,
+        })),
+        Err(error) => Json(serde_json::json!({
+            "schema": "music-maker.omnibridge-integration-status.v1",
+            "configured": false,
+            "contract_client": "temporary-rust-adapter",
+            "error": error.to_string(),
+            "execution_target": format!("{:?}", music_execution_target().unwrap_or(MusicExecutionTarget::Configuration)).to_ascii_lowercase(),
+            "route_readiness": "not_ready",
+            "real_generation_verified": false,
+        })),
+    }
 }
 
 async fn configuration(State(state): State<AppState>) -> Json<StudioConfiguration> {
@@ -2473,44 +2601,17 @@ async fn system_resources() -> Json<Value> {
 /// response must actually be an image, so this cannot be used to reach local
 /// services or to pull arbitrary files.
 async fn proxy_image(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     axum::extract::Query(request): axum::extract::Query<ProxyImageRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let url = reqwest::Url::parse(&request.url)
-        .map_err(|error| api_error(StatusCode::BAD_REQUEST, format!("invalid image url: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(api_error(StatusCode::BAD_REQUEST, "only http and https images can be proxied".into()));
-    }
-    if url.host_str().is_some_and(|host| host == "localhost" || host.starts_with("127.") || host == "0.0.0.0" || host == "[::1]") {
-        return Err(api_error(StatusCode::BAD_REQUEST, "loopback addresses cannot be proxied".into()));
-    }
-    let response = state
-        .music_server
-        .http
-        .get(url)
-        .send()
+    let (content_type, bytes) = security::fetch_public_image(&request.url)
         .await
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("image request failed: {error}")))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(api_error(StatusCode::BAD_GATEWAY, format!("image request returned {status}")));
-    }
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
-    if !content_type.starts_with("image/") {
-        return Err(api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "the proxied url is not an image".into()));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("reading the image failed: {error}")))?;
+        .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(axum::response::Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, bytes.len())
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "private, max-age=300")
         .body(Body::from(bytes.to_vec()))
         .expect("valid image response"))
 }
@@ -2959,9 +3060,9 @@ async fn create_song_karaoke(
         .get_song(&id)
         .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "no such song".into()))?;
-    let audio = song
-        .audio_path
-        .clone()
+    let audio = state
+        .library
+        .media_path_for_song(&song)
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "this track has no audio to listen to".into()))?;
     if !auto_title::has_sung_lines(&song.lyrics) {
         return Err(api_error(StatusCode::BAD_REQUEST, "karaoke.instrumental".into()));
@@ -2973,15 +3074,14 @@ async fn create_song_karaoke(
         }
         lyrics_sync::AsrProvider::Parakeet => {
             let sync = state.lyrics_sync.clone();
-            let path = std::path::PathBuf::from(&audio);
-            tokio::task::spawn_blocking(move || sync.parakeet_words(&path))
+            tokio::task::spawn_blocking(move || sync.parakeet_words(&audio))
                 .await
                 .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         }
         lyrics_sync::AsrProvider::Whisper => {
             let sync = state.lyrics_sync.clone();
             let config = config.clone();
-            let path = std::path::PathBuf::from(&audio);
+            let path = audio;
             let language = request.language.clone();
             let lyrics = song.lyrics.clone();
             tokio::task::spawn_blocking(move || sync.whisper_words(&config, &path, language.as_deref(), &lyrics))
@@ -3782,6 +3882,15 @@ async fn create_music_job(
     State(state): State<AppState>,
     Json(request): Json<CreateMusicJobRequest>,
 ) -> (StatusCode, Json<MusicJob>) {
+    match music_execution_target() {
+        Ok(MusicExecutionTarget::OmniBridge) => {
+            return create_omnibridge_music_job(state, request).await;
+        }
+        Ok(MusicExecutionTarget::Configuration) => {}
+        Err(error) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, "configuration".into(), error)));
+        }
+    }
     let music_selection = state.configuration.read().await.selections.iter().find(|selection| selection.capability == Capability::MusicGeneration).cloned();
     if music_selection.as_ref().is_some_and(|selection| selection.mode == ExecutionMode::OpenRouter) {
         return create_openrouter_music_job(state, request, music_selection.and_then(|selection| selection.cloud_model)).await;
@@ -3832,6 +3941,12 @@ async fn create_music_job(
             (StatusCode::ACCEPTED, Json(job))
         }
     }
+}
+
+async fn list_music_jobs(State(state): State<AppState>) -> Json<Vec<MusicJob>> {
+    let mut jobs = state.jobs.read().await.values().cloned().collect::<Vec<_>>();
+    jobs.sort_by(|left, right| left.id.cmp(&right.id));
+    Json(jobs)
 }
 
 async fn replay_music_job(
@@ -3893,6 +4008,242 @@ fn prepare_replay_synthesis(mut replay: Value, overrides: &ReplayMusicJobRequest
         }
     }
     Ok(replay)
+}
+
+fn restore_omnibridge_jobs(
+    store: &omnibridge::OmniBridgeMusicStore,
+) -> Result<HashMap<String, MusicJob>, omnibridge::OmniBridgeError> {
+    let mut jobs = HashMap::new();
+    for mut record in store.list()? {
+        if matches!(record.submit_state(), omnibridge::DurableSubmitState::IntentPersisted)
+            && record.task_handle().is_none()
+        {
+            record = store.mark_submission_unknown(record.local_job_id())?;
+        }
+        if let Some(job) = music_job_from_durable_record(&record) {
+            jobs.insert(job.id.clone(), job);
+        }
+    }
+    Ok(jobs)
+}
+
+fn music_job_from_durable_record(record: &omnibridge::DurableMusicRecord) -> Option<MusicJob> {
+    let context = record.context()?.clone();
+    let (status, phase, message) = match record.submit_state() {
+        omnibridge::DurableSubmitState::IntentPersisted
+        | omnibridge::DurableSubmitState::SubmissionUnknown => (
+            MusicJobStatus::Unknown,
+            MusicJobPhase::SubmissionUnknown,
+            "OmniBridge submission outcome is unknown. This job will not be submitted again automatically.".to_owned(),
+        ),
+        omnibridge::DurableSubmitState::Rejected => (
+            MusicJobStatus::Failed,
+            MusicJobPhase::Failed,
+            "OmniBridge rejected this job before returning a task handle.".to_owned(),
+        ),
+        omnibridge::DurableSubmitState::Accepted => match record.status().unwrap_or("queued") {
+            "completed" | "succeeded" | "done" if record.imported_song_id().is_some() => (
+                MusicJobStatus::Completed, MusicJobPhase::Completed, "OmniBridge artifact was imported into the library.".to_owned(),
+            ),
+            "failed" | "dead_letter" => (MusicJobStatus::Failed, MusicJobPhase::Failed, "OmniBridge reported a failed job.".to_owned()),
+            "cancelled" => (MusicJobStatus::Cancelled, MusicJobPhase::Cancelled, "OmniBridge reported a cancelled job.".to_owned()),
+            "running" | "processing" => (MusicJobStatus::Running, MusicJobPhase::Running, "OmniBridge is processing this job.".to_owned()),
+            _ => (MusicJobStatus::Queued, MusicJobPhase::Queued, "OmniBridge accepted this job; recovery is GET-only.".to_owned()),
+        },
+    };
+    Some(MusicJob {
+        id: record.local_job_id().to_owned(), engine_id: "omnibridge".into(), cover_prompt: context.cover_prompt,
+        title: context.title, status, dispatch: MusicJobDispatch::OmniBridge, phase,
+        caption: context.caption, lyrics: context.lyrics, duration_seconds: context.duration_seconds,
+        generation_settings: context.generation_settings, song: None, songs: vec![], message,
+    })
+}
+
+async fn create_omnibridge_music_job(
+    state: AppState,
+    request: CreateMusicJobRequest,
+) -> (StatusCode, Json<MusicJob>) {
+    let engine_id = "omnibridge".to_owned();
+    let config = match omnibridge::OmniBridgeConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error.to_string()))),
+    };
+    if request.output_format.as_deref().is_some_and(|value| value != "mp3") {
+        return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, "OmniBridge Music currently verifies mp3 output only.".into())));
+    }
+    let client = match omnibridge::OmniBridgeMusicClient::new(config) {
+        Ok(client) => client,
+        Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error.to_string()))),
+    };
+    let submit = match client.music_request(request.caption.clone(), request.lyrics.clone()) {
+        Ok(submit) => submit,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error.to_string()))),
+    };
+    let client_request_id = request.client_request_id.as_deref().map(str::trim).unwrap_or_default();
+    if !valid_music_client_request_id(client_request_id) {
+        return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, "client_request_id is required for OmniBridge and must be a safe stable identifier.".into())));
+    }
+    let job_id = format!("omnibridge-{client_request_id}");
+    let idempotency_key = match omnibridge::IdempotencyKey::new(format!("music-maker:{client_request_id}:v1")) {
+        Ok(key) => key,
+        Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string()))),
+    };
+    let generation_settings = serde_json::to_value(&submit).unwrap_or(Value::Null);
+    let title = titled(&request);
+    let context = omnibridge::DurableMusicContext {
+        caption: request.caption.clone(), lyrics: request.lyrics.clone(), duration_seconds: request.duration_seconds,
+        title: Some(title.clone()), cover_prompt: request.cover_prompt.clone(), generation_settings: generation_settings.clone(),
+    };
+    let store = state.omnibridge_store.lock().await;
+    match store.get(&job_id) {
+        Ok(Some(record)) => {
+            let digest = match submit.payload_digest() {
+                Ok(digest) => digest,
+                Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error.to_string()))),
+            };
+            if record.payload_digest() != digest || record.idempotency_key() != &idempotency_key {
+                return (StatusCode::CONFLICT, Json(failed_request_job(request, engine_id, "client_request_id already owns a different OmniBridge intent.".into())));
+            }
+            let job = music_job_from_durable_record(&record).unwrap_or_else(|| failed_request_job(request, engine_id, "Stored OmniBridge intent has no recoverable context.".into()));
+            state.jobs.write().await.insert(job.id.clone(), job.clone());
+            return (StatusCode::ACCEPTED, Json(job));
+        }
+        Ok(None) => {}
+        Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string()))),
+    }
+    if let Err(error) = client.verify_contracts().await {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, format!("OmniBridge contract handshake failed before submit: {}", security::redact_secrets(error.to_string())))));
+    }
+    let prepared = store.prepare_intent(&job_id, &submit, idempotency_key.clone(), context);
+    if let Err(error) = prepared {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string())));
+    }
+    let mut job = MusicJob {
+        id: job_id.clone(), engine_id, cover_prompt: request.cover_prompt, title: Some(title),
+        status: MusicJobStatus::Queued, dispatch: MusicJobDispatch::OmniBridge, phase: MusicJobPhase::Queued,
+        caption: request.caption, lyrics: request.lyrics, duration_seconds: request.duration_seconds,
+        generation_settings, song: None, songs: vec![],
+        message: "OmniBridge intent persisted. The submit operation will run once.".into(),
+    };
+    state.jobs.write().await.insert(job_id.clone(), job.clone());
+    match client.submit_once(&submit, &idempotency_key).await {
+        Ok(handle) => {
+            let result = store.mark_accepted(&job_id, handle);
+            if let Err(error) = result {
+                job.status = MusicJobStatus::Unknown;
+                job.phase = MusicJobPhase::SubmissionUnknown;
+                job.message = format!("OmniBridge accepted the request but its private handle could not be durably stored: {}", security::redact_secrets(error.to_string()));
+            } else {
+                job.message = "OmniBridge accepted this job; all recovery is GET-only.".into();
+            }
+        }
+        Err(omnibridge::OmniBridgeError::SubmissionUnknown(_)) => {
+            let _ = store.mark_submission_unknown(&job_id);
+            job.status = MusicJobStatus::Unknown;
+            job.phase = MusicJobPhase::SubmissionUnknown;
+            job.message = "OmniBridge submission outcome is unknown. Automatic replay is blocked.".into();
+        }
+        Err(error) => {
+            let _ = store.mark_rejected(&job_id, "failed");
+            job.status = MusicJobStatus::Failed;
+            job.phase = MusicJobPhase::Failed;
+            job.message = security::redact_secrets(error.to_string());
+        }
+    }
+    state.jobs.write().await.insert(job_id, job.clone());
+    (StatusCode::ACCEPTED, Json(job))
+}
+
+fn valid_music_client_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value.len() <= 96
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || byte == b'-'
+                || byte == b'_'
+                || byte == b'.'
+                || byte == b':'
+        })
+}
+
+async fn poll_omnibridge_music_job(
+    state: &AppState,
+    existing: MusicJob,
+) -> Result<Json<MusicJob>, (StatusCode, Json<ApiError>)> {
+    let record = state.omnibridge_store.lock().await.get(&existing.id)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "OmniBridge job intent was not found.".into()))?;
+    if !matches!(record.submit_state(), omnibridge::DurableSubmitState::Accepted) {
+        return Ok(Json(music_job_from_durable_record(&record).unwrap_or(existing)));
+    }
+    if let Some(song_id) = record.imported_song_id() {
+        if let Some(song) = state.library.get_song(song_id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))? {
+            let completed = CompletedSong { id: song.id.clone(), audio_url: format!("/v1/library/media/{}", song.id), song };
+            let mut job = existing; job.status = MusicJobStatus::Completed; job.phase = MusicJobPhase::Completed;
+            job.song = Some(completed.clone()); job.songs = vec![completed]; job.message = "OmniBridge artifact was imported into the library.".into();
+            state.jobs.write().await.insert(job.id.clone(), job.clone()); return Ok(Json(job));
+        }
+    }
+    if !record.poll_is_due() { return Ok(Json(existing)); }
+    let handle = record.task_handle().cloned().ok_or_else(|| api_error(StatusCode::CONFLICT, "Accepted OmniBridge job has no recoverable handle.".into()))?;
+    let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env()
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?)
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
+    let remote = match client.get_status(&handle).await {
+        Ok(remote) => remote,
+        Err(omnibridge::OmniBridgeError::RateLimited(delay_ms)) => {
+            state.omnibridge_store.lock().await.defer_poll(&existing.id, delay_ms)
+                .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            let mut job = existing;
+            job.message = format!("OmniBridge asked this GET-only recovery poll to wait {} seconds.", delay_ms / 1000);
+            state.jobs.write().await.insert(job.id.clone(), job.clone());
+            return Ok(Json(job));
+        }
+        Err(error) => return Err(api_error(StatusCode::BAD_GATEWAY, error.to_string())),
+    };
+    let record = state.omnibridge_store.lock().await.update_status(&existing.id, &remote)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let mut job = existing;
+    match remote.status.as_str() {
+        "completed" | "succeeded" | "done" => {
+            let artifact = record.artifact().cloned().ok_or_else(|| api_error(StatusCode::BAD_GATEWAY, "Completed OmniBridge job has no verified audio artifact.".into()))?;
+            let bytes = match client.download_artifact(&handle, &artifact).await {
+                Ok(bytes) => bytes,
+                Err(omnibridge::OmniBridgeError::RateLimited(delay_ms)) => {
+                    state.omnibridge_store.lock().await.defer_poll(&job.id, delay_ms)
+                        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+                    job.message = format!("OmniBridge asked artifact recovery to wait {} seconds; recovery remains GET-only.", delay_ms / 1000);
+                    state.jobs.write().await.insert(job.id.clone(), job.clone());
+                    return Ok(Json(job));
+                }
+                Err(error) => return Err(api_error(StatusCode::BAD_GATEWAY, error.to_string())),
+            };
+            let extension = match artifact.content_type.split(';').next().unwrap_or_default() {
+                "audio/mpeg" => "mp3", "audio/wav" | "audio/x-wav" => "wav", "audio/mp4" => "m4a",
+                "audio/aac" => "aac", "audio/flac" => "flac", "audio/ogg" => "ogg",
+                _ => return Err(api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported OmniBridge artifact MIME.".into())),
+            };
+            let metadata = serde_json::json!({"duration_seconds":job.duration_seconds,"omnibridge_job_id":job.id,"artifact_sha256":artifact.sha256});
+            let imported = state.library.import_generated_song_idempotent(&job.id, library::GeneratedSongInput {
+                title: job.title.clone(), metadata, caption: job.caption.clone(), lyrics: job.lyrics.clone(),
+                generation_settings: job.generation_settings.clone(), replay_request: None, audio_codes: None,
+                engine_id: "omnibridge".into(), profile_id: None, source: "omnibridge_generation".into(), audio_extension: extension, audio: bytes,
+            }).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            state.omnibridge_store.lock().await.mark_imported(&job.id, imported.song.id.clone())
+                .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            let completed = CompletedSong { id: imported.song.id.clone(), audio_url: format!("/v1/library/media/{}", imported.song.id), song: imported.song };
+            job.status = MusicJobStatus::Completed; job.phase = MusicJobPhase::Completed; job.song = Some(completed.clone()); job.songs = vec![completed];
+            job.message = "OmniBridge completed this job; its verified artifact was imported exactly once.".into();
+        }
+        "running" | "processing" => { job.status = MusicJobStatus::Running; job.phase = MusicJobPhase::Running; job.message = "OmniBridge is processing this job.".into(); }
+        "failed" | "dead_letter" => { job.status = MusicJobStatus::Failed; job.phase = MusicJobPhase::Failed; job.message = "OmniBridge reported a failed job.".into(); }
+        "cancelled" => { job.status = MusicJobStatus::Cancelled; job.phase = MusicJobPhase::Cancelled; job.message = "OmniBridge reported a cancelled job.".into(); }
+        _ => { job.status = MusicJobStatus::Queued; job.phase = MusicJobPhase::Queued; job.message = "OmniBridge accepted this job; recovery remains GET-only.".into(); }
+    }
+    state.jobs.write().await.insert(job.id.clone(), job.clone());
+    Ok(Json(job))
 }
 
 async fn create_openrouter_music_job(state: AppState, request: CreateMusicJobRequest, model_id: Option<String>) -> (StatusCode, Json<MusicJob>) {
@@ -3977,6 +4328,9 @@ async fn music_job_status(
         .get(&job_id)
         .cloned()
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Music job was not found.".into()))?;
+    if existing.engine_id == "omnibridge" {
+        return poll_omnibridge_music_job(&state, existing).await;
+    }
     if existing.engine_id != PRIMARY_MUSIC_ENGINE_ID
         || matches!(existing.status, MusicJobStatus::Cancelled | MusicJobStatus::Failed)
     {
@@ -4094,6 +4448,19 @@ async fn cancel_music_job(
         .get(&job_id)
         .cloned()
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Music job was not found.".into()))?;
+    if existing.engine_id == "omnibridge" {
+        let record = state.omnibridge_store.lock().await.get(&job_id)
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "OmniBridge job intent was not found.".into()))?;
+        let handle = record.task_handle().ok_or_else(|| api_error(StatusCode::CONFLICT, "Submission outcome is unknown; cancellation cannot be proven safe.".into()))?;
+        let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env()
+            .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?)
+            .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
+        return match client.cancel_after_accept(handle) {
+            Err(error) => Err(api_error(StatusCode::CONFLICT, error.to_string())),
+            Ok(()) => Err(api_error(StatusCode::NOT_IMPLEMENTED, "OmniBridge cancel unexpectedly returned without a state.".into())),
+        };
+    }
     if existing.engine_id != PRIMARY_MUSIC_ENGINE_ID {
         return Err(api_error(
             StatusCode::NOT_IMPLEMENTED,
@@ -4450,7 +4817,7 @@ fn apply_remote_status(job: &mut MusicJob, remote_status: &str) {
 }
 
 fn api_error(status: StatusCode, error: String) -> (StatusCode, Json<ApiError>) {
-    (status, Json(ApiError { error }))
+    (status, Json(ApiError { error: security::redact_secrets(error) }))
 }
 
 #[cfg(test)]
@@ -4493,6 +4860,7 @@ mod tests {
     #[test]
     fn request_maps_only_confirmed_mm_server_fields() {
         let body = mm_request_from(&CreateMusicJobRequest {
+            client_request_id: None,
             cover_prompt: None,
             title: None,
             caption: "night drive".into(),
@@ -4532,6 +4900,7 @@ mod tests {
     #[test]
     fn request_rejects_legacy_audio_formats_not_supported_by_mm_server() {
         let error = mm_request_from(&CreateMusicJobRequest {
+            client_request_id: None,
             cover_prompt: None,
             title: None,
             caption: "night drive".into(),
@@ -4562,6 +4931,7 @@ mod tests {
     #[test]
     fn request_uses_confirmed_mm3_defaults_and_rejects_invalid_synth_batch() {
         let request = CreateMusicJobRequest {
+            client_request_id: None,
             cover_prompt: None,
             title: None,
             caption: "night drive".into(), lyrics: "[verse] one line".into(), duration_seconds: 60.0,
@@ -4632,6 +5002,7 @@ mod tests {
     fn remote_statuses_never_claim_success_for_an_unknown_value() {
         let mut job = queued_not_configured_job(
             CreateMusicJobRequest {
+                client_request_id: None,
                 cover_prompt: None,
                 title: None,
             caption: "night drive".into(),

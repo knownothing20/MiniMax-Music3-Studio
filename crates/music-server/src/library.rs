@@ -118,6 +118,39 @@ impl Library {
   if let Err(error)=self.save_song(&song){let _=fs::remove_file(&target);return Err(error.context("store generated song record"));}
   Ok(ImportedSong{song,audio_filename:filename})
  }
+ /// Publishes a generated artifact under a caller-owned stable id. Retrying
+ /// after a crash returns the same row/file and never creates a second song.
+ pub fn import_generated_song_idempotent(&self,id:&str,input:GeneratedSongInput)->Result<ImportedSong>{
+  if id.is_empty()||id.len()>200||!id.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_'|b'.')){anyhow::bail!("invalid stable generated song id")}
+  if input.audio.is_empty(){anyhow::bail!("cannot import an empty audio result")}
+  if let Some(existing)=self.get_song(id)?{
+   let filename=existing.audio_path.as_deref().and_then(|p|Path::new(p).file_name()).and_then(|p|p.to_str()).unwrap_or_default().to_owned();
+   if existing.source!="omnibridge_generation"||filename.is_empty(){anyhow::bail!("stable generated song id belongs to another source")}
+   return Ok(ImportedSong{song:existing,audio_filename:filename});
+  }
+  fs::create_dir_all(&self.media_dir).with_context(||format!("create media directory {}",self.media_dir.display()))?;
+  let extension=input.audio_extension.trim().to_ascii_lowercase();
+  if !matches!(extension.as_str(),"mp3"|"wav"|"m4a"|"aac"|"flac"|"ogg"){anyhow::bail!("unsupported generated audio extension")}
+  let filename=format!("{id}.{extension}");
+  let target=self.media_dir.join(&filename);
+  if target.exists(){
+   let existing=fs::read(&target).with_context(||format!("read generated audio {}",target.display()))?;
+   if existing!=input.audio{anyhow::bail!("stable generated audio path contains different bytes")}
+  }else{
+   let temporary=self.media_dir.join(format!("{filename}.part"));
+   {let mut file=fs::OpenOptions::new().create_new(true).write(true).open(&temporary)?;use std::io::Write;file.write_all(&input.audio)?;file.sync_all()?;}
+   if let Err(error)=fs::rename(&temporary,&target){let _=fs::remove_file(&temporary);return Err(error).with_context(||format!("publish generated audio {}",target.display()))}
+  }
+  let now=now();
+  let title=input.title.map(|t|t.trim().to_owned()).filter(|t|!t.is_empty()).unwrap_or_else(||generated_title(&input.caption));
+  let song=Song{
+   id:id.to_owned(),title,audio_path:Some(target.display().to_string()),caption:input.caption,lyrics:input.lyrics,
+   metadata:input.metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,
+   replay_request:input.replay_request,audio_codes:input.audio_codes,source:input.source,created_at:now.clone(),updated_at:now,
+  };
+  if let Err(error)=self.save_song(&song){return Err(error.context("store idempotent generated song record"))}
+  Ok(ImportedSong{song,audio_filename:filename})
+ }
  pub fn import_audio_song(&self,input:AudioImportInput)->Result<ImportedSong>{
   if input.audio.is_empty(){anyhow::bail!("cannot import an empty audio file")}
   let extension=input.audio_extension.trim().to_ascii_lowercase();

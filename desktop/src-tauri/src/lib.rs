@@ -8,7 +8,8 @@
 //! of starting a second one.
 
 use std::{
-    net::{Ipv4Addr, SocketAddrV4, TcpStream},
+    io::{BufRead, BufReader, Write},
+    net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -16,6 +17,11 @@ use std::{
 const SERVER_PORT: u16 = 8765;
 const RELEASES_URL: &str = "https://github.com/timoncool/MiniMax-Music3-Studio/releases/latest";
 const STUDIO_DATA_DIRECTORY: &str = "MiniMax Music3 Studio";
+
+#[tauri::command]
+fn studio_session_token() -> String {
+    music_server::desktop_session_token()
+}
 
 /// Mutable studio data must not be derived from the process working directory
 /// or from the installed executable directory: a Start Menu shortcut is free
@@ -42,7 +48,8 @@ fn studio_data_directory() -> PathBuf {
 
     #[cfg(windows)]
     {
-        if let Some(root) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
+        if let Some(root) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA"))
+        {
             return PathBuf::from(root).join(STUDIO_DATA_DIRECTORY);
         }
     }
@@ -91,7 +98,10 @@ fn configure_studio_runtime_paths() {
     }
     if std::env::var_os("MINIMAX_STUDIO_SETTINGS_PATH").is_none() {
         unsafe {
-            std::env::set_var("MINIMAX_STUDIO_SETTINGS_PATH", data_root.join("studio-settings.json"));
+            std::env::set_var(
+                "MINIMAX_STUDIO_SETTINGS_PATH",
+                data_root.join("studio-settings.json"),
+            );
         }
     }
     // Without this the service falls back to `<working directory>/data` for the
@@ -107,17 +117,40 @@ fn configure_studio_runtime_paths() {
     // The service resolves and supervises the engine; the shell only needs the
     // loopback address they agree on.
     let host = std::env::var("MINIMAX_MM_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port = std::env::var("MINIMAX_MM_SERVER_PORT").ok().and_then(|value| value.parse::<u16>().ok()).unwrap_or(8086);
+    let port = std::env::var("MINIMAX_MM_SERVER_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(8086);
     if std::env::var_os("MINIMAX_MUSIC_CPP_BASE_URL").is_none() {
         unsafe {
-            std::env::set_var("MINIMAX_MUSIC_CPP_BASE_URL", format!("http://{host}:{port}"));
+            std::env::set_var(
+                "MINIMAX_MUSIC_CPP_BASE_URL",
+                format!("http://{host}:{port}"),
+            );
         }
     }
 }
 
 fn service_is_ready() -> bool {
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, SERVER_PORT);
-    TcpStream::connect_timeout(&address.into(), Duration::from_millis(150)).is_ok()
+    let Ok(mut stream) = TcpStream::connect_timeout(&address.into(), Duration::from_millis(150))
+    else {
+        return false;
+    };
+    let timeout = Some(Duration::from_millis(500));
+    if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
+        return false;
+    }
+    let token = music_server::desktop_session_token();
+    let request = format!(
+        "GET /v1/capabilities HTTP/1.1\r\nHost: 127.0.0.1:{SERVER_PORT}\r\nX-Studio-Session: {token}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() || stream.flush().is_err() {
+        return false;
+    }
+    let mut status_line = String::new();
+    BufReader::new(stream).read_line(&mut status_line).is_ok()
+        && (status_line.starts_with("HTTP/1.1 200 ") || status_line.starts_with("HTTP/1.0 200 "))
 }
 
 fn wait_until_ready(timeout: Duration) -> bool {
@@ -164,45 +197,66 @@ fn directory_is_writable(path: &std::path::Path) -> bool {
 /// closed. The service is started on its own runtime thread and the window
 /// only opens once it answers on loopback.
 fn start_service() -> Result<(), String> {
-    if service_is_ready() {
-        return Ok(());
-    }
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, SERVER_PORT);
+    let listener = match TcpListener::bind(address) {
+        Ok(listener) => listener,
+        Err(error)
+            if cfg!(debug_assertions)
+                && std::env::var("MINIMAX_STUDIO_ALLOW_SHARED_SERVICE").as_deref() == Ok("1")
+                && std::env::var("MINIMAX_STUDIO_SESSION_TOKEN")
+                    .ok()
+                    .is_some_and(|token| token.trim().len() >= 32)
+                && service_is_ready() =>
+        {
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not exclusively bind the studio service on {address}: {error}"
+            ));
+        }
+    };
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("could not configure the studio listener: {error}"))?;
+    // Keep a duplicate bound socket until readiness is proven. If the server
+    // thread exits early, no unrelated process can bind the port and receive
+    // the credential from the readiness request during that gap.
+    let readiness_guard = listener
+        .try_clone()
+        .map_err(|error| format!("could not guard the studio listener: {error}"))?;
 
     std::thread::Builder::new()
         .name("music-server".into())
-        .spawn(|| {
-            let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(runtime) => runtime,
                 Err(error) => {
                     eprintln!("could not create the studio service runtime: {error}");
                     return;
                 }
             };
-            // Closing the studio and opening it again leaves the previous
-            // process holding the port for a moment. Giving up on the first
-            // refusal left the window on a browser error page with no way back
-            // except restarting the application.
-            let deadline = Instant::now() + Duration::from_secs(20);
-            loop {
-                match runtime.block_on(music_server::serve()) {
-                    Ok(()) => return,
-                    Err(error) if Instant::now() < deadline => {
-                        eprintln!("studio service could not start yet: {error}");
-                        std::thread::sleep(Duration::from_millis(400));
-                    }
-                    Err(error) => {
-                        eprintln!("studio service stopped: {error}");
-                        return;
-                    }
-                }
+            let result = runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener)?;
+                music_server::serve_with_listener(listener).await
+            });
+            if let Err(error) = result {
+                eprintln!("studio service stopped: {error}");
             }
         })
         .map_err(|error| format!("could not start the studio service thread: {error}"))?;
 
-    if wait_until_ready(Duration::from_secs(30)) {
+    let ready = wait_until_ready(Duration::from_secs(30));
+    drop(readiness_guard);
+    if ready {
         Ok(())
     } else {
-        Err(format!("the studio service did not become ready on 127.0.0.1:{SERVER_PORT}"))
+        Err(format!(
+            "the studio service did not become ready on 127.0.0.1:{SERVER_PORT}"
+        ))
     }
 }
 
@@ -224,10 +278,15 @@ fn spawn_update_check(app: tauri::AppHandle, portable: bool) {
         if portable {
             let open_release = app
                 .dialog()
-                .message(format!("MiniMax Music3 Studio {version} is available. Open the download page?"))
+                .message(format!(
+                    "MiniMax Music3 Studio {version} is available. Open the download page?"
+                ))
                 .title("MiniMax Music3 Studio update")
                 .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::OkCancelCustom("Open".into(), "Later".into()))
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Open".into(),
+                    "Later".into(),
+                ))
                 .blocking_show();
             if open_release {
                 use tauri_plugin_opener::OpenerExt;
@@ -238,10 +297,15 @@ fn spawn_update_check(app: tauri::AppHandle, portable: bool) {
 
         let install = app
             .dialog()
-            .message(format!("MiniMax Music3 Studio {version} is available. Install it now?"))
+            .message(format!(
+                "MiniMax Music3 Studio {version} is available. Install it now?"
+            ))
             .title("MiniMax Music3 Studio update")
             .kind(MessageDialogKind::Info)
-            .buttons(MessageDialogButtons::OkCancelCustom("Install".into(), "Later".into()))
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Install".into(),
+                "Later".into(),
+            ))
             .blocking_show();
         if !install {
             return;
@@ -301,14 +365,16 @@ pub fn run() {
     // the engine with it. Without this the engine outlived a force-killed
     // studio, holding the graphics card and the port it listens on.
     if !music_engine::process_group::bind_children_to_this_process() {
-        eprintln!("this process could not create its own job object; the engine is stopped by the supervisor only");
+        eprintln!(
+            "this process could not create its own job object; the engine is stopped by the supervisor only"
+        );
     }
 
     configure_studio_runtime_paths();
 
-    if let Err(error) = start_service() {
-        eprintln!("failed to start the studio service: {error}");
-    }
+    start_service().unwrap_or_else(|error| {
+        panic!("failed to start the authenticated studio service: {error}")
+    });
 
     // The updater is configured only in release builds, where the signing
     // public key and the release endpoint are injected into the config. The
@@ -331,6 +397,7 @@ pub fn run() {
     }
 
     builder
+        .invoke_handler(tauri::generate_handler![studio_session_token])
         .setup(move |app| {
             if updater_configured {
                 spawn_update_check(app.handle().clone(), is_portable());
@@ -367,4 +434,3 @@ pub fn run() {
         .run(context)
         .expect("error while running MiniMax Music3 Studio");
 }
-

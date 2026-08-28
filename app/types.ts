@@ -95,7 +95,7 @@ export interface Music3JobSong {
 
 export interface Music3Job {
   id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
   phase: string;
   message: string;
   title?: string;

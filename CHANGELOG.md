@@ -3,6 +3,29 @@
 What changed, newest first. Dates are release dates; the studio is versioned by its
 Windows build.
 
+## Unreleased
+
+### Added
+
+- Added a fail-closed Rust contract client for OmniBridge MiniMax Music jobs.
+  It persists intent before the one allowed submit, keeps task credentials out
+  of public job JSON, resumes accepted work with GET-only polling, and verifies
+  Artifact MIME, length, magic bytes, and SHA-256 before import.
+- Added a read-only integration status endpoint and an example Profile v1 music
+  binding. Neither claims that a `route:music:*` policy is published or that a
+  paid provider call has been verified.
+- The UI now treats `submission_unknown` as a terminal polling barrier: it keeps
+  the original job ID visible and never creates an automatic replacement job.
+- Added an in-memory Tauri-to-HTTP session bootstrap for every `/v1/*` route,
+  explicit desktop/dev CORS origins, route-specific request limits, hardened
+  image proxy validation, and secret redaction. Protected media is loaded with
+  authenticated fetch and temporary Blob URLs; the token is never put in URLs
+  or browser storage.
+- External AudioMass editing now fails closed with a visible prompt for
+  protected `/v1/*` media. A future short-lived, single-use media ticket is
+  required before this path can be re-enabled without exposing the session
+  secret in the editor URL.
+
 ## 2026-08-19 — 1.4.0
 
 ### Added
