@@ -1,0 +1,58 @@
+{
+  "schema": "omnibridge.project-profile.v2",
+  "project_id": "music-maker",
+  "profile_revision": 1,
+  "capability_defaults": {
+    "text": {
+      "selector": {
+        "type": "route",
+        "id": "route:text:fast"
+      },
+      "operation": "chat.completions",
+      "required_capabilities": [
+        "chat_completions",
+        "streaming"
+      ],
+      "mode": "stream",
+      "revision_policy": "latest_published"
+    },
+    "music": {
+      "selector": {
+        "type": "route",
+        "id": "route:music:default"
+      },
+      "operation": "audio.music.generate",
+      "required_capabilities": [
+        "music_generation"
+      ],
+      "mode": "durable",
+      "revision_policy": "pinned_for_run"
+    }
+  },
+  "roles": {
+    "song_concept_draft": {
+      "capability": "text",
+      "selector": { "type": "inherit" }
+    },
+    "lyrics_draft": {
+      "capability": "text",
+      "selector": { "type": "route", "id": "route:text:quality" }
+    },
+    "lyrics_refine": {
+      "capability": "text",
+      "selector": { "type": "route", "id": "route:text:quality" }
+    },
+    "music_prompt_structuring": {
+      "capability": "text",
+      "selector": { "type": "route", "id": "route:text:quality" }
+    },
+    "title_cover_brief": {
+      "capability": "text",
+      "selector": { "type": "inherit" }
+    },
+    "music_generation_cloud": {
+      "capability": "music",
+      "selector": { "type": "inherit" }
+    }
+  }
+}

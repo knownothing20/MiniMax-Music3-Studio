@@ -7,6 +7,10 @@ Windows build.
 
 ### Added
 
+- Added a secret-free OmniBridge Project Profile v2 and project model-strategy
+  contract. Text drafting roles use the shared fast/quality text Routes, cloud
+  music uses the durable default Music Route, and Provider ordering remains
+  centrally owned by OmniBridge.
 - Added a fail-closed Rust contract client for OmniBridge MiniMax Music jobs.
   It persists intent before the one allowed submit, keeps task credentials out
   of public job JSON, resumes accepted work with GET-only polling, and verifies
