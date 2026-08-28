@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Boxes, Cloud, Cpu, Github, Image as ImageIcon, Info, Monitor, User as UserIcon, X } from 'lucide-react';
+import { Boxes, Cloud, Cpu, Github, Image as ImageIcon, Info, Monitor, Route, User as UserIcon, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
@@ -7,6 +7,7 @@ import { ProviderSettings } from './ProviderSettings';
 import { EngineSettings } from './EngineSettings';
 import { SetupGate } from './SetupGate';
 import { CoverTemplateSettings } from './CoverTemplateSettings';
+import { OmniBridgeSettings } from './OmniBridgeSettings';
 
 /**
  * Settings.
@@ -21,7 +22,7 @@ import { CoverTemplateSettings } from './CoverTemplateSettings';
 /// The assistant and the karaoke recogniser are not sections of their own: they
 /// are set up where they are installed, on the models page. Having both was one
 /// capability drawn twice, and the two drawings disagreed.
-type SectionId = 'account' | 'models' | 'engine' | 'cloud' | 'covers' | 'interface' | 'about';
+type SectionId = 'account' | 'models' | 'engine' | 'cloud' | 'omnibridge' | 'covers' | 'interface' | 'about';
 
 const INPUT =
   'w-full rounded-lg border-2 border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-white';
@@ -33,9 +34,10 @@ interface SettingsModalProps {
   onClose: () => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  onOpenApiCase: () => void;
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSection, onClose, theme, onToggleTheme }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSection, onClose, theme, onToggleTheme, onOpenApiCase }) => {
   const { user, setDisplayName } = useAuth();
   const { t, language, setLanguage } = useI18n();
   const [section, setSection] = useState<SectionId>('account');
@@ -67,6 +69,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSec
     { id: 'models', label: t('modelsSection'), hint: t('modelsSectionHint'), icon: <Boxes size={16} /> },
     { id: 'engine', label: t('localEngine'), hint: t('engineSectionHint'), icon: <Cpu size={16} /> },
     { id: 'cloud', label: t('providers'), hint: t('cloudSectionHint'), icon: <Cloud size={16} /> },
+    { id: 'omnibridge', label: t('omnibridgeSection'), hint: t('omnibridgeSectionHint'), icon: <Route size={16} /> },
     { id: 'covers', label: t('coversSection'), hint: t('coversSectionHint'), icon: <ImageIcon size={16} /> },
     { id: 'interface', label: t('appearance'), hint: t('interfaceSectionHint'), icon: <Monitor size={16} /> },
     { id: 'about', label: t('about'), hint: t('aboutSectionHint'), icon: <Info size={16} /> },
@@ -144,6 +147,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSec
             {section === 'models' && <div className="-m-6"><SetupGate mode="settings" /></div>}
             {section === 'engine' && <EngineSettings />}
             {section === 'cloud' && <ProviderSettings />}
+            {section === 'omnibridge' && <OmniBridgeSettings onOpenCase={onOpenApiCase} />}
 
             {section === 'interface' && (
               <div className="max-w-lg space-y-6">

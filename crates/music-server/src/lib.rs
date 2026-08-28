@@ -1495,7 +1495,7 @@ async fn time_lyrics_for(state: AppState, song_id: String) {
             }
         }
         lyrics_sync::AsrProvider::OpenRouter => {
-            karaoke_words_from_openrouter(&state, &config, &audio, None).await
+            karaoke_words_from_openrouter(&state, &config, std::path::Path::new(&audio), None).await
         }
     };
     let words = match words {
@@ -1890,34 +1890,133 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Reports only local integration readiness. It never calls a Provider and it
-/// never returns the Gateway credential. Route publication and real capability
+/// Reports local configuration plus a GET-only OmniBridge contract handshake.
+/// It never calls a Provider and it never returns the Gateway credential.
+/// Route publication and real capability
 /// evidence must still be verified by OmniBridge before paid generation is enabled.
-async fn omnibridge_integration_status() -> Json<Value> {
-    match omnibridge::OmniBridgeConfig::from_env() {
-        Ok(config) => Json(serde_json::json!({
-            "schema": "music-maker.omnibridge-integration-status.v1",
-            "configured": true,
-            "contract_client": "temporary-rust-adapter",
-            "base_url": config.base_url,
-            "platform_id": config.platform_id,
-            "music_route": config.music_route,
-            "operation": "audio.music.generate",
-            "kind": "audio.music_generation",
-            "execution_target": format!("{:?}", music_execution_target().unwrap_or(MusicExecutionTarget::Configuration)).to_ascii_lowercase(),
-            "route_readiness": "unverified",
-            "real_generation_verified": false,
-        })),
-        Err(error) => Json(serde_json::json!({
-            "schema": "music-maker.omnibridge-integration-status.v1",
-            "configured": false,
-            "contract_client": "temporary-rust-adapter",
-            "error": error.to_string(),
-            "execution_target": format!("{:?}", music_execution_target().unwrap_or(MusicExecutionTarget::Configuration)).to_ascii_lowercase(),
-            "route_readiness": "not_ready",
-            "real_generation_verified": false,
-        })),
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OmniBridgeContractDiagnostic {
+    NotChecked,
+    Verified,
+    Failed(String),
+}
+
+fn music_execution_target_name() -> &'static str {
+    match music_execution_target() {
+        Ok(MusicExecutionTarget::Configuration) => "configuration",
+        Ok(MusicExecutionTarget::OmniBridge) => "omnibridge",
+        Err(_) => "invalid",
     }
+}
+
+fn safe_omnibridge_diagnostic_error(error: &omnibridge::OmniBridgeError) -> String {
+    match error {
+        omnibridge::OmniBridgeError::NotReady(name) => {
+            format!("OmniBridge configuration is incomplete: {name} is missing.")
+        }
+        omnibridge::OmniBridgeError::InvalidInput(message)
+        | omnibridge::OmniBridgeError::Protocol(message) => {
+            security::redact_secrets(message)
+        }
+        omnibridge::OmniBridgeError::Transport(_) => {
+            "OmniBridge contract endpoint is unreachable.".to_owned()
+        }
+        omnibridge::OmniBridgeError::RateLimited(delay_ms) => {
+            format!("OmniBridge contract check was rate limited; retry after {delay_ms} ms.")
+        }
+        omnibridge::OmniBridgeError::HttpStatus(status) => {
+            format!("OmniBridge contract endpoint returned HTTP {status}.")
+        }
+        omnibridge::OmniBridgeError::SubmissionUnknown(_) => {
+            "OmniBridge contract check returned an unknown outcome.".to_owned()
+        }
+        omnibridge::OmniBridgeError::Integrity(_) => {
+            "OmniBridge contract check returned invalid integrity metadata.".to_owned()
+        }
+        omnibridge::OmniBridgeError::NotCancellable => {
+            "OmniBridge contract check is unavailable.".to_owned()
+        }
+        omnibridge::OmniBridgeError::Io(_) => {
+            "OmniBridge local integration state is unavailable.".to_owned()
+        }
+    }
+}
+
+fn omnibridge_integration_status_payload(
+    config: Option<&omnibridge::OmniBridgeConfig>,
+    configuration_error: Option<String>,
+    contract: OmniBridgeContractDiagnostic,
+    execution_target: &str,
+) -> Value {
+    let configured = config.is_some();
+    let (diagnostic_status, contract_status, contract_verified, contract_error) = match contract {
+        OmniBridgeContractDiagnostic::NotChecked if configured => {
+            ("configured", "not_checked", false, None)
+        }
+        OmniBridgeContractDiagnostic::NotChecked => {
+            ("not_configured", "not_checked", false, None)
+        }
+        OmniBridgeContractDiagnostic::Verified => {
+            ("contract_verified", "verified", true, None)
+        }
+        OmniBridgeContractDiagnostic::Failed(error) => {
+            ("contract_failed", "failed", false, Some(error))
+        }
+    };
+    let mut payload = serde_json::json!({
+        "schema": "music-maker.omnibridge-integration-status.v2",
+        "configured": configured,
+        "diagnostic_status": diagnostic_status,
+        "contract_status": contract_status,
+        "contract_verified": contract_verified,
+        "contract_client": "temporary-rust-adapter",
+        "execution_target": execution_target,
+        "operation": omnibridge::OmniBridgeConfig::operation(),
+        "kind": omnibridge::OmniBridgeConfig::kind(),
+        "route_readiness": if configured { "unverified" } else { "not_ready" },
+        "route_resolution_verified": false,
+        "provider_resolution_verified": false,
+        "real_generation_verified": false,
+    });
+    if let Some(config) = config {
+        payload["music_route"] = Value::String(config.music_route.clone());
+    }
+    if let Some(error) = contract_error.or(configuration_error) {
+        payload["error"] = Value::String(security::redact_secrets(error));
+    }
+    payload
+}
+
+async fn omnibridge_integration_status() -> Json<Value> {
+    let execution_target = music_execution_target_name();
+    let config = match omnibridge::OmniBridgeConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            return Json(omnibridge_integration_status_payload(
+                None,
+                Some(safe_omnibridge_diagnostic_error(&error)),
+                OmniBridgeContractDiagnostic::NotChecked,
+                execution_target,
+            ));
+        }
+    };
+    let contract = match omnibridge::OmniBridgeMusicClient::new(config.clone()) {
+        Ok(client) => match client.verify_contracts().await {
+            Ok(()) => OmniBridgeContractDiagnostic::Verified,
+            Err(error) => OmniBridgeContractDiagnostic::Failed(
+                safe_omnibridge_diagnostic_error(&error),
+            ),
+        },
+        Err(error) => OmniBridgeContractDiagnostic::Failed(
+            safe_omnibridge_diagnostic_error(&error),
+        ),
+    };
+    Json(omnibridge_integration_status_payload(
+        Some(&config),
+        None,
+        contract,
+        execution_target,
+    ))
 }
 
 async fn configuration(State(state): State<AppState>) -> Json<StudioConfiguration> {
@@ -3124,7 +3223,7 @@ async fn delete_song_karaoke(
 async fn karaoke_words_from_openrouter(
     state: &AppState,
     config: &lyrics_sync::LyricsSyncConfig,
-    audio: &str,
+    audio: &std::path::Path,
     language: Option<&str>,
 ) -> anyhow::Result<Vec<(f64, String)>> {
     use base64::Engine as _;
@@ -3138,7 +3237,7 @@ async fn karaoke_words_from_openrouter(
         .unwrap_or_default();
     let bytes = std::fs::read(audio)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let format = std::path::Path::new(audio)
+    let format = audio
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("mp3")
@@ -3598,6 +3697,7 @@ async fn setup_remove(
 /// weights on disk, and they are gigabytes each. This opens a folder picker,
 /// looks for the files the catalogue names - by name, then by matching size -
 /// and hard-links or copies them into the studio's own model directory.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn setup_adopt(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
     let Some(models_root) = studio_data_root().map(|root| root.join("models").join(model_manager::ENGINE_ID)) else {
         return Err(api_error(StatusCode::INTERNAL_SERVER_ERROR, "the studio has no data directory".into()));
@@ -3653,6 +3753,16 @@ async fn setup_adopt(State(state): State<AppState>) -> Result<Json<Value>, (Stat
         "adopted": adopted,
         "status": compose_setup_status(&state, status).await,
     })))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+async fn setup_adopt(
+    State(_state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    Err(api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "setup/adopt folder picking is only supported on Windows and macOS desktop builds; Linux/headless servers can use /setup/download or place models in the configured data directory.".into(),
+    ))
 }
 
 /// Opens the studio's own folder in the system file manager.
@@ -4094,8 +4204,11 @@ async fn create_omnibridge_music_job(
         caption: request.caption.clone(), lyrics: request.lyrics.clone(), duration_seconds: request.duration_seconds,
         title: Some(title.clone()), cover_prompt: request.cover_prompt.clone(), generation_settings: generation_settings.clone(),
     };
-    let store = state.omnibridge_store.lock().await;
-    match store.get(&job_id) {
+    let existing_record = {
+        let store = state.omnibridge_store.lock().await;
+        store.get(&job_id)
+    };
+    match existing_record {
         Ok(Some(record)) => {
             let digest = match submit.payload_digest() {
                 Ok(digest) => digest,
@@ -4112,11 +4225,22 @@ async fn create_omnibridge_music_job(
         Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string()))),
     }
     if let Err(error) = client.verify_contracts().await {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, format!("OmniBridge contract handshake failed before submit: {}", security::redact_secrets(error.to_string())))));
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, format!("OmniBridge contract handshake failed before submit: {}", safe_omnibridge_diagnostic_error(&error)))));
     }
-    let prepared = store.prepare_intent(&job_id, &submit, idempotency_key.clone(), context);
-    if let Err(error) = prepared {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string())));
+    let prepared = {
+        let store = state.omnibridge_store.lock().await;
+        store.prepare_intent_once(&job_id, &submit, idempotency_key.clone(), context)
+    };
+    match prepared {
+        Ok(omnibridge::PrepareIntentOutcome::Created(_)) => {}
+        Ok(omnibridge::PrepareIntentOutcome::Existing(record)) => {
+            let job = music_job_from_durable_record(&record).unwrap_or_else(|| failed_request_job(request, engine_id, "Stored OmniBridge intent has no recoverable context.".into()));
+            state.jobs.write().await.insert(job.id.clone(), job.clone());
+            return (StatusCode::ACCEPTED, Json(job));
+        }
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string())));
+        }
     }
     let mut job = MusicJob {
         id: job_id.clone(), engine_id, cover_prompt: request.cover_prompt, title: Some(title),
@@ -4128,7 +4252,10 @@ async fn create_omnibridge_music_job(
     state.jobs.write().await.insert(job_id.clone(), job.clone());
     match client.submit_once(&submit, &idempotency_key).await {
         Ok(handle) => {
-            let result = store.mark_accepted(&job_id, handle);
+            let result = {
+                let store = state.omnibridge_store.lock().await;
+                store.mark_accepted(&job_id, handle)
+            };
             if let Err(error) = result {
                 job.status = MusicJobStatus::Unknown;
                 job.phase = MusicJobPhase::SubmissionUnknown;
@@ -4138,13 +4265,19 @@ async fn create_omnibridge_music_job(
             }
         }
         Err(omnibridge::OmniBridgeError::SubmissionUnknown(_)) => {
-            let _ = store.mark_submission_unknown(&job_id);
+            let _ = {
+                let store = state.omnibridge_store.lock().await;
+                store.mark_submission_unknown(&job_id)
+            };
             job.status = MusicJobStatus::Unknown;
             job.phase = MusicJobPhase::SubmissionUnknown;
             job.message = "OmniBridge submission outcome is unknown. Automatic replay is blocked.".into();
         }
         Err(error) => {
-            let _ = store.mark_rejected(&job_id, "failed");
+            let _ = {
+                let store = state.omnibridge_store.lock().await;
+                store.mark_rejected(&job_id, "failed")
+            };
             job.status = MusicJobStatus::Failed;
             job.phase = MusicJobPhase::Failed;
             job.message = security::redact_secrets(error.to_string());
@@ -4823,6 +4956,70 @@ fn api_error(status: StatusCode, error: String) -> (StatusCode, Json<ApiError>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omnibridge_diagnostic_is_secret_free_and_distinguishes_contract_states() {
+        let config = omnibridge::OmniBridgeConfig::new(
+            "https://private-gateway.example/internal",
+            "gateway-secret-value",
+            "private-platform-id",
+            "route:music:cloud",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap();
+
+        let configured = omnibridge_integration_status_payload(
+            Some(&config),
+            None,
+            OmniBridgeContractDiagnostic::NotChecked,
+            "omnibridge",
+        );
+        assert_eq!(configured["diagnostic_status"], "configured");
+        assert_eq!(configured["contract_status"], "not_checked");
+
+        let verified = omnibridge_integration_status_payload(
+            Some(&config),
+            None,
+            OmniBridgeContractDiagnostic::Verified,
+            "omnibridge",
+        );
+        assert_eq!(verified["diagnostic_status"], "contract_verified");
+        assert_eq!(verified["contract_status"], "verified");
+        assert_eq!(verified["route_readiness"], "unverified");
+        assert_eq!(verified["route_resolution_verified"], false);
+        assert_eq!(verified["real_generation_verified"], false);
+
+        let failed = omnibridge_integration_status_payload(
+            Some(&config),
+            None,
+            OmniBridgeContractDiagnostic::Failed(
+                "Authorization: Bearer diagnostic-secret".to_owned(),
+            ),
+            "omnibridge",
+        );
+        let encoded = serde_json::to_string(&failed).unwrap();
+        assert_eq!(failed["diagnostic_status"], "contract_failed");
+        assert_eq!(failed["contract_status"], "failed");
+        assert_eq!(failed["music_route"], "route:music:cloud");
+        for private in [
+            "private-gateway.example",
+            "private-platform-id",
+            "gateway-secret-value",
+            "diagnostic-secret",
+        ] {
+            assert!(!encoded.contains(private));
+        }
+    }
+
+    #[test]
+    fn omnibridge_transport_diagnostic_never_returns_the_remote_url() {
+        let error = omnibridge::OmniBridgeError::Transport(
+            "request to https://private-gateway.example/v1/contracts failed".to_owned(),
+        );
+        let safe = safe_omnibridge_diagnostic_error(&error);
+        assert_eq!(safe, "OmniBridge contract endpoint is unreachable.");
+        assert!(!safe.contains("private-gateway.example"));
+    }
 
     /// Nothing stays in VRAM unless the user asked for it. This is the setting
     /// the assistant's unload is tied to, and it is off to begin with.

@@ -31,6 +31,9 @@ export interface Song {
   timeSignature?: string;
   /** Native Music3 provenance is complete enough for POST /v1/music/replay. */
   nativeReplayAvailable?: boolean;
+  /** Verified OmniBridge Artifact evidence retained from native library metadata. */
+  artifactSha256?: string;
+  omnibridgeJobId?: string;
 }
 
 export interface Playlist {
@@ -91,10 +94,17 @@ export interface Music3Request {
 export interface Music3JobSong {
   id: string;
   audio_url: string;
+  song?: {
+    id: string;
+    metadata?: Record<string, unknown> | null;
+    source?: string;
+  };
 }
 
 export interface Music3Job {
   id: string;
+  engine_id?: string;
+  dispatch?: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
   phase: string;
   message: string;
@@ -138,4 +148,4 @@ export interface UserProfile {
 }
 
 // Simplified views for ACE-Step UI
-export type View = 'create' | 'library' | 'tools' | 'playlist' | 'search' | 'news';
+export type View = 'create' | 'library' | 'tools' | 'playlist' | 'search' | 'news' | 'api-case';

@@ -20,15 +20,34 @@ const DEFAULT_BASE = 'http://127.0.0.1:8765';
 const SERVICE_PREFIXES = ['/v1/', '/setup/', '/engine/', '/health'];
 const PROTECTED_PREFIXES = ['/v1/', '/setup/', '/engine/'];
 
-function resolveBase(): string {
-  const override = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_STUDIO_API_BASE;
+export interface ApiBaseEnvironment {
+  override?: string;
+  development: boolean;
+  tauri: boolean;
+  locationPort?: string;
+}
+
+/** Pure environment decision used by the runtime and by contract tests. */
+export function resolveApiBase(environment: ApiBaseEnvironment): string {
+  const override = environment.override?.trim();
   if (override) return override.replace(/\/$/, '');
+  // Tauri cannot rely on a Vite proxy, including during desktop development.
+  if (environment.tauri) return DEFAULT_BASE;
+  // Browser development is served by Vite; same-origin requests must use its
+  // proxy so MUSIC_MAKER_DEV_API_TARGET can select the Rust test port.
+  if (environment.development) return '';
   // Already served by the service itself: keep requests same-origin.
-  if (typeof location !== 'undefined' && location.port === '8765') return '';
+  if (environment.locationPort === '8765') return '';
   return DEFAULT_BASE;
 }
 
-export const API_BASE = resolveBase();
+const viteEnv = (import.meta as { env?: Record<string, string | boolean | undefined> }).env;
+export const API_BASE = resolveApiBase({
+  override: typeof viteEnv?.VITE_STUDIO_API_BASE === 'string' ? viteEnv.VITE_STUDIO_API_BASE : undefined,
+  development: viteEnv?.DEV === true,
+  tauri: isTauri(),
+  locationPort: typeof location === 'undefined' ? undefined : location.port,
+});
 const SESSION_HEADER = 'X-Studio-Session';
 
 async function loadSessionToken(): Promise<string> {

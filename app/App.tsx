@@ -67,6 +67,7 @@ import { SetupGate } from './components/SetupGate';
 import { EngineStarting } from './components/EngineStarting';
 import { StudioOffline } from './components/StudioOffline';
 import { StudioToolsPanel } from './components/StudioToolsPanel';
+import { OmniBridgeMusicCase } from './components/OmniBridgeMusicCase';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
 
 const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
@@ -497,6 +498,10 @@ function AppContent() {
         setCurrentView('search');
       } else if (path === '/news') {
         setCurrentView('news');
+      } else if (path === '/tools') {
+        setCurrentView('tools');
+      } else if (path === '/api-case') {
+        setCurrentView('api-case');
       }
     };
 
@@ -1423,6 +1428,11 @@ function AppContent() {
   // Render Layout Logic
   const renderContent = () => {
     switch (currentView) {
+      case 'api-case':
+        // The API case diagnoses the cloud path and must never be blocked by
+        // local Windows model installation or mm-server readiness.
+        return <OmniBridgeMusicCase />;
+
       case 'tools':
         return <StudioToolsPanel initialSongId={stemsSongId} />;
 
@@ -1605,6 +1615,8 @@ function AppContent() {
               window.history.pushState({}, '', '/news');
             } else if (v === 'tools') {
               window.history.pushState({}, '', '/tools');
+            } else if (v === 'api-case') {
+              window.history.pushState({}, '', '/api-case');
             }
             if (isMobile) setShowLeftSidebar(false);
           }}
@@ -1697,6 +1709,12 @@ function AppContent() {
         onClose={() => { setShowSettingsModal(false); setSettingsSection(null); }}
         theme={theme}
         onToggleTheme={toggleTheme}
+        onOpenApiCase={() => {
+          setShowSettingsModal(false);
+          setSettingsSection(null);
+          setCurrentView('api-case');
+          window.history.pushState({}, '', '/api-case');
+        }}
       />
 
       {/* Mobile Details Modal */}

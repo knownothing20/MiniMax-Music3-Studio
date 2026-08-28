@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const STORE_SCHEMA: &str = "music-maker.omnibridge-jobs.v1";
 const ARTIFACT_SCHEMA: &str = "omnibridge.artifact-ref.v1";
 const CONTRACT_SCHEMA: &str = "omnibridge.contract-catalog.v1";
+const CONTRACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_JSON_BYTES: usize = 1024 * 1024;
 const OPERATION: &str = "audio.music.generate";
 const KIND: &str = "audio.music_generation";
@@ -69,6 +70,14 @@ pub struct OmniBridgeConfig {
 }
 
 impl OmniBridgeConfig {
+    pub const fn operation() -> &'static str {
+        OPERATION
+    }
+
+    pub const fn kind() -> &'static str {
+        KIND
+    }
+
     pub fn from_env() -> Result<Self, OmniBridgeError> {
         Self::new(
             required_env("MUSIC_MAKER_OMNIBRIDGE_BASE_URL")?,
@@ -418,6 +427,7 @@ impl OmniBridgeMusicClient {
             .bearer_auth(self.config.gateway_key.expose())
             .header("X-Platform-Id", &self.config.platform_id)
             .header(reqwest::header::ACCEPT, "application/json")
+            .timeout(CONTRACT_REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(|error| OmniBridgeError::Transport(error.to_string()))?;
@@ -1008,6 +1018,20 @@ pub struct OmniBridgeMusicStore {
     path: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+pub enum PrepareIntentOutcome {
+    Created(DurableMusicRecord),
+    Existing(DurableMusicRecord),
+}
+
+impl PrepareIntentOutcome {
+    pub fn into_record(self) -> DurableMusicRecord {
+        match self {
+            Self::Created(record) | Self::Existing(record) => record,
+        }
+    }
+}
+
 impl OmniBridgeMusicStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
@@ -1032,6 +1056,19 @@ impl OmniBridgeMusicStore {
         idempotency_key: IdempotencyKey,
         context: DurableMusicContext,
     ) -> Result<DurableMusicRecord, OmniBridgeError> {
+        self.prepare_intent_once(local_job_id, request, idempotency_key, context)
+            .map(PrepareIntentOutcome::into_record)
+    }
+
+    /// Atomically claims the one allowed submit for a stable local job ID.
+    /// An existing identical intent never grants a second submit permission.
+    pub fn prepare_intent_once(
+        &self,
+        local_job_id: impl Into<String>,
+        request: &MusicSubmitRequest,
+        idempotency_key: IdempotencyKey,
+        context: DurableMusicContext,
+    ) -> Result<PrepareIntentOutcome, OmniBridgeError> {
         let local_job_id = local_job_id.into().trim().to_owned();
         if local_job_id.is_empty() {
             return Err(OmniBridgeError::InvalidInput(
@@ -1045,7 +1082,7 @@ impl OmniBridgeMusicStore {
             .find(|record| record.local_job_id == local_job_id)
         {
             if existing.payload_digest == digest && existing.idempotency_key == idempotency_key {
-                return Ok(existing.clone());
+                return Ok(PrepareIntentOutcome::Existing(existing.clone()));
             }
             return Err(OmniBridgeError::InvalidInput(
                 "local job id already owns a different OmniBridge intent".to_owned(),
@@ -1073,7 +1110,7 @@ impl OmniBridgeMusicStore {
         };
         records.push(record.clone());
         self.save_all(&records)?;
-        Ok(record)
+        Ok(PrepareIntentOutcome::Created(record))
     }
 
     pub fn mark_accepted(
@@ -1480,6 +1517,29 @@ mod tests {
                 )
                 .is_err()
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn identical_intent_grants_submit_permission_only_once() {
+        let directory = env::temp_dir().join(format!(
+            "music-maker-omnibridge-claim-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = OmniBridgeMusicStore::new(directory.join("jobs.json"));
+        let key = IdempotencyKey::new("music-maker:claim-once:v1").unwrap();
+        let first = store
+            .prepare_intent_once("claim-once", &request(), key.clone(), context())
+            .unwrap();
+        let second = store
+            .prepare_intent_once("claim-once", &request(), key, context())
+            .unwrap();
+        assert!(matches!(first, PrepareIntentOutcome::Created(_)));
+        assert!(matches!(second, PrepareIntentOutcome::Existing(_)));
         fs::remove_dir_all(directory).unwrap();
     }
 

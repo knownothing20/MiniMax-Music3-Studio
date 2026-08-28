@@ -85,6 +85,8 @@ export function mapNativeLibrarySong(song: NativeLibrarySong): Song {
     timeSignature: stringMetadata(metadata, 'time_signature') ?? stringMetadata(metadata, 'timeSignature'),
     generationParams: song.generation_settings ?? undefined,
     nativeReplayAvailable: Boolean(song.replay_request && song.audio_codes),
+    artifactSha256: stringMetadata(metadata, 'artifact_sha256'),
+    omnibridgeJobId: stringMetadata(metadata, 'omnibridge_job_id'),
     // Karaoke timings, when someone has made them. The video studio and the
     // LRC download have always read this field.
     lrcContent: stringMetadata(metadata, 'lrc'),

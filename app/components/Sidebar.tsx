@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Disc, Library, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
+import { Disc, FlaskConical, Library, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
 import { View } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { ResourceMonitor } from './ResourceMonitor';
@@ -150,6 +150,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <NavItem icon={<Search size={20} />} label={t('search')} active={currentView === 'search'} onClick={() => onNavigate('search')} isExpanded={isOpen} />
           <NavItem icon={<Newspaper size={20} />} label={t('news')} active={currentView === 'news'} onClick={() => onNavigate('news')} isExpanded={isOpen} />
           <NavItem icon={<SlidersHorizontal size={20} />} label={t('studioTools')} active={currentView === 'tools'} onClick={() => onNavigate('tools')} isExpanded={isOpen} />
+          <NavItem icon={<FlaskConical size={20} />} label={t('apiCase')} active={currentView === 'api-case'} onClick={() => onNavigate('api-case')} isExpanded={isOpen} />
 
           <div className="mt-auto flex flex-col gap-2">
             <ResourceMonitor isOpen={isOpen} />
