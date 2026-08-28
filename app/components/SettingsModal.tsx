@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Boxes, Cloud, Cpu, Github, Image as ImageIcon, Info, Monitor, Route, User as UserIcon, X } from 'lucide-react';
+import { Boxes, Cloud, Cpu, Github, Image as ImageIcon, Info, Monitor, Route, SlidersHorizontal, User as UserIcon, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import type { Language } from '../i18n/translations';
@@ -8,6 +8,7 @@ import { EngineSettings } from './EngineSettings';
 import { SetupGate } from './SetupGate';
 import { CoverTemplateSettings } from './CoverTemplateSettings';
 import { OmniBridgeSettings } from './OmniBridgeSettings';
+import { ModelStrategySettings } from './ModelStrategySettings';
 
 /**
  * Settings.
@@ -22,7 +23,7 @@ import { OmniBridgeSettings } from './OmniBridgeSettings';
 /// The assistant and the karaoke recogniser are not sections of their own: they
 /// are set up where they are installed, on the models page. Having both was one
 /// capability drawn twice, and the two drawings disagreed.
-type SectionId = 'account' | 'models' | 'engine' | 'cloud' | 'omnibridge' | 'covers' | 'interface' | 'about';
+type SectionId = 'account' | 'strategies' | 'models' | 'engine' | 'cloud' | 'omnibridge' | 'covers' | 'interface' | 'about';
 
 const INPUT =
   'w-full rounded-lg border-2 border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-white';
@@ -66,7 +67,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSec
 
   const sections: Array<{ id: SectionId; label: string; hint: string; icon: React.ReactNode }> = [
     { id: 'account', label: t('account'), hint: t('accountSectionHint'), icon: <UserIcon size={16} /> },
-    { id: 'models', label: t('modelsSection'), hint: t('modelsSectionHint'), icon: <Boxes size={16} /> },
+    { id: 'strategies', label: language === 'zh' ? '模型策略' : 'Model strategies', hint: language === 'zh' ? '业务角色与 OmniBridge 路由' : 'Business roles and OmniBridge routes', icon: <SlidersHorizontal size={16} /> },
+    { id: 'models', label: language === 'zh' ? '本地资源' : 'Local resources', hint: language === 'zh' ? '仅管理本地模型、运行时与磁盘文件' : 'Local models, runtimes and files only', icon: <Boxes size={16} /> },
     { id: 'engine', label: t('localEngine'), hint: t('engineSectionHint'), icon: <Cpu size={16} /> },
     { id: 'cloud', label: t('providers'), hint: t('cloudSectionHint'), icon: <Cloud size={16} /> },
     { id: 'omnibridge', label: t('omnibridgeSection'), hint: t('omnibridgeSectionHint'), icon: <Route size={16} /> },
@@ -144,10 +146,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, initialSec
             {/* The same chooser as the first run, because it is the same
                 decision - only now nothing is waiting on it. */}
             {section === 'covers' && <CoverTemplateSettings />}
+            {section === 'strategies' && <ModelStrategySettings />}
             {section === 'models' && <div className="-m-6"><SetupGate mode="settings" /></div>}
             {section === 'engine' && <EngineSettings />}
             {section === 'cloud' && <ProviderSettings />}
-            {section === 'omnibridge' && <OmniBridgeSettings onOpenCase={onOpenApiCase} />}
+            {section === 'omnibridge' && <OmniBridgeSettings onOpenCase={onOpenApiCase} onOpenStrategies={() => setSection('strategies')} />}
 
             {section === 'interface' && (
               <div className="max-w-lg space-y-6">

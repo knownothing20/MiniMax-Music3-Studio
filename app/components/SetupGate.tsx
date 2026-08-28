@@ -71,6 +71,9 @@ type OptionalStatus = {
   /// shared counter happened to hold.
   set?: SetProgress;
   active_download?: { asset_id: string; downloaded_bytes: number; total_bytes: number; done: boolean; error?: string | null } | null;
+  provider?: string;
+  cloud_available?: boolean;
+  available?: boolean;
 };
 
 const bytes = (value: number) => (value < 1024 ** 3 ? `${Math.round(value / 1024 ** 2)} MB` : `${(value / 1024 ** 3).toFixed(1)} GB`);
@@ -210,6 +213,7 @@ export const OptionalGroup: React.FC<{
   const assets = status?.assets ?? [];
   if (assets.length === 0) return null;
   const installed = assets.filter((asset) => asset.installed).length;
+  const cloudReady = engine === 'omnibridge' && status?.cloud_available === true;
   // The models the chosen engine can run. A recogniser or an assistant is a
   // runtime plus one of these; the runtime is the studio's business, the model
   // is the user's choice.
@@ -223,7 +227,7 @@ export const OptionalGroup: React.FC<{
     // Parakeet comes in two precisions; the rest of its files are shared, so
     // only the encoders are a choice.
     if (engine === 'parakeet') return asset.id === 'parakeet-tdt-int8' || asset.id === 'parakeet-tdt-fp32';
-    if (engine === 'open_router') return false;
+    if (engine === 'open_router' || engine === 'omnibridge') return false;
     return true;
   });
   const chosenModel = model || models.find((asset) => asset.installed)?.id || models[0]?.id || '';
@@ -244,7 +248,7 @@ export const OptionalGroup: React.FC<{
         <div className="flex shrink-0 items-center gap-2 text-xs text-zinc-500">
           <span className="tabular-nums">
             {engines && engines.length > 0
-              ? (installed > 0 ? t('installed') : t('notInstalledSuffix'))
+              ? (cloudReady ? '云端已配置' : installed > 0 ? t('installed') : t('notInstalledSuffix'))
               : `${installed}/${assets.length}`}
           </span>
           <ChevronDown size={15} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />

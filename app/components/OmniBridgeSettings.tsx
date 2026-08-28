@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, FlaskConical, Loader2, RefreshCw, Route, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ExternalLink, FlaskConical, Loader2, RefreshCw, Route, Settings2, ShieldCheck } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { OmniBridgeIntegrationStatus, readOmniBridgeIntegrationStatus } from '../services/omnibridgeMusic';
 
 interface OmniBridgeSettingsProps {
   onOpenCase: () => void;
+  onOpenStrategies: () => void;
 }
 
 const ValueRow: React.FC<{ label: string; value: string; mono?: boolean }> = ({ label, value, mono }) => (
@@ -14,7 +15,7 @@ const ValueRow: React.FC<{ label: string; value: string; mono?: boolean }> = ({ 
   </div>
 );
 
-export const OmniBridgeSettings: React.FC<OmniBridgeSettingsProps> = ({ onOpenCase }) => {
+export const OmniBridgeSettings: React.FC<OmniBridgeSettingsProps> = ({ onOpenCase, onOpenStrategies }) => {
   const { t } = useI18n();
   const [status, setStatus] = useState<OmniBridgeIntegrationStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -38,6 +39,7 @@ export const OmniBridgeSettings: React.FC<OmniBridgeSettingsProps> = ({ onOpenCa
   const ready = status?.configured === true && status.executionTarget === 'omnibridge' && status.contractVerified === true;
   const evidence = status?.realGenerationVerified === true;
   const routeReady = status?.routeResolutionVerified === true && status?.providerResolutionVerified === true;
+  const providerHubUrl = `${window.location.protocol}//${window.location.hostname}:8787/provider-hub`;
 
   return (
     <div className="max-w-2xl space-y-5">
@@ -91,6 +93,21 @@ export const OmniBridgeSettings: React.FC<OmniBridgeSettingsProps> = ({ onOpenCa
           </button>
           <button
             type="button"
+            onClick={onOpenStrategies}
+            className="inline-flex items-center gap-2 rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold text-indigo-700 dark:border-indigo-500/30 dark:text-indigo-200"
+          >
+            <Settings2 size={14} /> 编辑本项目模型策略
+          </button>
+          <a
+            href={providerHubUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-xs font-semibold text-zinc-700 dark:border-white/15 dark:text-zinc-200"
+          >
+            <ExternalLink size={14} /> 打开 OmniBridge 中央管理
+          </a>
+          <button
+            type="button"
             onClick={onOpenCase}
             className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-600 px-3 py-2 text-xs font-bold text-white"
           >
@@ -102,7 +119,7 @@ export const OmniBridgeSettings: React.FC<OmniBridgeSettingsProps> = ({ onOpenCa
       <section className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 text-xs leading-5 text-zinc-600 dark:text-zinc-300">
         <p className="flex items-start gap-2">
           <Route size={15} className="mt-0.5 shrink-0 text-indigo-500" />
-          <span>{t('omniCentralManaged')}</span>
+          <span>本页只显示中央连接和真实生成证据。music-maker 的业务角色与 Route 在“模型策略”中编辑；Provider、Deployment、凭据和候选顺序请在 OmniBridge 中央管理页维护。</span>
         </p>
       </section>
     </div>

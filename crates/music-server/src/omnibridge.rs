@@ -79,11 +79,18 @@ impl OmniBridgeConfig {
     }
 
     pub fn from_env() -> Result<Self, OmniBridgeError> {
+        let route = required_env("MUSIC_MAKER_OMNIBRIDGE_MUSIC_ROUTE")?;
+        Self::from_env_with_route(route)
+    }
+
+    /// Loads the managed Gateway identity while taking the project-owned
+    /// business route from Project Profile v2.
+    pub fn from_env_with_route(music_route: impl Into<String>) -> Result<Self, OmniBridgeError> {
         Self::new(
             required_env("MUSIC_MAKER_OMNIBRIDGE_BASE_URL")?,
             required_env("MUSIC_MAKER_OMNIBRIDGE_GATEWAY_KEY")?,
             required_env("MUSIC_MAKER_OMNIBRIDGE_PLATFORM_ID")?,
-            required_env("MUSIC_MAKER_OMNIBRIDGE_MUSIC_ROUTE")?,
+            music_route,
             required_env("MUSIC_MAKER_OMNIBRIDGE_SCHEMA_DIGEST")?,
         )
     }
@@ -207,6 +214,20 @@ pub struct OmniBridgeTextConfig {
 
 impl OmniBridgeTextConfig {
     pub fn from_env() -> Result<Self, OmniBridgeError> {
+        let fast = required_env("MUSIC_MAKER_OMNIBRIDGE_TEXT_FAST_ROUTE")?;
+        let quality = required_env("MUSIC_MAKER_OMNIBRIDGE_TEXT_QUALITY_ROUTE")?;
+        Self::from_env_with_routes(fast, quality)
+    }
+
+    pub fn from_env_with_route(route: impl Into<String>) -> Result<Self, OmniBridgeError> {
+        let route = route.into();
+        Self::from_env_with_routes(route.clone(), route)
+    }
+
+    fn from_env_with_routes(
+        fast_route: impl Into<String>,
+        quality_route: impl Into<String>,
+    ) -> Result<Self, OmniBridgeError> {
         let platform_id = required_env("MUSIC_MAKER_OMNIBRIDGE_PLATFORM_ID")?;
         let client_id = optional_env("MUSIC_MAKER_OMNIBRIDGE_CLIENT_ID")
             .unwrap_or_else(|| platform_id.clone());
@@ -218,8 +239,8 @@ impl OmniBridgeTextConfig {
             client_id,
             platform_id,
             project_id,
-            required_env("MUSIC_MAKER_OMNIBRIDGE_TEXT_FAST_ROUTE")?,
-            required_env("MUSIC_MAKER_OMNIBRIDGE_TEXT_QUALITY_ROUTE")?,
+            fast_route,
+            quality_route,
         )
     }
 
@@ -322,6 +343,10 @@ impl OmniBridgeTextClient {
         Self::new(OmniBridgeTextConfig::from_env()?)
     }
 
+    pub fn from_env_with_route(route: impl Into<String>) -> Result<Self, OmniBridgeError> {
+        Self::new(OmniBridgeTextConfig::from_env_with_route(route)?)
+    }
+
     pub fn new(config: OmniBridgeTextConfig) -> Result<Self, OmniBridgeError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -338,6 +363,10 @@ impl OmniBridgeTextClient {
     }
 
     fn request(&self, route: TextRoute, accept: &'static str) -> reqwest::RequestBuilder {
+        self.request_route(self.config.route(route), accept)
+    }
+
+    fn request_route(&self, route: &str, accept: &'static str) -> reqwest::RequestBuilder {
         self.client
             .post(format!("{}/v1/chat/completions", self.config.base_url))
             .bearer_auth(self.config.gateway_key.expose())
@@ -347,7 +376,7 @@ impl OmniBridgeTextClient {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, accept)
             .header("X-OmniBridge-Selector-Type", "route")
-            .header("X-OmniBridge-Selector-Id", self.config.route(route))
+            .header("X-OmniBridge-Selector-Id", route)
     }
 
     /// Sends one synchronous POST. This client has no automatic retry or
@@ -357,9 +386,18 @@ impl OmniBridgeTextClient {
         route: TextRoute,
         body: &Value,
     ) -> Result<(Value, Option<RequestReceipt>), OmniBridgeError> {
-        let body = text_request_body(body, self.config.route(route), false)?;
+        self.complete_route_once(self.config.route(route), body).await
+    }
+
+    pub async fn complete_route_once(
+        &self,
+        route: &str,
+        body: &Value,
+    ) -> Result<(Value, Option<RequestReceipt>), OmniBridgeError> {
+        let route = validate_text_route(route.to_owned(), "project profile text route")?;
+        let body = text_request_body(body, &route, false)?;
         let response = self
-            .request(route, "application/json")
+            .request_route(&route, "application/json")
             .json(&body)
             .send()
             .await
@@ -378,9 +416,18 @@ impl OmniBridgeTextClient {
         route: TextRoute,
         body: &Value,
     ) -> Result<OmniBridgeTextStream, OmniBridgeError> {
-        let body = text_request_body(body, self.config.route(route), true)?;
+        self.stream_route_once(self.config.route(route), body).await
+    }
+
+    pub async fn stream_route_once(
+        &self,
+        route: &str,
+        body: &Value,
+    ) -> Result<OmniBridgeTextStream, OmniBridgeError> {
+        let route = validate_text_route(route.to_owned(), "project profile text route")?;
+        let body = text_request_body(body, &route, true)?;
         let response = self
-            .request(route, "text/event-stream")
+            .request_route(&route, "text/event-stream")
             .json(&body)
             .send()
             .await

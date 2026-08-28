@@ -10,6 +10,7 @@ mod engine_runtime;
 mod lyrics_sync;
 mod credentials;
 mod model_manager;
+mod model_port;
 mod presets;
 mod request_log;
 mod resources;
@@ -99,6 +100,7 @@ struct AppState {
     openrouter_catalog: Arc<RwLock<OpenRouterCatalogState>>,
     library: library::Library,
     omnibridge_store: Arc<tokio::sync::Mutex<omnibridge::OmniBridgeMusicStore>>,
+    model_port: model_port::ModelPort,
     /// Owned local engine process, when this service started one.
     engine: Arc<tokio::sync::Mutex<Option<music_engine::mm_server::MmServerSupervisor>>>,
     engine_options: Arc<RwLock<EngineOptions>>,
@@ -447,7 +449,7 @@ impl AssistantConfig {
                 self.managed_model.as_deref().is_some_and(|model| !model.trim().is_empty())
                     || self.managed_path.as_deref().is_some_and(|path| !path.trim().is_empty())
             }
-            AssistantProvider::OmniBridge => omnibridge::OmniBridgeTextConfig::from_env().is_ok(),
+            AssistantProvider::OmniBridge => omnibridge::OmniBridgeTextConfig::from_env_with_route("route:text:configured").is_ok(),
         }
     }
 }
@@ -514,6 +516,8 @@ pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::R
     };
     let data_root = studio_data_root().unwrap_or_else(|| PathBuf::from("."));
     let omnibridge_store = omnibridge::OmniBridgeMusicStore::new(data_root.join("omnibridge").join("music-jobs.json"));
+    let model_port = model_port::ModelPort::new(&data_root)
+        .map_err(anyhow::Error::msg)?;
     let restored_jobs = restore_omnibridge_jobs(&omnibridge_store)?;
     let state = AppState {
         configuration: Arc::new(RwLock::new(sanitize_persisted_configuration(
@@ -549,6 +553,7 @@ pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::R
         openrouter_catalog: Arc::new(RwLock::new(OpenRouterCatalogState::default())),
         library: library::Library::open_default()?,
         omnibridge_store: Arc::new(tokio::sync::Mutex::new(omnibridge_store)),
+        model_port,
         engine: Arc::new(tokio::sync::Mutex::new(None)),
         engine_options: Arc::new(RwLock::new(persisted.as_ref().map(|settings| settings.engine_options).unwrap_or_default())),
         engine_runtime: Arc::new(engine_runtime::EngineRuntime::new(&engine_bundle_root())),
@@ -592,6 +597,8 @@ pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::R
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/integrations/omnibridge", get(omnibridge_integration_status))
+        .route("/v1/model-bindings", get(model_bindings).put(update_model_bindings))
+        .route("/v1/model-bindings/preview", post(preview_model_bindings))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/configuration", get(configuration).put(update_configuration))
         .route("/engine/presets", get(engine_presets))
@@ -2045,9 +2052,58 @@ fn omnibridge_integration_status_payload(
     payload
 }
 
+async fn model_bindings(State(state): State<AppState>) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    state.model_port.bindings_payload().await.map(Json).map_err(|error| {
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, security::redact_secrets(error))
+    })
+}
+
+async fn preview_model_bindings(
+    State(state): State<AppState>,
+    Json(request): Json<model_port::PreviewProfileRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let profile = match request.profile {
+        Some(profile) => profile,
+        None => state.model_port.profile().map_err(|error| {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, security::redact_secrets(error))
+        })?,
+    };
+    state.model_port.validate_with_hub(&profile).await.map(Json).map_err(|error| {
+        api_error(StatusCode::BAD_GATEWAY, security::redact_secrets(error))
+    })
+}
+
+async fn update_model_bindings(
+    State(state): State<AppState>,
+    Json(request): Json<model_port::SaveProfileRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let preview = state.model_port.validate_with_hub(&request.profile).await.map_err(|error| {
+        api_error(StatusCode::UNPROCESSABLE_ENTITY, security::redact_secrets(error))
+    })?;
+    let profile = state.model_port.save(request).map_err(|error| {
+        let status = if error.starts_with("profile revision conflict") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        api_error(status, security::redact_secrets(error))
+    })?;
+    Ok(Json(serde_json::json!({
+        "schema": "music-maker.model-bindings-save.v1",
+        "profile": profile,
+        "preview": preview,
+    })))
+}
+
 async fn omnibridge_integration_status(State(state): State<AppState>) -> Json<Value> {
     let execution_target = music_execution_target_name();
-    let config = match omnibridge::OmniBridgeConfig::from_env() {
+    let music_route = match state.model_port.music_route() {
+        Ok(route) => route,
+        Err(error) => {
+            return Json(omnibridge_integration_status_payload(None, Some(error), OmniBridgeContractDiagnostic::NotChecked, execution_target, false));
+        }
+    };
+    let config = match omnibridge::OmniBridgeConfig::from_env_with_route(music_route) {
         Ok(config) => config,
         Err(error) => {
             return Json(omnibridge_integration_status_payload(
@@ -2791,9 +2847,10 @@ async fn proxy_image(
 async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
     let config = state.assistant.read().await.clone();
     let runtime = state.assistant_runtime.status().await;
-    let text_config = omnibridge::OmniBridgeTextConfig::from_env();
-    let cloud_available = text_config.is_ok();
-    let cloud = text_config.as_ref().ok().map(|managed| managed.public_status());
+    let text_config = state.model_port.role_route("song_package_draft").ok()
+        .and_then(|route| omnibridge::OmniBridgeTextConfig::from_env_with_route(route).ok());
+    let cloud_available = text_config.is_some();
+    let cloud = text_config.as_ref().map(|managed| managed.public_status());
     // A managed model is only usable once its file and the runtime are on disk.
     let available = match config.provider {
         AssistantProvider::Managed => {
@@ -2936,12 +2993,15 @@ async fn assistant_runtime_status(State(state): State<AppState>) -> Json<Value> 
     let status = state.assistant_runtime.status().await;
     let provider = state.assistant.read().await.provider;
     let mut value = serde_json::to_value(&status).unwrap_or(Value::Null);
+    let cloud_available = state.model_port.cloud_configured();
     let chosen = state.assistant.read().await.managed_model.clone();
     if let Value::Object(ref mut fields) = value {
         fields.insert("provider".into(), serde_json::to_value(provider).unwrap_or(Value::Null));
         // And which model, so the dropdown reopens on the one that was picked
         // rather than on whichever happens to be installed first.
         fields.insert("chosen_model".into(), serde_json::to_value(chosen).unwrap_or(Value::Null));
+        fields.insert("cloud_available".into(), Value::Bool(cloud_available));
+        fields.insert("available".into(), Value::Bool(cloud_available || status.assets.iter().any(|asset| asset.installed)));
     }
     Json(value)
 }
@@ -3411,18 +3471,21 @@ async fn assistant_write_stream(
         emit(sender.clone(), serde_json::json!({ "stage": "preparing" })).await;
 
         if config.provider == AssistantProvider::OmniBridge {
-            // All current assistant targets create production-ready Music3
-            // inputs, so they use the quality text policy. The selector is a
-            // generic route; candidate order remains central in OmniBridge.
-            let client = match omnibridge::OmniBridgeTextClient::from_env() {
+            let role_id = model_port::ModelPort::assistant_role(&request);
+            let route_id = match state.model_port.role_route(role_id) {
+                Ok(route) => route,
+                Err(error) => {
+                    emit(sender.clone(), serde_json::json!({ "error": error, "role": role_id })).await;
+                    return;
+                }
+            };
+            let client = match omnibridge::OmniBridgeTextClient::from_env_with_route(&route_id) {
                 Ok(client) => client,
                 Err(error) => {
                     emit(sender.clone(), serde_json::json!({ "error": error.to_string() })).await;
                     return;
                 }
             };
-            let route = omnibridge::TextRoute::Quality;
-            let route_id = client.route(route).to_owned();
             let body = assistant::chat_body_full(
                 &route_id,
                 &system,
@@ -3441,7 +3504,7 @@ async fn assistant_write_stream(
                 system.chars().count() + user.chars().count(),
             );
             let started = std::time::Instant::now();
-            let streamed = match client.stream_once(route, &body).await {
+            let streamed = match client.stream_route_once(&route_id, &body).await {
                 Ok(streamed) => streamed,
                 Err(error) => {
                     request_log::failed("assistant", &route_id, &error.to_string());
@@ -3788,10 +3851,10 @@ async fn assistant_write(
                 .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("invalid assistant response: {error}")))?
         }
         AssistantProvider::OmniBridge => {
-            let client = omnibridge::OmniBridgeTextClient::from_env()
+            let role_id = model_port::ModelPort::assistant_role(&request);
+            let route_id = state.model_port.role_route(role_id).map_err(|error| api_error(StatusCode::BAD_REQUEST, error))?;
+            let client = omnibridge::OmniBridgeTextClient::from_env_with_route(&route_id)
                 .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
-            let route = omnibridge::TextRoute::Quality;
-            let route_id = client.route(route).to_owned();
             let body = assistant::chat_body_full(
                 &route_id,
                 &system,
@@ -3800,7 +3863,7 @@ async fn assistant_write(
                 None,
             );
             let (response, _receipt) = client
-                .complete_once(route, &body)
+                .complete_route_once(&route_id, &body)
                 .await
                 .map_err(|error| {
                     api_error(
@@ -4435,7 +4498,11 @@ async fn create_omnibridge_music_job(
     request: CreateMusicJobRequest,
 ) -> (StatusCode, Json<MusicJob>) {
     let engine_id = "omnibridge".to_owned();
-    let config = match omnibridge::OmniBridgeConfig::from_env() {
+    let music_route = match state.model_port.music_route() {
+        Ok(route) => route,
+        Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error))),
+    };
+    let config = match omnibridge::OmniBridgeConfig::from_env_with_route(music_route) {
         Ok(config) => config,
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
@@ -4582,7 +4649,7 @@ async fn poll_omnibridge_music_job(
     }
     if !record.poll_is_due() { return Ok(Json(existing)); }
     let handle = record.task_handle().cloned().ok_or_else(|| api_error(StatusCode::CONFLICT, "Accepted OmniBridge job has no recoverable handle.".into()))?;
-    let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env()
+    let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env_with_route("route:music:recovery")
         .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?)
         .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
     let remote = match client.get_status(&handle).await {
@@ -4847,7 +4914,7 @@ async fn cancel_music_job(
             .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
             .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "OmniBridge job intent was not found.".into()))?;
         let handle = record.task_handle().ok_or_else(|| api_error(StatusCode::CONFLICT, "Submission outcome is unknown; cancellation cannot be proven safe.".into()))?;
-        let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env()
+        let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env_with_route("route:music:recovery")
             .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?)
             .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
         return match client.cancel_after_accept(handle) {

@@ -30,29 +30,51 @@
     }
   },
   "roles": {
+    "song_package_draft": {
+      "capability": "text",
+      "selector": {
+        "type": "route",
+        "id": "route:text:quality"
+      }
+    },
     "song_concept_draft": {
       "capability": "text",
-      "selector": { "type": "inherit" }
+      "selector": {
+        "type": "inherit"
+      }
     },
     "lyrics_draft": {
       "capability": "text",
-      "selector": { "type": "route", "id": "route:text:quality" }
+      "selector": {
+        "type": "route",
+        "id": "route:text:quality"
+      }
     },
     "lyrics_refine": {
       "capability": "text",
-      "selector": { "type": "route", "id": "route:text:quality" }
+      "selector": {
+        "type": "route",
+        "id": "route:text:quality"
+      }
     },
     "music_prompt_structuring": {
       "capability": "text",
-      "selector": { "type": "route", "id": "route:text:quality" }
+      "selector": {
+        "type": "route",
+        "id": "route:text:quality"
+      }
     },
     "title_cover_brief": {
       "capability": "text",
-      "selector": { "type": "inherit" }
+      "selector": {
+        "type": "inherit"
+      }
     },
     "music_generation_cloud": {
       "capability": "music",
-      "selector": { "type": "inherit" }
+      "selector": {
+        "type": "inherit"
+      }
     }
   }
 }
