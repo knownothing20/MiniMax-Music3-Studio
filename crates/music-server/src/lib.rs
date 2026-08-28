@@ -1942,11 +1942,42 @@ fn safe_omnibridge_diagnostic_error(error: &omnibridge::OmniBridgeError) -> Stri
     }
 }
 
+fn durable_record_matches_music_route(
+    record: &omnibridge::DurableMusicRecord,
+    music_route: &str,
+) -> bool {
+    let stored_route = record
+        .context()
+        .and_then(|context| context.generation_settings.get("model"))
+        .and_then(Value::as_str);
+    stored_route == Some(music_route)
+        && matches!(
+            record.submit_state(),
+            omnibridge::DurableSubmitState::Accepted
+        )
+        && matches!(
+            record.status(),
+            Some("completed") | Some("succeeded") | Some("done")
+        )
+        && record.artifact().is_some()
+        && record.imported_song_id().is_some()
+}
+
+fn omnibridge_route_generation_verified(
+    records: &[omnibridge::DurableMusicRecord],
+    music_route: &str,
+) -> bool {
+    records
+        .iter()
+        .any(|record| durable_record_matches_music_route(record, music_route))
+}
+
 fn omnibridge_integration_status_payload(
     config: Option<&omnibridge::OmniBridgeConfig>,
     configuration_error: Option<String>,
     contract: OmniBridgeContractDiagnostic,
     execution_target: &str,
+    real_generation_verified: bool,
 ) -> Value {
     let configured = config.is_some();
     let (diagnostic_status, contract_status, contract_verified, contract_error) = match contract {
@@ -1973,10 +2004,16 @@ fn omnibridge_integration_status_payload(
         "execution_target": execution_target,
         "operation": omnibridge::OmniBridgeConfig::operation(),
         "kind": omnibridge::OmniBridgeConfig::kind(),
-        "route_readiness": if configured { "unverified" } else { "not_ready" },
-        "route_resolution_verified": false,
-        "provider_resolution_verified": false,
-        "real_generation_verified": false,
+        "route_readiness": if real_generation_verified {
+            "ready"
+        } else if configured {
+            "unverified"
+        } else {
+            "not_ready"
+        },
+        "route_resolution_verified": real_generation_verified,
+        "provider_resolution_verified": real_generation_verified,
+        "real_generation_verified": real_generation_verified,
     });
     if let Some(config) = config {
         payload["music_route"] = Value::String(config.music_route.clone());
@@ -1987,7 +2024,7 @@ fn omnibridge_integration_status_payload(
     payload
 }
 
-async fn omnibridge_integration_status() -> Json<Value> {
+async fn omnibridge_integration_status(State(state): State<AppState>) -> Json<Value> {
     let execution_target = music_execution_target_name();
     let config = match omnibridge::OmniBridgeConfig::from_env() {
         Ok(config) => config,
@@ -1997,6 +2034,7 @@ async fn omnibridge_integration_status() -> Json<Value> {
                 Some(safe_omnibridge_diagnostic_error(&error)),
                 OmniBridgeContractDiagnostic::NotChecked,
                 execution_target,
+                false,
             ));
         }
     };
@@ -2011,11 +2049,25 @@ async fn omnibridge_integration_status() -> Json<Value> {
             safe_omnibridge_diagnostic_error(&error),
         ),
     };
+    let (real_generation_verified, store_error) = {
+        let store = state.omnibridge_store.lock().await;
+        match store.list() {
+            Ok(records) => (
+                omnibridge_route_generation_verified(&records, &config.music_route),
+                None,
+            ),
+            Err(error) => (
+                false,
+                Some(safe_omnibridge_diagnostic_error(&error)),
+            ),
+        }
+    };
     Json(omnibridge_integration_status_payload(
         Some(&config),
-        None,
+        store_error,
         contract,
         execution_target,
+        real_generation_verified,
     ))
 }
 
@@ -4973,6 +5025,7 @@ mod tests {
             None,
             OmniBridgeContractDiagnostic::NotChecked,
             "omnibridge",
+            false,
         );
         assert_eq!(configured["diagnostic_status"], "configured");
         assert_eq!(configured["contract_status"], "not_checked");
@@ -4982,6 +5035,7 @@ mod tests {
             None,
             OmniBridgeContractDiagnostic::Verified,
             "omnibridge",
+            false,
         );
         assert_eq!(verified["diagnostic_status"], "contract_verified");
         assert_eq!(verified["contract_status"], "verified");
@@ -4996,6 +5050,7 @@ mod tests {
                 "Authorization: Bearer diagnostic-secret".to_owned(),
             ),
             "omnibridge",
+            false,
         );
         let encoded = serde_json::to_string(&failed).unwrap();
         assert_eq!(failed["diagnostic_status"], "contract_failed");
@@ -5019,6 +5074,84 @@ mod tests {
         let safe = safe_omnibridge_diagnostic_error(&error);
         assert_eq!(safe, "OmniBridge contract endpoint is unreachable.");
         assert!(!safe.contains("private-gateway.example"));
+    }
+
+    fn durable_receipt_records(route: &str, status: &str) -> Vec<omnibridge::DurableMusicRecord> {
+        let path = env::temp_dir().join(format!(
+            "music-maker-integration-evidence-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sidecar = serde_json::json!({
+            "schema": "music-maker.omnibridge-jobs.v1",
+            "records": [{
+                "local_job_id": "omnibridge-evidence",
+                "payload_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "idempotency_key": "music-maker:evidence:v1",
+                "submit_state": "accepted",
+                "task_id": "task-evidence",
+                "task_token": "test-only-task-token",
+                "status": status,
+                "artifact": {
+                    "schema": "omnibridge.artifact-ref.v1",
+                    "id": "artifact-evidence",
+                    "content_type": "audio/mpeg",
+                    "bytes": 3,
+                    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "availability": "metadata-only"
+                },
+                "context": {
+                    "caption": "receipt",
+                    "lyrics": "receipt",
+                    "duration_seconds": 1.0,
+                    "title": "Receipt",
+                    "cover_prompt": null,
+                    "generation_settings": {
+                        "operation": "audio.music.generate",
+                        "kind": "audio.music_generation",
+                        "model": route,
+                        "payload": { "model": route }
+                    }
+                },
+                "imported_song_id": "song-evidence"
+            }]
+        });
+        fs::write(&path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+        let records = omnibridge::OmniBridgeMusicStore::new(&path)
+            .list()
+            .unwrap();
+        fs::remove_file(path).unwrap();
+        records
+    }
+
+    #[test]
+    fn omnibridge_generation_evidence_requires_complete_receipt_for_current_route() {
+        let records = durable_receipt_records("route:music:minimax-3", "completed");
+        assert!(omnibridge_route_generation_verified(
+            &records,
+            "route:music:minimax-3"
+        ));
+    }
+
+    #[test]
+    fn omnibridge_generation_evidence_rejects_another_route() {
+        let records = durable_receipt_records("route:music:other", "completed");
+        assert!(!omnibridge_route_generation_verified(
+            &records,
+            "route:music:minimax-3"
+        ));
+    }
+
+    #[test]
+    fn omnibridge_generation_evidence_rejects_failed_status() {
+        let records = durable_receipt_records("route:music:minimax-3", "failed");
+        assert!(!omnibridge_route_generation_verified(
+            &records,
+            "route:music:minimax-3"
+        ));
     }
 
     /// Nothing stays in VRAM unless the user asked for it. This is the setting
