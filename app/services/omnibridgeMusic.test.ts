@@ -8,6 +8,7 @@ import {
   listRecoverableOmniBridgeJobs,
   loadOmniBridgeCaseIntent,
   readOmniBridgeIntegrationStatus,
+  sha256Digest,
   submitOmniBridgeMusicJobOnce,
   updateOmniBridgeCaseIntent,
   verifyImportedAudioArtifact,
@@ -15,6 +16,10 @@ import {
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
 }
 
 function job(status: Music3Job['status'] = 'queued'): Music3Job {
@@ -138,6 +143,49 @@ describe('OmniBridge Music API case client', () => {
     expect(storage.getItem(OMNIBRIDGE_CASE_STORAGE_KEY)).toContain('intent_persisted');
     const attempted = updateOmniBridgeCaseIntent(intent, { postAttempted: true, submitOutcome: 'attempted' }, storage);
     expect(loadOmniBridgeCaseIntent(storage)).toEqual(attempted);
+  });
+
+  it('prefers WebCrypto SHA-256 when subtle is available', async () => {
+    const subtleDigest = vi.fn(async (_algorithm: AlgorithmIdentifier, _data: BufferSource) => new Uint8Array(32).fill(0xab).buffer);
+    const subtle = { digest: subtleDigest } as unknown as Pick<SubtleCrypto, 'digest'>;
+
+    const digest = await sha256Digest(new Uint8Array([1, 2, 3]), subtle);
+
+    expect(bytesToHex(digest)).toBe('ab'.repeat(32));
+    expect(subtleDigest).toHaveBeenCalledTimes(1);
+    expect(subtleDigest.mock.calls[0]?.[0]).toBe('SHA-256');
+  });
+
+  it('uses the pure SHA-256 fallback without subtle and still rejects mismatched Artifact evidence', async () => {
+    const bytes = new TextEncoder().encode('abc');
+    const expected = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+    expect(bytesToHex(await sha256Digest(bytes, null))).toBe(expected);
+    expect(bytesToHex(await sha256Digest(new Uint8Array(), null))).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    const boundary = new TextEncoder().encode('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq');
+    expect(bytesToHex(await sha256Digest(boundary, null))).toBe('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1');
+
+    const complete: Music3Job = {
+      ...job('completed'),
+      song: {
+        id: 'fallback-song',
+        audio_url: '/v1/library/media/fallback-song',
+        song: { id: 'fallback-song', metadata: { artifact_sha256: expected } },
+      },
+    };
+    const fetchImpl = vi.fn(async () => new Response(bytes, {
+      status: 200,
+      headers: { 'content-type': 'audio/mpeg', 'content-length': String(bytes.byteLength) },
+    }));
+    const fallbackDigest = (value: Uint8Array) => sha256Digest(value, null);
+
+    await expect(verifyImportedAudioArtifact(complete, fetchImpl, fallbackDigest))
+      .resolves.toMatchObject({ sha256: expected, expectedSha256: expected, bytes: 3 });
+
+    if (complete.song?.song?.metadata) {
+      complete.song.song.metadata.artifact_sha256 = '00'.repeat(32);
+    }
+    await expect(verifyImportedAudioArtifact(complete, fetchImpl, fallbackDigest))
+      .rejects.toThrow('SHA-256');
   });
 
   it('verifies protected imported audio against the persisted Artifact SHA-256 evidence', async () => {
