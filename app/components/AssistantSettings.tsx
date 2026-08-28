@@ -22,6 +22,18 @@ interface RuntimeStatus {
   active_download?: { error?: string | null } | null;
 }
 
+interface OmniBridgeAssistantStatus {
+  available?: boolean;
+  cloud_available?: boolean;
+  provider?: string;
+  cloud?: {
+    provider?: string;
+    fast_route?: string;
+    quality_route?: string;
+    project_id?: string;
+  } | null;
+}
+
 const INPUT =
   'w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-pink-400 dark:border-white/10 dark:bg-black/20 dark:text-white';
 
@@ -38,6 +50,7 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
   const [catalog, setCatalog] = useState<NativeOpenRouterModel[]>([]);
   const [busy, setBusy] = useState<'save' | 'catalog' | null>(null);
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<OmniBridgeAssistantStatus | null>(null);
 
   // The catalog is already there; asking the user to press refresh to see it
   // is the program making them do its work.
@@ -52,6 +65,7 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
       .then((response) => (response.ok ? response.json() : null))
       .then((status: { local_base_url?: string | null; local_model?: string | null; openrouter_model?: string | null; managed_path?: string | null } | null) => {
         if (!status) return;
+        setCloudStatus(status as OmniBridgeAssistantStatus);
         setLocalBaseUrl(status.local_base_url ?? '');
         setLocalModel(status.local_model ?? '');
         setOpenRouterModel(status.openrouter_model ?? '');
@@ -174,6 +188,25 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
 
   return (
     <div className="space-y-2">
+      {engine === 'omnibridge' && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3 text-xs dark:border-emerald-500/20 dark:bg-emerald-500/5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-semibold text-zinc-900 dark:text-white">OmniBridge · {cloudStatus?.cloud?.project_id ?? 'music-maker'}</span>
+            <span className={cloudStatus?.cloud_available ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}>
+              {cloudStatus?.cloud_available ? t('cloudProviderReady') : t('serviceUnavailable')}
+            </span>
+          </div>
+          <dl className="mt-2 grid gap-1 text-zinc-600 dark:text-zinc-300">
+            <div className="flex justify-between gap-3"><dt>song_concept_draft</dt><dd className="font-mono">{cloudStatus?.cloud?.fast_route ?? 'route:text:fast'}</dd></div>
+            <div className="flex justify-between gap-3"><dt>lyrics_draft / refine</dt><dd className="font-mono">{cloudStatus?.cloud?.quality_route ?? 'route:text:quality'}</dd></div>
+            <div className="flex justify-between gap-3"><dt>music_prompt_structuring</dt><dd className="font-mono">{cloudStatus?.cloud?.quality_route ?? 'route:text:quality'}</dd></div>
+          </dl>
+          <p className="mt-2 leading-5 text-zinc-500 dark:text-zinc-400">
+            Provider、模型与凭据由 OmniBridge 统一管理；此处只选择业务角色，不保存密钥或候选顺序。
+          </p>
+        </div>
+      )}
+
       {engine === 'managed' && (
         <div className="rounded-lg border-2 border-dashed border-zinc-300 p-3 transition-colors hover:border-zinc-400 dark:border-white/10 dark:hover:border-white/20">
           <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400">{t('assistantOwnFile')}</label>
@@ -246,7 +279,7 @@ export const AssistantExtras: React.FC<{ engine: string }> = ({ engine }) => {
       <div className="flex items-center gap-3 pt-1">
         {/* The local server saves itself as its fields change, so it needs no
             button; the others still keep their explicit Save. */}
-        {engine !== 'local' && (
+        {engine !== 'local' && engine !== 'omnibridge' && (
           <button
             type="button"
             onClick={() => void save()}

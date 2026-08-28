@@ -20,7 +20,7 @@ interface AuthContextType {
 }
 
 const DISPLAY_NAME_KEY = 'music3.displayName';
-const DEFAULT_DISPLAY_NAME = 'Local Studio';
+const DEFAULT_DISPLAY_NAME = '本地工作室';
 const LOCAL_USER_ID = 'local-studio';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);

@@ -4,6 +4,12 @@ import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, Ro
 import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { joinCaption, randomExample, splitCaption } from '../services/examples';
+import type { GenerationModePreference } from '../services/studioExecution';
+import {
+  isWritingAssistantAvailable,
+  streamWritingAssistant,
+  type WritingAssistantStatus,
+} from '../services/writingAssistant';
 
 /**
  * The Music3 request form.
@@ -32,6 +38,11 @@ interface CreatePanelProps {
   isGenerating: boolean;
   activeJobCount?: number;
   initialData?: { song: Song; timestamp: number } | null;
+  cloudMode?: boolean;
+  generationMode: GenerationModePreference;
+  onGenerationModeChange: (mode: GenerationModePreference) => void;
+  cloudAvailable: boolean;
+  localAvailable: boolean;
 }
 
 type EngineDefaults = Partial<Record<string, number | string>>;
@@ -209,7 +220,17 @@ const Pane: React.FC<{
   </div>
 );
 
-export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerating, activeJobCount = 0, initialData }) => {
+export const CreatePanel: React.FC<CreatePanelProps> = ({
+  onGenerate,
+  isGenerating,
+  activeJobCount = 0,
+  initialData,
+  cloudMode = false,
+  generationMode,
+  onGenerationModeChange,
+  cloudAvailable,
+  localAvailable,
+}) => {
   const { t } = useI18n();
 
   const [name, setName] = useState('');
@@ -292,7 +313,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   const [error, setError] = useState<string | null>(null);
   const promptFile = useRef<HTMLInputElement | null>(null);
 
-  const ready = setup?.ready === true && setup?.engine_ready === true;
+  const ready = cloudMode || (setup?.ready === true && setup?.engine_ready === true);
   const defaults = catalog?.defaults ?? {};
   const placeholder = (key: string) => (defaults[key] === undefined ? '' : String(defaults[key]));
   const caption = joinCaption(globalMetadata, vocalDetails, arrangement);
@@ -320,18 +341,27 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   }, []);
 
   useEffect(() => {
+    if (cloudMode) {
+      setSetup(null);
+      setServiceDown(false);
+      return;
+    }
     const poll = () => void refreshSetup().catch(() => { setSetup(null); setServiceDown(true); });
     poll();
     const timer = window.setInterval(poll, 5000);
     return () => window.clearInterval(timer);
-  }, [refreshSetup]);
+  }, [cloudMode, refreshSetup]);
 
   useEffect(() => {
+    if (cloudMode) {
+      setCatalog(null);
+      return;
+    }
     void fetch('/v1/local-models/music')
       .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
       .then((body: { catalog?: EngineCatalog }) => setCatalog(body.catalog ?? null))
       .catch(() => setCatalog(null));
-  }, [setup?.engine_ready]);
+  }, [cloudMode, setup?.engine_ready]);
 
   useEffect(() => {
     // Asked once at mount, the panel kept saying "configure the assistant"
@@ -339,7 +369,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     // is not ready, and whenever the settings are closed.
     const read = () => void fetch('/v1/assistant/status')
       .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
-      .then((body: { available?: boolean }) => setAssistantReady(body.available === true))
+      .then((body: WritingAssistantStatus) => setAssistantReady(isWritingAssistantAvailable(body)))
       .catch(() => setAssistantReady(false));
     read();
     const timer = window.setInterval(read, 5000);
@@ -373,7 +403,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
 
   const reset = () => {
     setName(''); setGlobalMetadata(''); setVocalDetails(''); setArrangement(''); setLyrics(''); setInstrumental(false);
-    setDuration(''); setLmBatch(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
+    setDuration(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed('');
     setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
     setError(null);
@@ -393,28 +423,33 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
 
   const buildRequest = () => {
     const request: Music3Request & { title?: string; cover_prompt?: string; audio_codes?: string; models?: Record<string, string> } = {
+      execution_target: cloudMode ? 'omnibridge' : 'configuration',
       caption: caption.trim(),
       // An instrumental has no words, whatever is still sitting in the box. The
       // lyrics of the previous track stayed there, went to the engine and came
       // back sung: the switch said instrumental and the track had vocals.
       lyrics: instrumental ? '' : lyrics.replace(/\r\n?/g, '\n').trim(),
       duration_seconds: Math.min(numberOrUndefined(duration) ?? 60, MAX_DURATION_SECONDS),
-      steps: numberOrUndefined(steps) ?? 30,
-      seed: randomizeSeed ? undefined : numberOrUndefined(seed),
-      lm_seed: numberOrUndefined(lmSeed),
-      lm_cfg: numberOrUndefined(lmCfg) ?? 1.5,
-      lm_top_k: numberOrUndefined(lmTopK) ?? 50,
-      lm_batch_size: 1,
-      synth_batch_size: numberOrUndefined(synthBatch) ?? 1,
-      dit_cfg: numberOrUndefined(ditCfg) ?? 1.7,
-      peak_clip: numberOrUndefined(peakClip) ?? 10,
       output_format: format,
-      mp3_bitrate: numberOrUndefined(mp3Bitrate) ?? 128,
     };
+    if (!cloudMode) {
+      Object.assign(request, {
+        steps: numberOrUndefined(steps) ?? 30,
+        seed: randomizeSeed ? undefined : numberOrUndefined(seed),
+        lm_seed: numberOrUndefined(lmSeed),
+        lm_cfg: numberOrUndefined(lmCfg) ?? 1.5,
+        lm_top_k: numberOrUndefined(lmTopK) ?? 50,
+        lm_batch_size: 1,
+        synth_batch_size: numberOrUndefined(synthBatch) ?? 1,
+        dit_cfg: numberOrUndefined(ditCfg) ?? 1.7,
+        peak_clip: numberOrUndefined(peakClip) ?? 10,
+        mp3_bitrate: numberOrUndefined(mp3Bitrate) ?? 128,
+      });
+    }
     if (name.trim()) request.title = name.trim();
     if (coverPrompt.trim()) request.cover_prompt = coverPrompt.trim();
-    if (audioCodes.trim()) request.audio_codes = audioCodes.trim();
-    if (Object.keys(models).length === 5) request.models = models;
+    if (!cloudMode && audioCodes.trim()) request.audio_codes = audioCodes.trim();
+    if (!cloudMode && Object.keys(models).length === 5) request.models = models;
     return request;
   };
 
@@ -445,7 +480,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       setLmCfg(asString(parsed.lm_cfg));
       setLmTopK(asString(parsed.lm_top_k));
       setLmSeed(asString(parsed.lm_seed));
-      setLmBatch(asString(parsed.lm_batch_size));
       setDitCfg(asString(parsed.dit_cfg));
       setSynthBatch(asString(parsed.synth_batch_size));
       setSeed(asString(parsed.seed));
@@ -479,7 +513,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
     setAssisting(target);
     setError(null);
     try {
-      const payload = JSON.stringify({
+      const payload = {
         target,
         description: name.trim(),
         instruction: assistInstruction.trim(),
@@ -489,7 +523,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
         arrangement: arrangement.trim(),
         duration_seconds: numberOrUndefined(duration) ?? 60,
         instrumental,
-      });
+      };
 
       // Watch the same request happen: the studio reports when it goes out,
       // when the model starts answering, and then the text as it arrives. The
@@ -498,65 +532,33 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
       setAssistStage('preparing');
       setAssistDraft('');
       let streamed = '';
-      const live = await fetch('/v1/assistant/write/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
+      const result = await streamWritingAssistant(payload, {
         signal: run.signal,
-      });
-      if (live.ok && live.body) {
-        const reader = live.body.getReader();
-        const decoder = new TextDecoder();
-        let carry = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          carry += decoder.decode(value, { stream: true });
-          let split = carry.indexOf('\n\n');
-          while (split !== -1) {
-            const frame = carry.slice(0, split).trim();
-            carry = carry.slice(split + 2);
-            split = carry.indexOf('\n\n');
-            if (!frame.startsWith('data:')) continue;
-            let event: { stage?: string; delta?: string; text?: string; error?: string; model?: string };
-            try {
-              event = JSON.parse(frame.slice(5).trim());
-            } catch {
-              continue;
-            }
-            if (event.error) throw new Error(event.error);
-            if (event.stage) setAssistStage(event.stage);
-            if (event.model) setAssistModel(event.model);
-            if (event.delta) {
-              streamed += event.delta;
-              setAssistDraft(streamed);
-            }
+        onEvent: event => {
+          if (event.stage) setAssistStage(event.stage);
+          if (event.model) setAssistModel(event.model);
+          if (event.delta) {
+            streamed += event.delta;
+            setAssistDraft(streamed);
           }
-        }
-      }
-
-      // The stream shows the work; the plain call returns the finished fields,
-      // already split into the panes this form has.
-      const response = await fetch('/v1/assistant/write', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
+        },
       });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(body?.error || String(response.status));
-      if (typeof body?.lyrics === 'string') setLyrics(body.lyrics);
-      if (typeof body?.global_metadata === 'string') setGlobalMetadata(body.global_metadata);
-      if (typeof body?.vocal_details === 'string') setVocalDetails(body.vocal_details);
-      if (typeof body?.arrangement === 'string') setArrangement(body.arrangement);
+      const body = result.draft;
+      if (typeof body.lyrics === 'string') setLyrics(body.lyrics);
+      if (typeof body.global_metadata === 'string') setGlobalMetadata(body.global_metadata);
+      if (typeof body.vocal_details === 'string') setVocalDetails(body.vocal_details);
+      if (typeof body.arrangement === 'string') setArrangement(body.arrangement);
       // The model has the words and the mood in front of it, so it names the
       // track and says what its cover should show.
-      if (typeof body?.title === 'string' && body.title.trim()) setName(body.title.trim());
-      if (typeof body?.cover_prompt === 'string' && body.cover_prompt.trim()) setCoverPrompt(body.cover_prompt.trim());
+      if (typeof body.title === 'string' && body.title.trim()) setName(body.title.trim());
+      if (typeof body.cover_prompt === 'string' && body.cover_prompt.trim()) setCoverPrompt(body.cover_prompt.trim());
       // The assistant wrote the sections, so it knows how long they take; the
       // form's 60 seconds is a default, not a decision anyone made.
-      if (typeof body?.duration_seconds === 'number' && body.duration_seconds >= 10) {
+      if (typeof body.duration_seconds === 'number' && body.duration_seconds >= 10) {
         setDuration(String(Math.min(360, Math.round(body.duration_seconds))));
       }
+      const resolvedModel = result.receipt?.resolved_model;
+      if (resolvedModel) setAssistModel(resolvedModel);
       // The tab stays where it was. Switching to Studio showed what the
       // assistant had written, but it moved the user off the screen they were
       // working on to do it, and they can look for themselves.
@@ -592,7 +594,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
   ];
 
   const resetParameters = () => {
-    setDuration(''); setLmBatch(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
+    setDuration(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed(''); setRandomizeSeed(true);
     setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
   };
@@ -605,16 +607,54 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
         <div className="space-y-3 p-4 pb-6">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <h1 className="truncate text-base font-bold">{t('createMusic')}</h1>
-              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">{t('localInference')}</p>
+              <h1 className="truncate text-base font-bold">{cloudMode ? `MiniMax Music 3 · ${t('cloudReadyBadge')}` : t('createMusic')}</h1>
+              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">{cloudMode ? t('cloudNoLocalDownload') : t('localInference')}</p>
             </div>
             <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${ready ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
               <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              {serviceDown ? t('serviceUnavailable') : ready ? t('engineReady') : t('profileRequired')}
+              {cloudMode ? t('cloudReadyBadge') : serviceDown ? t('serviceUnavailable') : ready ? t('engineReady') : t('profileRequired')}
             </span>
           </div>
 
-          {serviceDown ? (
+          <div className="rounded-xl border border-zinc-200 bg-white p-2 dark:border-white/10 dark:bg-suno-card">
+            <p className="mb-1.5 px-1 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{t('generationSource')}</p>
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-black/30">
+              {(['auto', 'cloud', 'local'] as const).map(value => {
+                const available = value === 'auto' || (value === 'cloud' ? cloudAvailable : localAvailable);
+                const label = value === 'auto'
+                  ? t('generationModeAuto')
+                  : value === 'cloud'
+                    ? t('generationModeCloud')
+                    : t('generationModeLocal');
+                const unavailableTitle = value === 'cloud'
+                  ? t('cloudApiUnavailable')
+                  : value === 'local'
+                    ? t('localModelNotInstalled')
+                    : undefined;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    disabled={!available}
+                    title={!available ? unavailableTitle : undefined}
+                    onClick={() => onGenerationModeChange(value)}
+                    className={'rounded-md px-2 py-2 text-[11px] font-semibold transition ' + (generationMode === value
+                      ? 'bg-white text-pink-600 shadow-sm dark:bg-zinc-800 dark:text-pink-300'
+                      : available
+                        ? 'text-zinc-600 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-white'
+                        : 'cursor-not-allowed text-zinc-300 dark:text-zinc-600')}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {!localAvailable && (
+              <p className="mt-1.5 px-1 text-[10px] leading-4 text-zinc-400">{t('localModelNotInstalled')}</p>
+            )}
+          </div>
+
+          {!cloudMode && (serviceDown ? (
             <div className="flex gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs leading-5 text-rose-700 dark:text-rose-200">
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
               <div><b>{t('serviceUnavailable')}</b><br />{t('serviceUnavailableHint')}</div>
@@ -624,7 +664,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
               <div><b>{t('localGenerationUnavailable')}</b><br />{t('downloadProfileFirst')}</div>
             </div>
-          )}
+          ))}
 
           <div className="flex items-center rounded-lg border border-zinc-300 bg-zinc-200 p-1 dark:border-white/5 dark:bg-black/40">
             {(['studio', 'simple'] as const).map(value => (
@@ -825,27 +865,31 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 onChange={setDuration}
               />
               <p className="text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
-              <SliderRow
-                label={t('ditSteps')}
-                value={steps}
-                fallback={Number(defaults.steps ?? 30)}
-                min={8}
-                max={80}
-                step={1}
-                onChange={setSteps}
-              />
-              <SliderRow
-                label={t('cfgScale')}
-                value={ditCfg}
-                fallback={Number(defaults.dit_cfg ?? 1.7)}
-                min={1}
-                max={5}
-                step={0.1}
-                onChange={setDitCfg}
-              />
+              {!cloudMode && (
+                <>
+                  <SliderRow
+                    label={t('ditSteps')}
+                    value={steps}
+                    fallback={Number(defaults.steps ?? 30)}
+                    min={8}
+                    max={80}
+                    step={1}
+                    onChange={setSteps}
+                  />
+                  <SliderRow
+                    label={t('cfgScale')}
+                    value={ditCfg}
+                    fallback={Number(defaults.dit_cfg ?? 1.7)}
+                    min={1}
+                    max={5}
+                    step={0.1}
+                    onChange={setDitCfg}
+                  />
+                </>
+              )}
             </div>
 
-            <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 dark:border-white/5">
+            {!cloudMode && <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 dark:border-white/5">
               {/* No batch slider. The engine reserves KV cache for the whole
                   batch when it loads its weights and takes the number only as a
                   launch flag, so a control here could not change anything about
@@ -868,10 +912,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               {totalTracks > 1 && (
                 <p className="text-[11px] text-zinc-500">{t('renderCountPrefix')} <b className="text-zinc-700 dark:text-zinc-200">{totalTracks}</b></p>
               )}
-            </div>
+            </div>}
           </Card>
 
-          <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
+          {!cloudMode && <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
             <button
               type="button"
               onClick={() => setShowAdvanced(current => !current)}
@@ -974,9 +1018,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
-          <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+          {!cloudMode && <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
             <button
               type="button"
               onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'models' }))}
@@ -986,8 +1030,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({ onGenerate, isGenerati
               {t('profile')}: <b className="text-zinc-700 underline decoration-dotted underline-offset-2 dark:text-zinc-200">{profileLabel}</b>
             </button>
             <button type="button" onClick={() => void refreshSetup().catch(() => undefined)} className="hover:text-pink-500">{t('refresh')}</button>
-          </div>
-          {setup?.hardware?.reason && <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>}
+          </div>}
+          {!cloudMode && setup?.hardware?.reason && <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>}
           {error && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs leading-5 text-red-700 dark:text-red-200">{error}</div>}
         </div>
       </div>

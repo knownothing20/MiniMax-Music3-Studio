@@ -68,7 +68,18 @@ import { EngineStarting } from './components/EngineStarting';
 import { StudioOffline } from './components/StudioOffline';
 import { StudioToolsPanel } from './components/StudioToolsPanel';
 import { OmniBridgeMusicCase } from './components/OmniBridgeMusicCase';
+import { CloudFirstRun } from './components/CloudFirstRun';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
+import type { OmniBridgeIntegrationStatus } from './services/omnibridgeMusic';
+import {
+  CLOUD_FIRST_RUN_STORAGE_KEY,
+  GENERATION_MODE_STORAGE_KEY,
+  isOmniBridgeCloudReady,
+  parseGenerationModePreference,
+  readStudioExecutionStatus,
+  resolveGenerationExecutionTarget,
+  type GenerationModePreference,
+} from './services/studioExecution';
 
 const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
 const SUBMISSION_UNKNOWN_MESSAGE = '提交状态未知，禁止自动重试；请恢复查询或人工确认后再处理。';
@@ -130,6 +141,52 @@ function AppContent() {
   const leftPanel = useResizablePanel('create', 420, 320, 600);
   const rightPanel = useResizablePanel('details', 400, 320, 600, 'right');
   const [nativeSetupReady, setNativeSetupReady] = useState(false);
+  const [studioExecutionStatus, setStudioExecutionStatus] = useState<OmniBridgeIntegrationStatus | null>(null);
+  const [studioExecutionChecking, setStudioExecutionChecking] = useState(true);
+  const [generationMode, setGenerationMode] = useState<GenerationModePreference>(() => {
+    try {
+      return parseGenerationModePreference(localStorage.getItem(GENERATION_MODE_STORAGE_KEY));
+    } catch {
+      return 'auto';
+    }
+  });
+  const updateGenerationMode = useCallback((mode: GenerationModePreference) => {
+    setGenerationMode(mode);
+    try {
+      localStorage.setItem(GENERATION_MODE_STORAGE_KEY, mode);
+    } catch {
+      // Storage policy must not prevent changing the execution source.
+    }
+  }, []);
+  const [cloudFirstRunComplete, setCloudFirstRunComplete] = useState(() => {
+    try {
+      return localStorage.getItem(CLOUD_FIRST_RUN_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const status = await readStudioExecutionStatus();
+        if (active) setStudioExecutionStatus(status);
+      } catch {
+        if (active) setStudioExecutionStatus(null);
+      } finally {
+        if (active) setStudioExecutionChecking(false);
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const cloudExecutionReady = isOmniBridgeCloudReady(studioExecutionStatus);
   // A track sent here from a menu's "separate into stems".
   const [stemsSongId, setStemsSongId] = useState<string | null>(null);
   // Which of the three situations the studio is in. It starts unknown, and
@@ -142,7 +199,7 @@ function AppContent() {
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error())))
       .then((status: { ready?: boolean; engine_ready?: boolean }) => {
         setNativeModels(status.ready === true ? 'installed' : 'missing');
-        if (status.ready && status.engine_ready) setNativeSetupReady(true);
+        setNativeSetupReady(status.ready === true && status.engine_ready === true);
       })
       // A service that does not answer is not an engine that is still coming
       // up: the application has been closed, and saying "starting" at a dead
@@ -155,6 +212,29 @@ function AppContent() {
     const timer = window.setInterval(read, 2000);
     return () => window.clearInterval(timer);
   }, []);
+  const localExecutionReady = nativeModels === 'installed' && nativeSetupReady;
+  const resolvedGenerationTarget = resolveGenerationExecutionTarget(
+    generationMode,
+    cloudExecutionReady,
+    localExecutionReady,
+  );
+  const useCloudExecution = resolvedGenerationTarget === 'omnibridge';
+
+  useEffect(() => {
+    if (generationMode === 'cloud' && !studioExecutionChecking && !cloudExecutionReady) {
+      updateGenerationMode('auto');
+    }
+    if (generationMode === 'local' && nativeModels !== 'unknown' && !localExecutionReady) {
+      updateGenerationMode('auto');
+    }
+  }, [
+    cloudExecutionReady,
+    generationMode,
+    localExecutionReady,
+    nativeModels,
+    studioExecutionChecking,
+    updateGenerationMode,
+  ]);
   useEffect(() => {
     const open = (event: Event) => {
       setStemsSongId((event as CustomEvent<string>).detail);
@@ -1489,12 +1569,37 @@ function AppContent() {
 
       case 'create':
       default:
+        if (studioExecutionChecking || (useCloudExecution && (!cloudExecutionReady || !cloudFirstRunComplete))) {
+          return (
+            <CloudFirstRun
+              checking={studioExecutionChecking}
+              ready={cloudExecutionReady}
+              status={studioExecutionStatus}
+              onStartCreating={() => {
+                try {
+                  localStorage.setItem(CLOUD_FIRST_RUN_STORAGE_KEY, 'true');
+                } catch {
+                  // A storage policy must not block a ready cloud studio.
+                }
+                setCloudFirstRunComplete(true);
+              }}
+              onOpenApiCase={() => {
+                setCurrentView('api-case');
+                window.history.pushState({}, '', '/api-case');
+              }}
+              onOpenLocalModels={() => {
+                setSettingsSection('models');
+                setShowSettingsModal(true);
+              }}
+            />
+          );
+        }
         // Two different situations, two different screens: nothing installed
         // is a decision to make, and an engine coming up is a wait to sit
         // through. They used to be the same page, which made a running studio
         // look like it owed 26 GB.
-        if (nativeModels === 'offline') return <StudioOffline />;
-        if (!nativeSetupReady) {
+        if (!useCloudExecution && nativeModels === 'offline') return <StudioOffline />;
+        if (!useCloudExecution && !nativeSetupReady) {
           // Until the studio has answered, and while the engine is coming up,
           // this is a wait - not a decision. The download page appears only
           // when components are genuinely missing.
@@ -1517,6 +1622,11 @@ function AppContent() {
                 isGenerating={isGenerating}
                 activeJobCount={activeJobCount + pendingClickCount}
                 initialData={reuseData}
+                cloudMode={useCloudExecution}
+                generationMode={generationMode}
+                onGenerationModeChange={updateGenerationMode}
+                cloudAvailable={cloudExecutionReady}
+                localAvailable={localExecutionReady}
               />
             </div>
             {leftPanel.handle}
@@ -1626,6 +1736,8 @@ function AppContent() {
           onOpenSettings={() => setShowSettingsModal(true)}
           isOpen={showLeftSidebar}
           onToggle={() => setShowLeftSidebar(!showLeftSidebar)}
+          studioExecutionStatus={studioExecutionStatus}
+          studioExecutionChecking={studioExecutionChecking}
         />
 
         <main className="relative ml-[72px] flex min-h-0 min-w-0 flex-1 overflow-hidden md:ml-0">

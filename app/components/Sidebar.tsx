@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Disc, FlaskConical, Library, Moon, Newspaper, Search, SlidersHorizontal, Sun } from 'lucide-react';
+import { Disc, FlaskConical, Library, Moon, Search, SlidersHorizontal, Sun } from 'lucide-react';
 import { View } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { ResourceMonitor } from './ResourceMonitor';
+import type { OmniBridgeIntegrationStatus } from '../services/omnibridgeMusic';
+import { isOmniBridgeCloudReady, isOmniBridgeExecutionTarget } from '../services/studioExecution';
 
 interface SidebarProps {
   currentView: View;
@@ -13,6 +15,8 @@ interface SidebarProps {
   onOpenSettings?: () => void;
   isOpen?: boolean;
   onToggle?: () => void;
+  studioExecutionStatus?: OmniBridgeIntegrationStatus | null;
+  studioExecutionChecking?: boolean;
 }
 
 type NativeSetupStatus = {
@@ -101,6 +105,37 @@ const SystemWidget: React.FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   );
 };
 
+const CloudSystemWidget: React.FC<{
+  isOpen?: boolean;
+  status: OmniBridgeIntegrationStatus | null;
+  checking?: boolean;
+}> = ({ isOpen, status, checking }) => {
+  const { t } = useI18n();
+  const gatewayReady = status?.configured === true && status.contractVerified === true;
+  const routeReady = status?.routeResolutionVerified === true;
+  const providerReady = status?.providerResolutionVerified === true;
+  const ready = isOmniBridgeCloudReady(status);
+
+  if (!isOpen) {
+    const title = checking
+      ? t('cloudChecking')
+      : `${t('cloudGatewayConnected')} · ${t('cloudRouteReady')} · ${t('cloudProviderReady')}`;
+    return (
+      <div className="flex w-full justify-center py-2" title={title}>
+        <span className={`h-2 w-2 rounded-full ${ready ? 'bg-emerald-500' : checking ? 'animate-pulse bg-amber-400' : 'bg-zinc-400 dark:bg-zinc-600'}`} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-xl border border-zinc-200/70 bg-zinc-50/80 px-3 py-2 text-[10px] dark:border-white/5 dark:bg-zinc-900/50">
+      <StatusLine active={gatewayReady} pending={checking} label={t('cloudGatewayConnected')} />
+      <StatusLine active={routeReady} pending={checking} label={t('cloudRouteReady')} />
+      <StatusLine active={providerReady} pending={checking} label={t('cloudProviderReady')} />
+    </div>
+  );
+};
+
 export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
   onNavigate,
@@ -110,8 +145,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSettings,
   isOpen = true,
   onToggle,
+  studioExecutionStatus = null,
+  studioExecutionChecking = false,
 }) => {
   const { t } = useI18n();
+  const cloudMode = isOmniBridgeExecutionTarget(studioExecutionStatus);
 
   return (
     <>
@@ -148,13 +186,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <NavItem icon={<Disc size={20} />} label={t('create')} active={currentView === 'create'} onClick={() => onNavigate('create')} isExpanded={isOpen} />
           <NavItem icon={<Library size={20} />} label={t('library')} active={currentView === 'library'} onClick={() => onNavigate('library')} isExpanded={isOpen} />
           <NavItem icon={<Search size={20} />} label={t('search')} active={currentView === 'search'} onClick={() => onNavigate('search')} isExpanded={isOpen} />
-          <NavItem icon={<Newspaper size={20} />} label={t('news')} active={currentView === 'news'} onClick={() => onNavigate('news')} isExpanded={isOpen} />
           <NavItem icon={<SlidersHorizontal size={20} />} label={t('studioTools')} active={currentView === 'tools'} onClick={() => onNavigate('tools')} isExpanded={isOpen} />
           <NavItem icon={<FlaskConical size={20} />} label={t('apiCase')} active={currentView === 'api-case'} onClick={() => onNavigate('api-case')} isExpanded={isOpen} />
 
           <div className="mt-auto flex flex-col gap-2">
-            <ResourceMonitor isOpen={isOpen} />
-            <SystemWidget isOpen={isOpen} />
+            {cloudMode ? (
+              <CloudSystemWidget isOpen={isOpen} status={studioExecutionStatus} checking={studioExecutionChecking} />
+            ) : (
+              <>
+                <ResourceMonitor isOpen={isOpen} />
+                <SystemWidget isOpen={isOpen} />
+              </>
+            )}
             <button type="button" onClick={onToggleTheme} className={`flex w-full items-center gap-3 rounded-xl text-zinc-500 transition-all duration-200 hover:bg-zinc-100 hover:text-black dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white ${isOpen ? 'justify-start px-3 py-2.5' : 'aspect-square justify-center'}`} title={theme === 'dark' ? t('lightMode') : t('darkMode')}>
               <span className="shrink-0">{theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}</span>
               {isOpen && <span className="truncate text-sm font-medium">{theme === 'dark' ? t('lightMode') : t('darkMode')}</span>}

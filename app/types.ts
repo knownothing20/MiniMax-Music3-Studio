@@ -68,25 +68,27 @@ export interface Comment {
  * control, and anything not listed here is not a real engine parameter.
  */
 export interface Music3Request {
+  /** Per-request execution target. Omit to retain the server-managed default. */
+  execution_target?: 'omnibridge' | 'configuration';
   caption: string;
   lyrics: string;
   duration_seconds: number;
-  steps: number;
+  steps?: number;
   /** DiT (flow-matching) noise seed. Omit for a random seed. */
   seed?: number;
   /** Autoregressive language-model seed. Omit for a random seed. */
   lm_seed?: number;
-  lm_cfg: number;
-  lm_top_k: number;
+  lm_cfg?: number;
+  lm_top_k?: number;
   /** Songs sampled from this prompt, each with its own LM stream. */
-  lm_batch_size: number;
+  lm_batch_size?: number;
   /** Flow-matching variations per song, 1..9. */
-  synth_batch_size: number;
-  dit_cfg: number;
+  synth_batch_size?: number;
+  dit_cfg?: number;
   /** Percentile peak normalisation; 0 disables clipping. WAV32 ignores it. */
-  peak_clip: number;
+  peak_clip?: number;
   output_format: 'mp3' | 'wav16' | 'wav24' | 'wav32';
-  mp3_bitrate: number;
+  mp3_bitrate?: number;
   /** Library title only — never sent to the engine. */
   title?: string;
 }
