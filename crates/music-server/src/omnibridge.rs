@@ -155,6 +155,339 @@ impl fmt::Debug for OmniBridgeConfig {
     }
 }
 
+const REQUEST_RECEIPT_SCHEMA: &str = "omnibridge.request-receipt.v1";
+const TEXT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The two business-level text policies published by OmniBridge. The Studio
+/// never sees provider credentials or candidate order; it only selects a
+/// generic route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextRoute {
+    Fast,
+    Quality,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct RequestReceipt {
+    pub schema: String,
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_deployment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_adapter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_catalog_revision: Option<String>,
+}
+
+/// Managed text configuration is deliberately independent from the durable
+/// music route. A missing music route must not disable the writing assistant,
+/// and a missing text route must not disable music generation.
+#[derive(Clone)]
+pub struct OmniBridgeTextConfig {
+    pub base_url: String,
+    gateway_key: SecretString,
+    pub client_id: String,
+    pub platform_id: String,
+    pub project_id: String,
+    pub fast_route: String,
+    pub quality_route: String,
+}
+
+impl OmniBridgeTextConfig {
+    pub fn from_env() -> Result<Self, OmniBridgeError> {
+        let platform_id = required_env("MUSIC_MAKER_OMNIBRIDGE_PLATFORM_ID")?;
+        let client_id = optional_env("MUSIC_MAKER_OMNIBRIDGE_CLIENT_ID")
+            .unwrap_or_else(|| platform_id.clone());
+        let project_id = optional_env("MUSIC_MAKER_OMNIBRIDGE_PROJECT_ID")
+            .unwrap_or_else(|| platform_id.clone());
+        Self::new(
+            required_env("MUSIC_MAKER_OMNIBRIDGE_BASE_URL")?,
+            required_env("MUSIC_MAKER_OMNIBRIDGE_GATEWAY_KEY")?,
+            client_id,
+            platform_id,
+            project_id,
+            required_env("MUSIC_MAKER_OMNIBRIDGE_TEXT_FAST_ROUTE")?,
+            required_env("MUSIC_MAKER_OMNIBRIDGE_TEXT_QUALITY_ROUTE")?,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        base_url: impl Into<String>,
+        gateway_key: impl Into<String>,
+        client_id: impl Into<String>,
+        platform_id: impl Into<String>,
+        project_id: impl Into<String>,
+        fast_route: impl Into<String>,
+        quality_route: impl Into<String>,
+    ) -> Result<Self, OmniBridgeError> {
+        let base_url = base_url.into().trim().trim_end_matches('/').to_owned();
+        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            return Err(OmniBridgeError::InvalidInput(
+                "OmniBridge base URL must be HTTP or HTTPS".to_owned(),
+            ));
+        }
+        let client_id = validate_caller_id(client_id.into(), "OmniBridge client ID")?;
+        let platform_id = validate_caller_id(platform_id.into(), "OmniBridge platform ID")?;
+        let project_id = validate_caller_id(project_id.into(), "OmniBridge project ID")?;
+        let fast_route = validate_text_route(
+            fast_route.into(),
+            "MUSIC_MAKER_OMNIBRIDGE_TEXT_FAST_ROUTE",
+        )?;
+        let quality_route = validate_text_route(
+            quality_route.into(),
+            "MUSIC_MAKER_OMNIBRIDGE_TEXT_QUALITY_ROUTE",
+        )?;
+        Ok(Self {
+            base_url,
+            gateway_key: SecretString::new(
+                gateway_key.into(),
+                "MUSIC_MAKER_OMNIBRIDGE_GATEWAY_KEY",
+            )?,
+            client_id,
+            platform_id,
+            project_id,
+            fast_route,
+            quality_route,
+        })
+    }
+
+    pub fn route(&self, route: TextRoute) -> &str {
+        match route {
+            TextRoute::Fast => &self.fast_route,
+            TextRoute::Quality => &self.quality_route,
+        }
+    }
+
+    /// Safe status data for project UI. Provider URLs and credentials are
+    /// deliberately absent.
+    pub fn public_status(&self) -> Value {
+        serde_json::json!({
+            "provider": "omnibridge",
+            "fast_route": self.fast_route,
+            "quality_route": self.quality_route,
+            "client_id": self.client_id,
+            "platform_id": self.platform_id,
+            "project_id": self.project_id,
+        })
+    }
+}
+
+impl fmt::Debug for OmniBridgeTextConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OmniBridgeTextConfig")
+            .field("base_url", &self.base_url)
+            .field("gateway_key", &self.gateway_key)
+            .field("client_id", &self.client_id)
+            .field("platform_id", &self.platform_id)
+            .field("project_id", &self.project_id)
+            .field("fast_route", &self.fast_route)
+            .field("quality_route", &self.quality_route)
+            .finish()
+    }
+}
+
+pub struct OmniBridgeTextStream {
+    pub receipt: Option<RequestReceipt>,
+    response: reqwest::Response,
+}
+
+impl OmniBridgeTextStream {
+    pub fn into_response(self) -> reqwest::Response {
+        self.response
+    }
+}
+
+#[derive(Clone)]
+pub struct OmniBridgeTextClient {
+    config: OmniBridgeTextConfig,
+    client: reqwest::Client,
+}
+
+impl OmniBridgeTextClient {
+    pub fn from_env() -> Result<Self, OmniBridgeError> {
+        Self::new(OmniBridgeTextConfig::from_env()?)
+    }
+
+    pub fn new(config: OmniBridgeTextConfig) -> Result<Self, OmniBridgeError> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(TEXT_REQUEST_TIMEOUT)
+            .timeout(TEXT_REQUEST_TIMEOUT)
+            .build()
+            .map_err(|error| OmniBridgeError::Transport(error.to_string()))?;
+        Ok(Self { config, client })
+    }
+
+    pub fn route(&self, route: TextRoute) -> &str {
+        self.config.route(route)
+    }
+
+    fn request(&self, route: TextRoute, accept: &'static str) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!("{}/v1/chat/completions", self.config.base_url))
+            .bearer_auth(self.config.gateway_key.expose())
+            .header("x-omnibridge-client-id", &self.config.client_id)
+            .header("X-Platform-Id", &self.config.platform_id)
+            .header("X-Project-Id", &self.config.project_id)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, accept)
+            .header("X-OmniBridge-Selector-Type", "route")
+            .header("X-OmniBridge-Selector-Id", self.config.route(route))
+    }
+
+    /// Sends one synchronous POST. This client has no automatic retry or
+    /// provider fallback; OmniBridge owns any provably safe route failover.
+    pub async fn complete_once(
+        &self,
+        route: TextRoute,
+        body: &Value,
+    ) -> Result<(Value, Option<RequestReceipt>), OmniBridgeError> {
+        let body = text_request_body(body, self.config.route(route), false)?;
+        let response = self
+            .request(route, "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| OmniBridgeError::Transport(error.to_string()))?;
+        let receipt = parse_request_receipt(response.headers());
+        if !response.status().is_success() {
+            return Err(OmniBridgeError::HttpStatus(response.status().as_u16()));
+        }
+        Ok((read_json_bounded(response).await?, receipt))
+    }
+
+    /// Sends one streaming POST and returns the original response body. Once a
+    /// frame is observed the caller must never replay or switch candidates.
+    pub async fn stream_once(
+        &self,
+        route: TextRoute,
+        body: &Value,
+    ) -> Result<OmniBridgeTextStream, OmniBridgeError> {
+        let body = text_request_body(body, self.config.route(route), true)?;
+        let response = self
+            .request(route, "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| OmniBridgeError::Transport(error.to_string()))?;
+        let receipt = parse_request_receipt(response.headers());
+        if !response.status().is_success() {
+            return Err(OmniBridgeError::HttpStatus(response.status().as_u16()));
+        }
+        Ok(OmniBridgeTextStream { receipt, response })
+    }
+}
+
+fn optional_env(name: &'static str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_caller_id(value: String, name: &str) -> Result<String, OmniBridgeError> {
+    let value = value.trim().to_owned();
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return Err(OmniBridgeError::InvalidInput(format!("{name} is invalid")));
+    }
+    Ok(value)
+}
+
+fn validate_text_route(
+    value: String,
+    env_name: &'static str,
+) -> Result<String, OmniBridgeError> {
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        return Err(OmniBridgeError::NotReady(env_name));
+    }
+    if !value.starts_with("route:text:") || value.len() > 200 {
+        return Err(OmniBridgeError::InvalidInput(
+            "OmniBridge text route must use route:text:*".to_owned(),
+        ));
+    }
+    Ok(value)
+}
+
+fn text_request_body(body: &Value, route: &str, stream: bool) -> Result<Value, OmniBridgeError> {
+    let mut object = body.as_object().cloned().ok_or_else(|| {
+        OmniBridgeError::InvalidInput("chat completion body must be an object".to_owned())
+    })?;
+    object.insert("model".to_owned(), Value::String(route.to_owned()));
+    object.insert("stream".to_owned(), Value::Bool(stream));
+    Ok(Value::Object(object))
+}
+
+fn safe_receipt_header(
+    headers: &reqwest::header::HeaderMap,
+    name: &'static str,
+) -> Option<String> {
+    let value = headers.get(name)?.to_str().ok()?;
+    let normalized: String = value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized: String = normalized.chars().take(256).collect();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+pub fn parse_request_receipt(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<RequestReceipt> {
+    let request_id = safe_receipt_header(headers, "x-omnibridge-request-id")?;
+    let attempt = safe_receipt_header(headers, "x-omnibridge-attempt")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value >= 1);
+    Some(RequestReceipt {
+        schema: REQUEST_RECEIPT_SCHEMA.to_owned(),
+        request_id,
+        selector_type: safe_receipt_header(headers, "x-omnibridge-selector-type"),
+        resolved_provider: safe_receipt_header(headers, "x-omnibridge-resolved-provider"),
+        resolved_deployment: safe_receipt_header(
+            headers,
+            "x-omnibridge-resolved-deployment",
+        ),
+        resolved_model: safe_receipt_header(headers, "x-omnibridge-resolved-model"),
+        route_id: safe_receipt_header(headers, "x-omnibridge-route-id"),
+        route_revision: safe_receipt_header(headers, "x-omnibridge-route-revision"),
+        attempt,
+        provider_adapter: safe_receipt_header(headers, "x-omnibridge-provider-adapter"),
+        compute_catalog_revision: safe_receipt_header(
+            headers,
+            "x-omnibridge-compute-catalog-revision",
+        ),
+    })
+}
+
 fn required_env(name: &'static str) -> Result<String, OmniBridgeError> {
     env::var(name)
         .ok()
@@ -1600,5 +1933,109 @@ mod tests {
         );
         assert!(record.task_handle().is_none());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn text_config() -> OmniBridgeTextConfig {
+        OmniBridgeTextConfig::new(
+            "http://127.0.0.1:8787",
+            "text-gateway-secret",
+            "music-maker-client",
+            "music-maker-platform",
+            "music-maker",
+            "route:text:fast",
+            "route:text:quality",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn text_routes_are_isolated_and_missing_required_routes_fail_closed() {
+        let config = text_config();
+        assert_eq!(config.route(TextRoute::Fast), "route:text:fast");
+        assert_eq!(config.route(TextRoute::Quality), "route:text:quality");
+        assert!(!config.route(TextRoute::Fast).starts_with("route:music:"));
+
+        let missing = OmniBridgeTextConfig::new(
+            "http://127.0.0.1:8787",
+            "key",
+            "music-maker-client",
+            "music-maker-platform",
+            "music-maker",
+            "",
+            "route:text:quality",
+        )
+        .unwrap_err();
+        assert!(matches!(missing, OmniBridgeError::NotReady(_)));
+
+        let wrong_family = OmniBridgeTextConfig::new(
+            "http://127.0.0.1:8787",
+            "key",
+            "music-maker-client",
+            "music-maker-platform",
+            "music-maker",
+            "route:music:default",
+            "route:text:quality",
+        )
+        .unwrap_err();
+        assert!(matches!(wrong_family, OmniBridgeError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn text_configuration_debug_redacts_gateway_key() {
+        let config = text_config();
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("text-gateway-secret"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("route:text:fast"));
+        assert!(debug.contains("route:text:quality"));
+        let status = config.public_status().to_string();
+        assert!(!status.contains("text-gateway-secret"));
+        assert!(!status.contains("base_url"));
+    }
+
+    #[test]
+    fn receipt_parser_keeps_only_the_sdk_allowlist() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-omnibridge-request-id", "req-1".parse().unwrap());
+        headers.insert("x-omnibridge-selector-type", "route".parse().unwrap());
+        headers.insert(
+            "x-omnibridge-resolved-provider",
+            "provider-safe".parse().unwrap(),
+        );
+        headers.insert(
+            "x-omnibridge-resolved-deployment",
+            "deployment:provider-safe:text".parse().unwrap(),
+        );
+        headers.insert(
+            "x-omnibridge-resolved-model",
+            "upstream-model".parse().unwrap(),
+        );
+        headers.insert("x-omnibridge-route-id", "route:text:quality".parse().unwrap());
+        headers.insert("x-omnibridge-route-revision", "revision-1".parse().unwrap());
+        headers.insert("x-omnibridge-attempt", "2".parse().unwrap());
+        headers.insert(reqwest::header::AUTHORIZATION, "Bearer never-copy".parse().unwrap());
+        headers.insert("x-untrusted-provider-secret", "never-copy".parse().unwrap());
+
+        let receipt = parse_request_receipt(&headers).unwrap();
+        assert_eq!(receipt.schema, REQUEST_RECEIPT_SCHEMA);
+        assert_eq!(receipt.request_id, "req-1");
+        assert_eq!(receipt.route_id.as_deref(), Some("route:text:quality"));
+        assert_eq!(receipt.attempt, Some(2));
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(!json.contains("never-copy"));
+        assert!(!json.contains("authorization"));
+    }
+
+    #[test]
+    fn text_request_body_overrides_selector_and_stream_mode() {
+        let input = serde_json::json!({
+            "model": "deployment:must-not-escape",
+            "stream": false,
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let body = text_request_body(&input, "route:text:quality", true).unwrap();
+        assert_eq!(body["model"], "route:text:quality");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["messages"][0]["content"], "hello");
     }
 }

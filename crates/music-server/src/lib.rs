@@ -66,6 +66,21 @@ fn music_execution_target() -> Result<MusicExecutionTarget, String> {
     }
 }
 
+fn parse_requested_music_execution_target(value: Option<&str>) -> Result<Option<MusicExecutionTarget>, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("auto") => Ok(None),
+        Some("cloud") | Some("omnibridge") => Ok(Some(MusicExecutionTarget::OmniBridge)),
+        Some("local") | Some("configuration") => Ok(Some(MusicExecutionTarget::Configuration)),
+        Some(_) => Err("execution_target must be auto, cloud, omnibridge, local, or configuration".to_owned()),
+    }
+}
+
+fn requested_music_execution_target(request: &CreateMusicJobRequest) -> Result<MusicExecutionTarget, String> {
+    parse_requested_music_execution_target(request.execution_target.as_deref())?
+        .map(Ok)
+        .unwrap_or_else(music_execution_target)
+}
+
 /// Returned only through the in-process Tauri command. The HTTP API never
 /// exposes this value and the type's Debug representation is redacted.
 pub fn desktop_session_token() -> String {
@@ -120,6 +135,8 @@ struct MmServerClient {
 struct CreateMusicJobRequest {
     #[serde(default)]
     client_request_id: Option<String>,
+    #[serde(default)]
+    execution_target: Option<String>,
     caption: String,
     lyrics: String,
     duration_seconds: f64,
@@ -401,12 +418,15 @@ struct AssistantConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum AssistantProvider {
-    #[default]
     None,
     Local,
     OpenRouter,
     /// A model Studio downloaded and runs itself with llama.cpp.
     Managed,
+    /// The centrally managed OmniBridge text routes.
+    #[default]
+    #[serde(rename = "omnibridge", alias = "managed_cloud", alias = "cloud")]
+    OmniBridge,
 }
 
 impl AssistantConfig {
@@ -427,6 +447,7 @@ impl AssistantConfig {
                 self.managed_model.as_deref().is_some_and(|model| !model.trim().is_empty())
                     || self.managed_path.as_deref().is_some_and(|path| !path.trim().is_empty())
             }
+            AssistantProvider::OmniBridge => omnibridge::OmniBridgeTextConfig::from_env().is_ok(),
         }
     }
 }
@@ -2770,6 +2791,9 @@ async fn proxy_image(
 async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
     let config = state.assistant.read().await.clone();
     let runtime = state.assistant_runtime.status().await;
+    let text_config = omnibridge::OmniBridgeTextConfig::from_env();
+    let cloud_available = text_config.is_ok();
+    let cloud = text_config.as_ref().ok().map(|managed| managed.public_status());
     // A managed model is only usable once its file and the runtime are on disk.
     let available = match config.provider {
         AssistantProvider::Managed => {
@@ -2784,10 +2808,13 @@ async fn assistant_status(State(state): State<AppState>) -> Json<Value> {
                 .is_some_and(|path| !path.trim().is_empty() && std::path::Path::new(path.trim()).is_file());
             has_runtime && (downloaded || own_file)
         }
+        AssistantProvider::OmniBridge => cloud_available,
         _ => config.available(),
     };
     Json(serde_json::json!({
         "available": available,
+        "cloud_available": cloud_available,
+        "cloud": cloud,
         "managed_model": config.managed_model,
         "managed_path": config.managed_path,
         "reasoning_effort": config.reasoning_effort,
@@ -3347,6 +3374,19 @@ async fn assistant_openrouter_model(state: &AppState, config: &AssistantConfig) 
         .unwrap_or_default()
 }
 
+fn assistant_done_event(
+    draft: assistant::AssistDraft,
+    text: String,
+    receipt: Option<omnibridge::RequestReceipt>,
+) -> Value {
+    serde_json::json!({
+        "stage": "done",
+        "draft": draft,
+        "text": text,
+        "receipt": receipt,
+    })
+}
+
 async fn assistant_write_stream(
     State(state): State<AppState>,
     Json(request): Json<assistant::AssistRequest>,
@@ -3369,6 +3409,137 @@ async fn assistant_write_stream(
 
     tokio::spawn(async move {
         emit(sender.clone(), serde_json::json!({ "stage": "preparing" })).await;
+
+        if config.provider == AssistantProvider::OmniBridge {
+            // All current assistant targets create production-ready Music3
+            // inputs, so they use the quality text policy. The selector is a
+            // generic route; candidate order remains central in OmniBridge.
+            let client = match omnibridge::OmniBridgeTextClient::from_env() {
+                Ok(client) => client,
+                Err(error) => {
+                    emit(sender.clone(), serde_json::json!({ "error": error.to_string() })).await;
+                    return;
+                }
+            };
+            let route = omnibridge::TextRoute::Quality;
+            let route_id = client.route(route).to_owned();
+            let body = assistant::chat_body_full(
+                &route_id,
+                &system,
+                &user,
+                config.reasoning_effort.as_deref(),
+                None,
+            );
+            emit(
+                sender.clone(),
+                serde_json::json!({ "stage": "sent", "route": route_id }),
+            )
+            .await;
+            request_log::asked(
+                "assistant",
+                &route_id,
+                system.chars().count() + user.chars().count(),
+            );
+            let started = std::time::Instant::now();
+            let streamed = match client.stream_once(route, &body).await {
+                Ok(streamed) => streamed,
+                Err(error) => {
+                    request_log::failed("assistant", &route_id, &error.to_string());
+                    emit(sender.clone(), serde_json::json!({ "error": error.to_string() })).await;
+                    return;
+                }
+            };
+            let receipt = streamed.receipt.clone();
+            let mut response = streamed.into_response().bytes_stream();
+            let mut buffer = String::new();
+            let mut whole = String::new();
+            let mut first = true;
+            while let Some(chunk) = response.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        request_log::failed("assistant", &route_id, &error.to_string());
+                        emit(
+                            sender.clone(),
+                            serde_json::json!({
+                                "error": format!("OmniBridge assistant stream failed: {error}"),
+                                "receipt": receipt,
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line_end) = buffer.find('\n') {
+                    let line = buffer[..line_end].trim().to_owned();
+                    buffer.drain(..line_end + 1);
+                    let Some(payload) = line.strip_prefix("data:") else {
+                        continue;
+                    };
+                    let payload = payload.trim();
+                    if payload.is_empty() || payload == "[DONE]" {
+                        continue;
+                    }
+                    let event: Value = match serde_json::from_str(payload) {
+                        Ok(event) => event,
+                        Err(_) => continue,
+                    };
+                    let delta = event
+                        .get("choices")
+                        .and_then(|choices| choices.get(0))
+                        .and_then(|choice| choice.get("delta"))
+                        .and_then(|delta| delta.get("content"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    if first {
+                        first = false;
+                        request_log::answered(
+                            "assistant first token",
+                            &route_id,
+                            200,
+                            started.elapsed().as_secs_f64(),
+                            0,
+                        );
+                        emit(
+                            sender.clone(),
+                            serde_json::json!({ "stage": "writing", "receipt": receipt }),
+                        )
+                        .await;
+                    }
+                    whole.push_str(delta);
+                    emit(sender.clone(), serde_json::json!({ "delta": delta })).await;
+                }
+            }
+            request_log::answered(
+                "assistant",
+                &route_id,
+                200,
+                started.elapsed().as_secs_f64(),
+                whole.chars().count(),
+            );
+            let draft = match assistant::parse_draft(&whole, &required) {
+                Ok(draft) => draft,
+                Err(error) => {
+                    request_log::unusable("assistant", &route_id, &error.to_string(), &whole);
+                    emit(
+                        sender.clone(),
+                        serde_json::json!({
+                            "error": error.to_string(),
+                            "text": whole,
+                            "receipt": receipt,
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            emit(sender.clone(), assistant_done_event(draft, whole, receipt)).await;
+            return;
+        }
 
         // Where the request goes, and with which model.
         let (base, model, key): (String, String, Option<String>) = match config.provider {
@@ -3518,10 +3689,20 @@ async fn assistant_write_stream(
         // The answer is kept whenever it cannot be turned into a draft. That is
         // the case this log exists for: the window shows one red line, and
         // without this the text behind it is gone the moment it is closed.
-        if let Err(error) = assistant::parse_draft(&whole, &required) {
-            request_log::unusable("assistant", &model, &error.to_string(), &whole);
-        }
-        emit(sender.clone(), serde_json::json!({ "stage": "done", "text": whole })).await;
+        let draft = match assistant::parse_draft(&whole, &required) {
+            Ok(draft) => draft,
+            Err(error) => {
+                request_log::unusable("assistant", &model, &error.to_string(), &whole);
+                emit(
+                    sender.clone(),
+                    serde_json::json!({ "error": error.to_string(), "text": whole }),
+                )
+                .await;
+                release_assistant_unless_kept(&state).await;
+                return;
+            }
+        };
+        emit(sender.clone(), assistant_done_event(draft, whole, None)).await;
         // The card belongs to whatever runs next unless the user asked for
         // everything to stay resident.
         release_assistant_unless_kept(&state).await;
@@ -3555,7 +3736,7 @@ async fn assistant_write(
     let user = assistant::user_message(&request);
 
     let response: Value = match config.provider {
-        AssistantProvider::None | AssistantProvider::Local | AssistantProvider::Managed => {
+        AssistantProvider::Local | AssistantProvider::Managed => {
             // A managed model is started on first use and then stays loaded, so
             // the second request does not pay for the load again.
             let (base, model) = match config.provider {
@@ -3606,6 +3787,29 @@ async fn assistant_write(
             serde_json::from_str(&body)
                 .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("invalid assistant response: {error}")))?
         }
+        AssistantProvider::OmniBridge => {
+            let client = omnibridge::OmniBridgeTextClient::from_env()
+                .map_err(|error| api_error(StatusCode::BAD_GATEWAY, error.to_string()))?;
+            let route = omnibridge::TextRoute::Quality;
+            let route_id = client.route(route).to_owned();
+            let body = assistant::chat_body_full(
+                &route_id,
+                &system,
+                &user,
+                config.reasoning_effort.as_deref(),
+                None,
+            );
+            let (response, _receipt) = client
+                .complete_once(route, &body)
+                .await
+                .map_err(|error| {
+                    api_error(
+                        StatusCode::BAD_GATEWAY,
+                        format!("OmniBridge assistant failed: {error}"),
+                    )
+                })?;
+            response
+        }
         AssistantProvider::OpenRouter => {
             let catalog_now = catalog_for(&state).await.ok();
             let model = assistant_openrouter_model(&state, &config).await;
@@ -3640,7 +3844,12 @@ async fn assistant_write(
                 .map_err(|error| api_error(StatusCode::BAD_GATEWAY, format!("OpenRouter assistant failed: {error}")))?
                 .body
         }
-        AssistantProvider::None => unreachable!("availability was checked above"),
+        AssistantProvider::None => {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "No writing assistant is configured. The manual form does not need one.".into(),
+            ));
+        }
     };
 
     release_assistant_unless_kept(&state).await;
@@ -4044,7 +4253,7 @@ async fn create_music_job(
     State(state): State<AppState>,
     Json(request): Json<CreateMusicJobRequest>,
 ) -> (StatusCode, Json<MusicJob>) {
-    match music_execution_target() {
+    match requested_music_execution_target(&request) {
         Ok(MusicExecutionTarget::OmniBridge) => {
             return create_omnibridge_music_job(state, request).await;
         }
@@ -5010,6 +5219,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn requested_execution_target_is_explicit_and_backward_compatible() {
+        assert_eq!(parse_requested_music_execution_target(None).unwrap(), None);
+        assert_eq!(parse_requested_music_execution_target(Some("auto")).unwrap(), None);
+        assert_eq!(parse_requested_music_execution_target(Some("cloud")).unwrap(), Some(MusicExecutionTarget::OmniBridge));
+        assert_eq!(parse_requested_music_execution_target(Some("omnibridge")).unwrap(), Some(MusicExecutionTarget::OmniBridge));
+        assert_eq!(parse_requested_music_execution_target(Some("local")).unwrap(), Some(MusicExecutionTarget::Configuration));
+        assert_eq!(parse_requested_music_execution_target(Some("configuration")).unwrap(), Some(MusicExecutionTarget::Configuration));
+        assert!(parse_requested_music_execution_target(Some("other")).is_err());
+    }
+
+    #[test]
     fn omnibridge_diagnostic_is_secret_free_and_distinguishes_contract_states() {
         let config = omnibridge::OmniBridgeConfig::new(
             "https://private-gateway.example/internal",
@@ -5191,6 +5411,7 @@ mod tests {
     fn request_maps_only_confirmed_mm_server_fields() {
         let body = mm_request_from(&CreateMusicJobRequest {
             client_request_id: None,
+            execution_target: None,
             cover_prompt: None,
             title: None,
             caption: "night drive".into(),
@@ -5231,6 +5452,7 @@ mod tests {
     fn request_rejects_legacy_audio_formats_not_supported_by_mm_server() {
         let error = mm_request_from(&CreateMusicJobRequest {
             client_request_id: None,
+            execution_target: None,
             cover_prompt: None,
             title: None,
             caption: "night drive".into(),
@@ -5262,6 +5484,7 @@ mod tests {
     fn request_uses_confirmed_mm3_defaults_and_rejects_invalid_synth_batch() {
         let request = CreateMusicJobRequest {
             client_request_id: None,
+            execution_target: None,
             cover_prompt: None,
             title: None,
             caption: "night drive".into(), lyrics: "[verse] one line".into(), duration_seconds: 60.0,
@@ -5333,6 +5556,7 @@ mod tests {
         let mut job = queued_not_configured_job(
             CreateMusicJobRequest {
                 client_request_id: None,
+            execution_target: None,
                 cover_prompt: None,
                 title: None,
             caption: "night drive".into(),

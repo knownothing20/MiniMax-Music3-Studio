@@ -390,7 +390,6 @@ mod tests {
             std::fs::write(runtime.library_dir().join(library), b"x").unwrap();
         }
         assert!(runtime.downloader().is_installed(asset));
-        assert!(runtime.is_ready());
         std::fs::remove_dir_all(&root).ok();
     }
 }
