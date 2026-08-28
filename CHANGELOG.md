@@ -9,6 +9,7 @@ Windows build.
 
 - Added an editable Project Profile v2 strategy page: capability defaults and music-maker business roles select centrally published OmniBridge Routes, while Provider credentials, deployments and candidate order remain centrally managed.
 - Writing assistant cloud readiness is now independent from local model installation, and text/music calls resolve their Route from the project-owned business role.
+- Clarified the three writing-assistant jobs with independent visible briefs, lyric-language controls, explicit overwrite scopes, and fail-closed empty inputs.
 
 - Added a secret-free OmniBridge Project Profile v2 and project model-strategy
   contract. Text drafting roles use the shared fast/quality text Routes, cloud

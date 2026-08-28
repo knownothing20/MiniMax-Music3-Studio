@@ -10,6 +10,11 @@ import {
   streamWritingAssistant,
   type WritingAssistantStatus,
 } from '../services/writingAssistant';
+import {
+  buildAssistantInstruction,
+  type AssistantTarget,
+  type LyricsLanguage,
+} from '../services/assistantBrief';
 
 /**
  * The Music3 request form.
@@ -231,7 +236,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   cloudAvailable,
   localAvailable,
 }) => {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
 
   const [name, setName] = useState('');
   // The caption is three labelled panes, the way the model was trained and the
@@ -310,6 +315,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [mode, setMode] = useState<'simple' | 'studio'>('studio');
   const [assistInstruction, setAssistInstruction] = useState('');
+  const [captionInstruction, setCaptionInstruction] = useState('');
+  const [lyricsInstruction, setLyricsInstruction] = useState('');
+  const [lyricsLanguage, setLyricsLanguage] = useState<LyricsLanguage>('auto');
   const [error, setError] = useState<string | null>(null);
   const promptFile = useRef<HTMLInputElement | null>(null);
 
@@ -403,6 +411,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
   const reset = () => {
     setName(''); setGlobalMetadata(''); setVocalDetails(''); setArrangement(''); setLyrics(''); setInstrumental(false);
+    setAssistInstruction(''); setCaptionInstruction(''); setLyricsInstruction(''); setLyricsLanguage('auto');
     setDuration(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed('');
     setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
@@ -506,8 +515,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     setAssistStage(null);
     setAssistDraft('');
   };
-  const askAssistant = async (target: 'all' | 'lyrics' | 'prompt') => {
+  const askAssistant = async (target: AssistantTarget) => {
     if (!assistantReady || assisting) return;
+    const instruction = buildAssistantInstruction(target, {
+      all: assistInstruction,
+      prompt: captionInstruction,
+      lyrics: lyricsInstruction,
+    }, lyricsLanguage, language);
+    // Never turn an empty click into a generic model request. Each assistant
+    // action has a visible, task-specific brief and must receive one.
+    if (!instruction) return;
     const run = new AbortController();
     assistRun.current = run;
     setAssisting(target);
@@ -516,7 +533,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       const payload = {
         target,
         description: name.trim(),
-        instruction: assistInstruction.trim(),
+        instruction,
         lyrics: lyrics.trim(),
         global_metadata: globalMetadata.trim(),
         vocal_details: vocalDetails.trim(),
@@ -706,6 +723,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 className={`${CONTROL} resize-none`}
               />
               <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('songIdeaHint')}</p>
+              <Field label={t('lyricsLanguage')}>
+                <select
+                  value={lyricsLanguage}
+                  onChange={event => setLyricsLanguage(event.target.value as LyricsLanguage)}
+                  className={CONTROL + ' mt-2'}
+                >
+                  <option value="auto">{t('lyricsLanguageAuto')}</option>
+                  <option value="zh">{t('lyricsLanguageChinese')}</option>
+                  <option value="en">{t('lyricsLanguageEnglish')}</option>
+                </select>
+              </Field>
+              <p className="mt-2 rounded-lg bg-zinc-50 px-3 py-2 text-[11px] leading-4 text-zinc-500 dark:bg-black/20">
+                {t('assistantFullOutput')}
+              </p>
               <button
                 type="button"
                 onClick={() => void askAssistant('all')}
@@ -728,6 +759,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             </Card>
           )}
 
+          {mode === 'studio' && !assistantReady && (
+            <Card title={t('assistantSection')}>
+              <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantNeedsModel')}</p>
+              <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantHint')}</p>
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'models' }))}
+                className="mt-3 inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+              >
+                <Settings2 size={13} />
+                {t('setUpAssistant')}
+              </button>
+            </Card>
+          )}
 
           {activity.filter(entry => entry.state !== 'done').slice(-3).map(entry => (
             <div key={`${entry.song_id}-${entry.kind}`} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] dark:border-white/10 dark:bg-suno-card">
@@ -771,7 +816,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
           {(assisting === 'lyrics' || assisting === 'prompt') && (
             <div className="flex items-center gap-2 rounded-xl border border-pink-500/30 bg-pink-500/10 px-3 py-2 text-xs text-pink-700 dark:text-pink-200">
               <Loader2 size={14} className="animate-spin" />
-              <span>{t('assistantWriting')} · {assistSeconds} {t('secondsShort')}</span>
+              <span>
+                {assisting === 'lyrics' ? t('assistantWritingLyrics') : t('assistantWritingCaption')}
+                {' · '}{assistSeconds} {t('secondsShort')}
+              </span>
             </div>
           )}
 
@@ -779,11 +827,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             title={t('captionStructured')}
             actions={
               <>
-                {assistantReady && (
-                  <button type="button" onClick={() => void askAssistant('prompt')} disabled={assisting !== null} className={ICON} title={t('writeCaption')}>
-                    {assisting === 'prompt' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} className="text-pink-500" />}
-                  </button>
-                )}
                 <button type="button" onClick={loadExample} className={ICON} title={t('examplePrompt')}><Dices size={14} /></button>
                 <button type="button" onClick={() => promptFile.current?.click()} className={ICON} title={t('openPrompt')}><FolderOpen size={14} /></button>
                 <button type="button" onClick={savePrompt} className={ICON} title={t('savePrompt')}><Save size={14} /></button>
@@ -798,6 +841,29 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               </>
             }
           >
+            {assistantReady && (
+              <div className="mb-3 rounded-lg border border-pink-200 bg-pink-50/60 p-3 dark:border-pink-500/20 dark:bg-pink-500/5">
+                <label className={LABEL} htmlFor="caption-assistant-brief">{t('assistantCaptionBriefLabel')}</label>
+                <AutoTextarea
+                  id="caption-assistant-brief"
+                  value={captionInstruction}
+                  minRows={2}
+                  onChange={event => setCaptionInstruction(event.target.value)}
+                  placeholder={t('assistantCaptionBriefPlaceholder')}
+                  className={CONTROL + ' resize-none'}
+                />
+                <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantCaptionOutput')}</p>
+                <button
+                  type="button"
+                  onClick={() => void askAssistant('prompt')}
+                  disabled={assisting !== null || !captionInstruction.trim()}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-pink-300 bg-white py-2 text-xs font-bold text-pink-600 transition hover:bg-pink-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-pink-500/30 dark:bg-black/20 dark:text-pink-300"
+                >
+                  {assisting === 'prompt' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                  {assisting === 'prompt' ? t('assistantWritingCaption') : t('writeCaption')}
+                </button>
+              </div>
+            )}
             <input
               value={name}
               onChange={event => setName(event.target.value)}
@@ -825,15 +891,46 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 >
                   {t('promptBudgetShort')} {promptTokens} / {MAX_PROMPT_TOKENS}
                 </span>
-                {assistantReady && (
-                  <button type="button" onClick={() => void askAssistant('lyrics')} disabled={assisting !== null} className={ICON} title={t('writeLyrics')}>
-                    {assisting === 'lyrics' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} className="text-pink-500" />}
-                  </button>
-                )}
                 <button type="button" onClick={() => setLyrics('')} className={ICON} title={t('resetPrompt')}><RotateCcw size={14} /></button>
               </>
             }
           >
+            {assistantReady && (
+              <div className="mb-3 rounded-lg border border-pink-200 bg-pink-50/60 p-3 dark:border-pink-500/20 dark:bg-pink-500/5">
+                <label className={LABEL} htmlFor="lyrics-assistant-brief">{t('assistantLyricsBriefLabel')}</label>
+                <AutoTextarea
+                  id="lyrics-assistant-brief"
+                  value={lyricsInstruction}
+                  minRows={2}
+                  onChange={event => setLyricsInstruction(event.target.value)}
+                  placeholder={t('assistantLyricsBriefPlaceholder')}
+                  className={CONTROL + ' resize-none'}
+                />
+                <div className="mt-2 grid grid-cols-[1fr_auto] items-end gap-2">
+                  <Field label={t('lyricsLanguage')}>
+                    <select
+                      value={lyricsLanguage}
+                      onChange={event => setLyricsLanguage(event.target.value as LyricsLanguage)}
+                      className={CONTROL}
+                    >
+                      <option value="auto">{t('lyricsLanguageAuto')}</option>
+                      <option value="zh">{t('lyricsLanguageChinese')}</option>
+                      <option value="en">{t('lyricsLanguageEnglish')}</option>
+                    </select>
+                  </Field>
+                  <button
+                    type="button"
+                    onClick={() => void askAssistant('lyrics')}
+                    disabled={assisting !== null || !lyricsInstruction.trim()}
+                    className="inline-flex h-[38px] items-center justify-center gap-2 rounded-lg border border-pink-300 bg-white px-3 text-xs font-bold text-pink-600 transition hover:bg-pink-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-pink-500/30 dark:bg-black/20 dark:text-pink-300"
+                  >
+                    {assisting === 'lyrics' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                    {assisting === 'lyrics' ? t('assistantWritingLyrics') : t('writeLyrics')}
+                  </button>
+                </div>
+                <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantLyricsOutput')}</p>
+              </div>
+            )}
             <AutoTextarea
               value={lyrics}
               minRows={10}
