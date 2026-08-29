@@ -13,7 +13,7 @@ Windows build.
 
 ### Fixed
 
-- Generated songs now keep requested duration as planning provenance but publish the playable duration measured from the finished audio bytes; the library no longer labels a 152-second cloud result as 60 seconds.
+- Generated and historical songs now keep requested duration as planning provenance but publish the playable duration measured from the finished audio bytes; the library no longer labels a 152-second cloud result as 60 seconds, even for rows created before the fix.
 - Writing-assistant captions now target 1450 characters and are deterministically compacted to 1500 before the form, while retaining the Music Route's 1900-character hard safety gate.
 
 - Added a secret-free OmniBridge Project Profile v2 and project model-strategy

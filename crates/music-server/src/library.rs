@@ -1,11 +1,13 @@
-use std::{env, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}};
+use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
-pub struct Library { connection: Arc<Mutex<Connection>>, media_dir: PathBuf }
+pub struct Library { connection: Arc<Mutex<Connection>>, media_dir: PathBuf, duration_cache: Arc<Mutex<HashMap<PathBuf, AudioDurationCacheEntry>>> }
+#[derive(Debug, Clone)]
+struct AudioDurationCacheEntry { len:u64, modified:Option<SystemTime>, seconds:f64 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Song { pub id:String, pub title:String, pub audio_path:Option<String>, pub caption:String, pub lyrics:String, pub metadata:serde_json::Value, pub generation_settings:serde_json::Value, pub engine_id:String, pub profile_id:Option<String>, pub replay_request:Option<serde_json::Value>, pub audio_codes:Option<serde_json::Value>, pub source:String, pub created_at:String, pub updated_at:String }
 #[derive(Debug, Clone, Deserialize)]
@@ -92,8 +94,7 @@ fn configured_bitrate_kbps(settings:&serde_json::Value)->Option<u32>{
   })
 }
 
-fn metadata_with_actual_duration(mut metadata:serde_json::Value,audio:&[u8],extension:&str,settings:&serde_json::Value)->serde_json::Value{
- let Some(actual)=audio_duration_seconds(audio,extension,configured_bitrate_kbps(settings)) else{return metadata};
+fn metadata_with_measured_duration(mut metadata:serde_json::Value,actual:f64)->serde_json::Value{
  let requested=metadata.get("duration_seconds").and_then(serde_json::Value::as_f64);
  if !metadata.is_object(){metadata=serde_json::json!({})}
  let fields=metadata.as_object_mut().expect("metadata was normalized to an object");
@@ -106,6 +107,10 @@ fn metadata_with_actual_duration(mut metadata:serde_json::Value,audio:&[u8],exte
   fields.insert("duration_source".into(),serde_json::Value::String("audio_file".into()));
  }
  metadata
+}
+fn metadata_with_actual_duration(metadata:serde_json::Value,audio:&[u8],extension:&str,settings:&serde_json::Value)->serde_json::Value{
+ let Some(actual)=audio_duration_seconds(audio,extension,configured_bitrate_kbps(settings)) else{return metadata};
+ metadata_with_measured_duration(metadata,actual)
 }
 
 /// A caption is a full style prompt, not a song name. Without an explicit
@@ -165,9 +170,24 @@ impl Library {
     /// service was started outside the desktop shell, so the same install
     /// showed two different libraries depending on how it was launched.
     pub fn open_default()->Result<Self>{let root=crate::studio_data_root().unwrap_or_else(||env::current_dir().unwrap_or_else(|_|PathBuf::from(".")).join("data"));Self::open_at(root.join("library.sqlite"),root.join("media"))}
- pub fn open_at(db_path:PathBuf,media_dir:PathBuf)->Result<Self>{if let Some(p)=db_path.parent(){fs::create_dir_all(p)?};let c=Connection::open(db_path)?;c.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS songs(id TEXT PRIMARY KEY,title TEXT NOT NULL,audio_path TEXT,caption TEXT NOT NULL,lyrics TEXT NOT NULL,metadata_json TEXT NOT NULL,generation_settings_json TEXT NOT NULL,engine_id TEXT NOT NULL,profile_id TEXT,replay_request_json TEXT,audio_codes_json TEXT,source TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS playlist_songs(playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,song_id TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,position INTEGER NOT NULL,PRIMARY KEY(playlist_id,song_id));")?;Ok(Self{connection:Arc::new(Mutex::new(c)),media_dir})}
- pub fn list_songs(&self)->Result<Vec<Song>>{let c=self.connection.lock().unwrap();let mut s=c.prepare("SELECT id,title,audio_path,caption,lyrics,metadata_json,generation_settings_json,engine_id,profile_id,replay_request_json,audio_codes_json,source,created_at,updated_at FROM songs ORDER BY created_at DESC")?;Ok(s.query_map([],row_song)?.collect::<rusqlite::Result<_>>()?)}
- pub fn get_song(&self,id:&str)->Result<Option<Song>>{let c=self.connection.lock().unwrap();Ok(c.query_row("SELECT id,title,audio_path,caption,lyrics,metadata_json,generation_settings_json,engine_id,profile_id,replay_request_json,audio_codes_json,source,created_at,updated_at FROM songs WHERE id=?",[id],row_song).optional()?)}
+ pub fn open_at(db_path:PathBuf,media_dir:PathBuf)->Result<Self>{if let Some(p)=db_path.parent(){fs::create_dir_all(p)?};let c=Connection::open(db_path)?;c.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS songs(id TEXT PRIMARY KEY,title TEXT NOT NULL,audio_path TEXT,caption TEXT NOT NULL,lyrics TEXT NOT NULL,metadata_json TEXT NOT NULL,generation_settings_json TEXT NOT NULL,engine_id TEXT NOT NULL,profile_id TEXT,replay_request_json TEXT,audio_codes_json TEXT,source TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS playlists(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS playlist_songs(playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,song_id TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,position INTEGER NOT NULL,PRIMARY KEY(playlist_id,song_id));")?;Ok(Self{connection:Arc::new(Mutex::new(c)),media_dir,duration_cache:Arc::new(Mutex::new(HashMap::new()))})}
+ pub fn list_songs(&self)->Result<Vec<Song>>{let c=self.connection.lock().unwrap();let mut s=c.prepare("SELECT id,title,audio_path,caption,lyrics,metadata_json,generation_settings_json,engine_id,profile_id,replay_request_json,audio_codes_json,source,created_at,updated_at FROM songs ORDER BY created_at DESC")?;let songs=s.query_map([],row_song)?.collect::<rusqlite::Result<Vec<_>>>()?;drop(s);drop(c);Ok(songs.into_iter().map(|song|self.song_with_actual_duration(song)).collect())}
+ pub fn get_song(&self,id:&str)->Result<Option<Song>>{let c=self.connection.lock().unwrap();let song=c.query_row("SELECT id,title,audio_path,caption,lyrics,metadata_json,generation_settings_json,engine_id,profile_id,replay_request_json,audio_codes_json,source,created_at,updated_at FROM songs WHERE id=?",[id],row_song).optional()?;drop(c);Ok(song.map(|song|self.song_with_actual_duration(song)))}
+ fn song_with_actual_duration(&self,mut song:Song)->Song{
+  if song.metadata.get("duration_source").and_then(serde_json::Value::as_str)==Some("audio_file")&&song.metadata.get("actual_duration_seconds").and_then(serde_json::Value::as_f64).is_some(){return song}
+  let Some(path)=song.audio_path.as_deref().map(Path::new) else{return song};
+  let Ok(file)=fs::metadata(path) else{return song};
+  let len=file.len();let modified=file.modified().ok();let cache_key=path.to_path_buf();
+  let cached=self.duration_cache.lock().ok().and_then(|cache|cache.get(&cache_key).filter(|entry|entry.len==len&&entry.modified==modified).cloned());
+  let actual=cached.map(|entry|entry.seconds).or_else(||{
+   let extension=path.extension()?.to_str()?.to_ascii_lowercase();let audio=fs::read(path).ok()?;
+   let seconds=audio_duration_seconds(&audio,&extension,configured_bitrate_kbps(&song.generation_settings))?;
+   if let Ok(mut cache)=self.duration_cache.lock(){cache.insert(cache_key,AudioDurationCacheEntry{len,modified,seconds});}
+   Some(seconds)
+  });
+  if let Some(actual)=actual{song.metadata=metadata_with_measured_duration(song.metadata,actual)}
+  song
+ }
  pub fn create_song(&self,input:SongInput)->Result<Song>{let now=now();let song=Song{id:uuid::Uuid::now_v7().to_string(),title:input.title,audio_path:input.audio_path,caption:input.caption,lyrics:input.lyrics,metadata:input.metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,replay_request:input.replay_request,audio_codes:input.audio_codes,source:input.source,created_at:now.clone(),updated_at:now};self.save_song(&song)?;Ok(song)}
  pub fn import_generated_song(&self,input:GeneratedSongInput)->Result<ImportedSong>{
   if input.audio.is_empty(){anyhow::bail!("cannot import an empty audio result")}
@@ -376,6 +396,27 @@ Basic Attributes: bpm is 118. key is F# minor, and scale is minor. Darkwave, Syn
  assert!((result.song.metadata["actual_duration_seconds"].as_f64().unwrap()-1.0).abs()<0.01);
  assert_eq!(result.song.metadata["duration_seconds"],result.song.metadata["actual_duration_seconds"]);
  assert_eq!(result.song.metadata["duration_source"],"audio_file");
+ let _=fs::remove_dir_all(root);
+}
+#[test]fn legacy_rows_publish_the_playable_duration_without_rewriting_the_database(){
+ let root=std::env::temp_dir().join(format!("mm3-legacy-duration-test-{}",uuid::Uuid::now_v7()));
+ let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();
+ fs::create_dir_all(root.join("media")).unwrap();
+ let mut wav=Vec::new();
+ wav.extend_from_slice(b"RIFF");wav.extend_from_slice(&0u32.to_le_bytes());wav.extend_from_slice(b"WAVE");
+ wav.extend_from_slice(b"fmt ");wav.extend_from_slice(&16u32.to_le_bytes());wav.extend_from_slice(&1u16.to_le_bytes());wav.extend_from_slice(&2u16.to_le_bytes());
+ wav.extend_from_slice(&44100u32.to_le_bytes());wav.extend_from_slice(&176400u32.to_le_bytes());wav.extend_from_slice(&4u16.to_le_bytes());wav.extend_from_slice(&16u16.to_le_bytes());
+ wav.extend_from_slice(b"data");wav.extend_from_slice(&176400u32.to_le_bytes());wav.resize(wav.len()+176400,0);
+ let audio_path=root.join("media/legacy.wav");fs::write(&audio_path,&wav).unwrap();
+ let created=db.create_song(SongInput{title:"Legacy".into(),audio_path:Some(audio_path.display().to_string()),caption:"c".into(),lyrics:"l".into(),metadata:serde_json::json!({"duration_seconds":60.0}),generation_settings:serde_json::Value::Null,engine_id:"omnibridge".into(),profile_id:None,replay_request:None,audio_codes:None,source:"omnibridge_generation".into()}).unwrap();
+ let hydrated=db.get_song(&created.id).unwrap().unwrap();
+ assert_eq!(hydrated.metadata["requested_duration_seconds"],60.0);
+ assert!((hydrated.metadata["actual_duration_seconds"].as_f64().unwrap()-1.0).abs()<0.001);
+ assert_eq!(hydrated.metadata["duration_seconds"],hydrated.metadata["actual_duration_seconds"]);
+ assert_eq!(hydrated.metadata["duration_source"],"audio_file");
+ assert_eq!(db.list_songs().unwrap()[0].metadata["duration_source"],"audio_file");
+ let persisted=db.connection.lock().unwrap().query_row("SELECT metadata_json FROM songs WHERE id=?",[&created.id],|row|row.get::<_,String>(0)).unwrap();
+ assert_eq!(serde_json::from_str::<serde_json::Value>(&persisted).unwrap()["duration_seconds"],60.0);
  let _=fs::remove_dir_all(root);
 }
 #[test]fn a_generated_song_gets_a_readable_title_instead_of_the_whole_caption(){
