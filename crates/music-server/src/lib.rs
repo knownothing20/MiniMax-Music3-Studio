@@ -4547,14 +4547,15 @@ async fn create_omnibridge_music_job(
         Ok(config) => config,
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
-    if request.output_format.as_deref().is_some_and(|value| value != "mp3") {
-        return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, "OmniBridge Music currently verifies mp3 output only.".into())));
+    let output_format = request.output_format.as_deref().unwrap_or("wav");
+    if !matches!(output_format, "mp3" | "wav") {
+        return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, "OmniBridge Music output_format must be mp3 or wav.".into())));
     }
     let client = match omnibridge::OmniBridgeMusicClient::new(config) {
         Ok(client) => client,
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
-    let submit = match client.music_request(request.caption.clone(), request.lyrics.clone()) {
+    let submit = match client.music_request(request.caption.clone(), request.lyrics.clone(), output_format) {
         Ok(submit) => submit,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
@@ -4673,6 +4674,37 @@ fn valid_music_client_request_id(value: &str) -> bool {
         })
 }
 
+fn verified_omnibridge_artifact_metadata(
+    requested_duration_seconds: f64,
+    local_job_id: &str,
+    artifact: &omnibridge::ArtifactRef,
+    bytes: &[u8],
+    extension: &str,
+) -> Result<Value, String> {
+    if artifact.bytes != bytes.len() as u64 {
+        return Err("Downloaded OmniBridge artifact size does not match its receipt.".into());
+    }
+    let content_type = artifact.content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let mut metadata = serde_json::json!({
+        "duration_seconds": requested_duration_seconds,
+        "omnibridge_job_id": local_job_id,
+        "artifact_content_type": content_type,
+        "artifact_bytes": artifact.bytes,
+        "artifact_sha256": artifact.sha256,
+    });
+    if extension == "wav" {
+        let wav = library::wav_audio_evidence(bytes)
+            .ok_or_else(|| "OmniBridge WAV artifact is not a valid bounded PCM WAV file.".to_owned())?;
+        let fields = metadata.as_object_mut().expect("artifact evidence metadata is an object");
+        fields.insert("wav_channels".into(), serde_json::json!(wav.channels));
+        fields.insert("wav_sample_rate_hz".into(), serde_json::json!(wav.sample_rate_hz));
+        fields.insert("wav_bits_per_sample".into(), serde_json::json!(wav.bits_per_sample));
+        fields.insert("wav_data_bytes".into(), serde_json::json!(wav.data_bytes));
+        fields.insert("artifact_duration_seconds".into(), serde_json::json!(wav.duration_seconds));
+    }
+    Ok(metadata)
+}
+
 async fn poll_omnibridge_music_job(
     state: &AppState,
     existing: MusicJob,
@@ -4730,7 +4762,13 @@ async fn poll_omnibridge_music_job(
                 "audio/aac" => "aac", "audio/flac" => "flac", "audio/ogg" => "ogg",
                 _ => return Err(api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported OmniBridge artifact MIME.".into())),
             };
-            let metadata = serde_json::json!({"duration_seconds":job.duration_seconds,"omnibridge_job_id":job.id,"artifact_sha256":artifact.sha256});
+            let metadata = verified_omnibridge_artifact_metadata(
+                job.duration_seconds,
+                &job.id,
+                &artifact,
+                &bytes,
+                extension,
+            ).map_err(|error| api_error(StatusCode::BAD_GATEWAY, error))?;
             let imported = state.library.import_generated_song_idempotent(&job.id, library::GeneratedSongInput {
                 title: job.title.clone(), metadata, caption: job.caption.clone(), lyrics: job.lyrics.clone(),
                 generation_settings: job.generation_settings.clone(), replay_request: None, audio_codes: None,
@@ -5457,6 +5495,28 @@ mod tests {
             .unwrap();
         fs::remove_file(path).unwrap();
         records
+    }
+
+    #[test]
+    fn omnibridge_wav_receipt_persists_size_checksum_and_audio_metadata() {
+        let mut wav=Vec::new();
+        wav.extend_from_slice(b"RIFF");wav.extend_from_slice(&0u32.to_le_bytes());wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");wav.extend_from_slice(&16u32.to_le_bytes());wav.extend_from_slice(&1u16.to_le_bytes());wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&44_100u32.to_le_bytes());wav.extend_from_slice(&176_400u32.to_le_bytes());wav.extend_from_slice(&4u16.to_le_bytes());wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");wav.extend_from_slice(&176_400u32.to_le_bytes());wav.resize(wav.len()+176_400,0);
+        let artifact=omnibridge::ArtifactRef{
+            schema:"omnibridge.artifact-ref.v1".into(),id:"music-wav".into(),content_type:"audio/wav".into(),
+            bytes:wav.len() as u64,sha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            availability:"metadata-only".into(),
+        };
+        let metadata=verified_omnibridge_artifact_metadata(30.0,"omnibridge-test",&artifact,&wav,"wav").unwrap();
+        assert_eq!(metadata["artifact_content_type"],"audio/wav");
+        assert_eq!(metadata["artifact_bytes"],wav.len() as u64);
+        assert_eq!(metadata["artifact_sha256"],artifact.sha256);
+        assert_eq!(metadata["wav_channels"],2);
+        assert_eq!(metadata["wav_sample_rate_hz"],44_100);
+        assert_eq!(metadata["wav_bits_per_sample"],16);
+        assert!((metadata["artifact_duration_seconds"].as_f64().unwrap()-1.0).abs()<0.001);
     }
 
     #[test]

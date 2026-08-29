@@ -28,19 +28,64 @@ fn manual_source()->String{"manual".into()}
 /// `duration` field because 60 is the default — so the only dependable source
 /// for a library row is the rendered file. WAV is read from its header; MP3 is
 /// derived from its audio payload and the declared or first-frame bitrate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WavAudioEvidence {
+ pub channels:u16,
+ pub sample_rate_hz:u32,
+ pub bits_per_sample:u16,
+ pub data_bytes:u64,
+ pub duration_seconds:f64,
+}
+
+/// Parses the bounded PCM WAV contract produced by the Compute Hub Music Worker.
+///
+/// RIFF chunks are walked by their declared sizes instead of searching raw audio
+/// bytes for marker text. The result is suitable for a persisted receipt.
+pub fn wav_audio_evidence(audio:&[u8])->Option<WavAudioEvidence>{
+ if audio.len()<12||&audio[0..4]!=b"RIFF"||&audio[8..12]!=b"WAVE"{return None}
+ let mut offset=12usize;
+ let mut format=None;
+ let mut data_bytes=None;
+ while offset.checked_add(8)?<=audio.len(){
+  let id=audio.get(offset..offset+4)?;
+  let size=u32::from_le_bytes(audio.get(offset+4..offset+8)?.try_into().ok()?);
+  let size=usize::try_from(size).ok()?;
+  let chunk_start=offset.checked_add(8)?;
+  let end=chunk_start.checked_add(size)?;
+  if end>audio.len(){return None}
+  if id==b"fmt "{
+   if size<16{return None}
+   let audio_format=u16::from_le_bytes(audio.get(chunk_start..chunk_start+2)?.try_into().ok()?);
+   let channels=u16::from_le_bytes(audio.get(chunk_start+2..chunk_start+4)?.try_into().ok()?);
+   let sample_rate_hz=u32::from_le_bytes(audio.get(chunk_start+4..chunk_start+8)?.try_into().ok()?);
+   let byte_rate=u32::from_le_bytes(audio.get(chunk_start+8..chunk_start+12)?.try_into().ok()?);
+   let block_align=u16::from_le_bytes(audio.get(chunk_start+12..chunk_start+14)?.try_into().ok()?);
+   let bits_per_sample=u16::from_le_bytes(audio.get(chunk_start+14..chunk_start+16)?.try_into().ok()?);
+   let expected_align=u32::from(channels).checked_mul(u32::from(bits_per_sample))?.checked_div(8)?;
+   let expected_rate=sample_rate_hz.checked_mul(expected_align)?;
+   if audio_format!=1||!(1..=2).contains(&channels)||!(8_000..=96_000).contains(&sample_rate_hz)
+    ||![8,16,24,32].contains(&bits_per_sample)||u32::from(block_align)!=expected_align||byte_rate!=expected_rate{
+    return None
+   }
+   format=Some((channels,sample_rate_hz,bits_per_sample,byte_rate,block_align));
+  }else if id==b"data"{
+   if size==0{return None}
+   data_bytes=Some(size as u64);
+  }
+  offset=end.checked_add(size%2)?;
+ }
+ let (channels,sample_rate_hz,bits_per_sample,byte_rate,block_align)=format?;
+ let data_bytes=data_bytes?;
+ if data_bytes%u64::from(block_align)!=0{return None}
+ Some(WavAudioEvidence{
+  channels,sample_rate_hz,bits_per_sample,data_bytes,
+  duration_seconds:data_bytes as f64/f64::from(byte_rate),
+ })
+}
+
 pub fn audio_duration_seconds(audio:&[u8],extension:&str,declared_bitrate_kbps:Option<u32>)->Option<f64>{
  match extension{
-  "wav"=>{
-   if audio.len()<44||&audio[0..4]!=b"RIFF"||&audio[8..12]!=b"WAVE"{return None}
-   let fmt=audio.windows(4).position(|w|w==b"fmt ")?;
-   let channels=u16::from_le_bytes(audio.get(fmt+10..fmt+12)?.try_into().ok()?) as f64;
-   let rate=u32::from_le_bytes(audio.get(fmt+12..fmt+16)?.try_into().ok()?) as f64;
-   let bits=u16::from_le_bytes(audio.get(fmt+22..fmt+24)?.try_into().ok()?) as f64;
-   let data=audio.windows(4).position(|w|w==b"data")?;
-   let payload=u32::from_le_bytes(audio.get(data+4..data+8)?.try_into().ok()?) as f64;
-   let bytes_per_second=rate*channels*(bits/8.0);
-   (bytes_per_second>0.0).then(||payload/bytes_per_second)
-  }
+  "wav"=>wav_audio_evidence(audio).map(|evidence|evidence.duration_seconds),
   "mp3"=>{
    let bitrate=declared_bitrate_kbps.or_else(||mp3_bitrate_kbps(audio))? as f64*1000.0;
    let payload=mp3_payload_bytes(audio)? as f64;
@@ -377,6 +422,13 @@ Basic Attributes: bpm is 118. key is F# minor, and scale is minor. Darkwave, Syn
  wav.extend_from_slice(b"data"); wav.extend_from_slice(&176400u32.to_le_bytes());
  wav.resize(wav.len()+176400,0);
  assert!((audio_duration_seconds(&wav,"wav",None).unwrap()-1.0).abs()<0.001);
+ let evidence=wav_audio_evidence(&wav).unwrap();
+ assert_eq!(evidence.channels,2);
+ assert_eq!(evidence.sample_rate_hz,44_100);
+ assert_eq!(evidence.bits_per_sample,16);
+ assert_eq!(evidence.data_bytes,176_400);
+ let mut invalid=wav.clone();invalid[28..32].copy_from_slice(&1u32.to_le_bytes());
+ assert!(wav_audio_evidence(&invalid).is_none());
  // 128 kbps MP3: 16 kB is one second.
  assert!((audio_duration_seconds(&vec![0u8;16000],"mp3",Some(128)).unwrap()-1.0).abs()<0.01);
  let mut tagged_mp3=b"ID3\x04\x00\x00\x00\x00\x00\x20".to_vec();tagged_mp3.resize(10+32+32000,0);
