@@ -11,6 +11,11 @@ Windows build.
 - Writing assistant cloud readiness is now independent from local model installation, and text/music calls resolve their Route from the project-owned business role.
 - Clarified the three writing-assistant jobs with independent visible briefs, lyric-language controls, explicit overwrite scopes, and fail-closed empty inputs.
 
+### Fixed
+
+- Generated songs now keep requested duration as planning provenance but publish the playable duration measured from the finished audio bytes; the library no longer labels a 152-second cloud result as 60 seconds.
+- Writing-assistant captions now target 1450 characters and are deterministically compacted to 1500 before the form, while retaining the Music Route's 1900-character hard safety gate.
+
 - Added a secret-free OmniBridge Project Profile v2 and project model-strategy
   contract. Text drafting roles use the shared fast/quality text Routes, cloud
   music uses the durable default Music Route, and Provider ordering remains

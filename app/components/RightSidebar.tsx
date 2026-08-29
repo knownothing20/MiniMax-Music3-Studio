@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { TRACK_ARTIST } from '../services/studio';
 import { Song } from '../types';
-import { Heart, Share2, Play, Pause, MoreHorizontal, X, Copy, Wand2, MoreVertical, Download, Repeat, Video, Music, Link as LinkIcon, Sparkles, Globe, Lock, Trash2, Edit3, Layers, ChevronDown, ClipboardCopy, ImagePlus, Loader2, Mic2 } from 'lucide-react';
+import { Heart, Share2, Play, Pause, MoreHorizontal, X, Copy, Wand2, MoreVertical, Download, Repeat, Video, Music, Link as LinkIcon, Sparkles, Globe, Lock, Trash2, Edit3, Layers, ChevronDown, ClipboardCopy, ImagePlus, Loader2, Mic2, PackageOpen } from 'lucide-react';
 import { updateNativeSong } from '../services/nativeLibrary';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
@@ -92,10 +92,14 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
     const [titleDraft, setTitleDraft] = useState('');
     const [titleError, setTitleError] = useState<string | null>(null);
     const [isSavingTitle, setIsSavingTitle] = useState(false);
+    const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+    const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
 
     useEffect(() => {
         if (song) {
-            setIsOwner(user?.id === song.userId);
+            // Native library rows have no remote owner id; they belong to this
+            // local Studio and must keep rename/delete available.
+            setIsOwner(!song.userId || user?.id === song.userId);
         }
     }, [song, user]);
 
@@ -164,6 +168,32 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
         if (!url) return;
         const resolved = url.startsWith('http') ? url : `${window.location.origin}${url}`;
         window.open(resolved, '_blank');
+    };
+
+    const exportDiagnostics = async () => {
+        if (!song || diagnosticsBusy) return;
+        setDiagnosticsBusy(true);
+        setDiagnosticsError(null);
+        try {
+            const response = await fetch(`/v1/library/songs/${encodeURIComponent(song.id)}/diagnostics`);
+            if (!response.ok) {
+                const body = await response.json().catch(() => null) as { error?: string } | null;
+                throw new Error(body?.error || `Diagnostic export failed (${response.status})`);
+            }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `music-maker-diagnostics-${song.id}.zip`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        } catch (reason) {
+            setDiagnosticsError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setDiagnosticsBusy(false);
+        }
     };
 
     if (!song) return (
@@ -420,6 +450,27 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                             </button>
                         </div>
                     </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                        <button
+                            onClick={() => void exportDiagnostics()}
+                            disabled={diagnosticsBusy}
+                            className="flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-xs font-semibold text-zinc-700 transition hover:border-pink-300 hover:text-pink-600 disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-zinc-200"
+                        >
+                            {diagnosticsBusy ? <Loader2 size={15} className="animate-spin" /> : <PackageOpen size={15} />}
+                            {diagnosticsBusy ? t('exportingDiagnosticBundle') : t('exportDiagnosticBundle')}
+                        </button>
+                        {isOwner && onDelete && (
+                            <button
+                                onClick={() => onDelete(song)}
+                                className="flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300"
+                            >
+                                <Trash2 size={15} />
+                                {t('deleteSong')}
+                            </button>
+                        )}
+                    </div>
+                    {diagnosticsError && <p className="text-xs text-red-500">{t('diagnosticExportFailed')}: {diagnosticsError}</p>}
 
                     {(song.generationParams?.referenceAudioUrl || song.generationParams?.sourceAudioUrl) && (
                         <div className="space-y-3">

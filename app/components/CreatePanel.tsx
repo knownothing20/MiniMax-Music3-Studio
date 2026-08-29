@@ -9,6 +9,9 @@ import {
   isWritingAssistantAvailable,
   streamWritingAssistant,
   type WritingAssistantStatus,
+  type WritingAssistantDraft,
+  type WritingAssistantReceipt,
+  type WritingAssistantRequest,
 } from '../services/writingAssistant';
 import {
   buildAssistantInstruction,
@@ -52,6 +55,19 @@ interface CreatePanelProps {
 
 type EngineDefaults = Partial<Record<string, number | string>>;
 
+type AssistantTraceEntry = {
+  target: AssistantTarget;
+  started_at: string;
+  completed_at: string;
+  status: 'completed' | 'failed' | 'cancelled';
+  request: WritingAssistantRequest;
+  visible_stages: string[];
+  streamed_output?: string;
+  final_draft?: WritingAssistantDraft;
+  receipt?: WritingAssistantReceipt;
+  error?: string;
+};
+
 type ProfileFiles = { lm_model: string; depth_model: string; cond_model: string; dit_model: string; vae_model: string };
 
 type SetupStatus = {
@@ -71,8 +87,9 @@ type EngineCatalog = {
 
 /** 9000 acoustic frames at 25 frames per second, as the model card states. */
 const MAX_DURATION_SECONDS = 360;
-/** The tokenized caption + lyrics budget the engine enforces at submit. */
-const MAX_PROMPT_TOKENS = 5000;
+/** Exact OmniBridge MiniMax Music route limits (JavaScript length is UTF-16). */
+const MAX_CAPTION_CHARACTERS = 2000;
+const MAX_LYRICS_CHARACTERS = 3500;
 
 const PROFILE_LABEL: Record<string, string> = {
   native: 'Full Native',
@@ -94,9 +111,6 @@ const numberOrUndefined = (value: string): number | undefined => {
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : undefined;
 };
-
-/** A rough token estimate, only used to warn before the engine rejects it. */
-const estimateTokens = (text: string) => Math.ceil(text.trim().length / 3.6);
 
 const ICON =
   'rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-black dark:hover:bg-white/10 dark:hover:text-white disabled:opacity-40';
@@ -250,6 +264,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
   // Parameters are strings so an empty field can mean "engine default".
   const [duration, setDuration] = useState('');
+  const [durationSource, setDurationSource] = useState<'default' | 'assistant' | 'manual'>('default');
   const [lmSeed, setLmSeed] = useState('');
   const [lmCfg, setLmCfg] = useState('');
   const [lmTopK, setLmTopK] = useState('');
@@ -318,6 +333,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [captionInstruction, setCaptionInstruction] = useState('');
   const [lyricsInstruction, setLyricsInstruction] = useState('');
   const [lyricsLanguage, setLyricsLanguage] = useState<LyricsLanguage>('auto');
+  const [assistantTrace, setAssistantTrace] = useState<AssistantTraceEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const promptFile = useRef<HTMLInputElement | null>(null);
 
@@ -325,7 +341,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const defaults = catalog?.defaults ?? {};
   const placeholder = (key: string) => (defaults[key] === undefined ? '' : String(defaults[key]));
   const caption = joinCaption(globalMetadata, vocalDetails, arrangement);
-  const promptTokens = estimateTokens(caption) + estimateTokens(lyrics);
+  const captionCharacters = caption.length;
+  const lyricsCharacters = lyrics.length;
 
   const profileLabel = useMemo(() => {
     if (setup?.selected_component_ids?.length) return t('customSet');
@@ -400,6 +417,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     const settings = (song.generationParams ?? {}) as EngineDefaults;
     const asString = (key: string) => (settings[key] === undefined ? '' : String(settings[key]));
     setDuration(asString('duration'));
+    setDurationSource('manual');
     setSteps(asString('steps'));
     setLmCfg(asString('lm_cfg'));
     setLmTopK(asString('lm_top_k'));
@@ -411,8 +429,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
   const reset = () => {
     setName(''); setGlobalMetadata(''); setVocalDetails(''); setArrangement(''); setLyrics(''); setInstrumental(false);
-    setAssistInstruction(''); setCaptionInstruction(''); setLyricsInstruction(''); setLyricsLanguage('auto');
-    setDuration(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
+    setAssistInstruction(''); setCaptionInstruction(''); setLyricsInstruction(''); setLyricsLanguage('auto'); setAssistantTrace([]);
+    setDuration(''); setDurationSource('default'); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed('');
     setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
     setError(null);
@@ -426,6 +444,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     setArrangement(example.arrangement);
     setLyrics(example.lyrics);
     setDuration(String(example.duration));
+    setDurationSource('manual');
     setName(example.name);
     setError(null);
   };
@@ -459,6 +478,30 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     if (coverPrompt.trim()) request.cover_prompt = coverPrompt.trim();
     if (!cloudMode && audioCodes.trim()) request.audio_codes = audioCodes.trim();
     if (!cloudMode && Object.keys(models).length === 5) request.models = models;
+    request.studio_diagnostics = {
+      schema_version: 1,
+      captured_at: new Date().toISOString(),
+      form: {
+        mode,
+        generation_mode: generationMode,
+        briefs: {
+          song_idea: assistInstruction.trim(),
+          structured_caption: captionInstruction.trim(),
+          lyrics: lyricsInstruction.trim(),
+          lyrics_language: lyricsLanguage,
+        },
+        final_copy: {
+          title: name.trim(),
+          cover_prompt: coverPrompt.trim(),
+          global_metadata: globalMetadata.trim(),
+          vocal_details: vocalDetails.trim(),
+          arrangement: arrangement.trim(),
+          lyrics: instrumental ? '' : lyrics.replace(/\r\n?/g, '\n').trim(),
+          instrumental,
+        },
+      },
+      assistant_trace: assistantTrace,
+    };
     return request;
   };
 
@@ -485,6 +528,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       }
       if (typeof parsed.lyrics === 'string') setLyrics(parsed.lyrics);
       setDuration(asString(parsed.duration ?? parsed.duration_seconds));
+      setDurationSource('manual');
       setSteps(asString(parsed.steps));
       setLmCfg(asString(parsed.lm_cfg));
       setLmTopK(asString(parsed.lm_top_k));
@@ -529,18 +573,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     assistRun.current = run;
     setAssisting(target);
     setError(null);
+    const startedAt = new Date().toISOString();
+    const visibleStages: string[] = [];
+    const payload: WritingAssistantRequest = {
+      target,
+      description: name.trim(),
+      instruction,
+      lyrics: lyrics.trim(),
+      global_metadata: globalMetadata.trim(),
+      vocal_details: vocalDetails.trim(),
+      arrangement: arrangement.trim(),
+      duration_seconds: numberOrUndefined(duration) ?? 60,
+      instrumental,
+    };
     try {
-      const payload = {
-        target,
-        description: name.trim(),
-        instruction,
-        lyrics: lyrics.trim(),
-        global_metadata: globalMetadata.trim(),
-        vocal_details: vocalDetails.trim(),
-        arrangement: arrangement.trim(),
-        duration_seconds: numberOrUndefined(duration) ?? 60,
-        instrumental,
-      };
 
       // Watch the same request happen: the studio reports when it goes out,
       // when the model starts answering, and then the text as it arrives. The
@@ -552,7 +598,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       const result = await streamWritingAssistant(payload, {
         signal: run.signal,
         onEvent: event => {
-          if (event.stage) setAssistStage(event.stage);
+          if (event.stage) {
+            setAssistStage(event.stage);
+            if (visibleStages.at(-1) !== event.stage) visibleStages.push(event.stage);
+          }
           if (event.model) setAssistModel(event.model);
           if (event.delta) {
             streamed += event.delta;
@@ -561,21 +610,44 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         },
       });
       const body = result.draft;
-      if (typeof body.lyrics === 'string') setLyrics(body.lyrics);
-      if (typeof body.global_metadata === 'string') setGlobalMetadata(body.global_metadata);
-      if (typeof body.vocal_details === 'string') setVocalDetails(body.vocal_details);
-      if (typeof body.arrangement === 'string') setArrangement(body.arrangement);
+      const nextLyrics = typeof body.lyrics === 'string' ? body.lyrics : lyrics;
+      const nextGlobalMetadata = typeof body.global_metadata === 'string' ? body.global_metadata : globalMetadata;
+      const nextVocalDetails = typeof body.vocal_details === 'string' ? body.vocal_details : vocalDetails;
+      const nextArrangement = typeof body.arrangement === 'string' ? body.arrangement : arrangement;
+      if (joinCaption(nextGlobalMetadata, nextVocalDetails, nextArrangement).length > MAX_CAPTION_CHARACTERS) {
+        throw new Error(t('assistantCaptionTooLong'));
+      }
+      if (nextLyrics.length > MAX_LYRICS_CHARACTERS) {
+        throw new Error(t('assistantLyricsTooLong'));
+      }
+      if (typeof body.lyrics === 'string') setLyrics(nextLyrics);
+      if (typeof body.global_metadata === 'string') setGlobalMetadata(nextGlobalMetadata);
+      if (typeof body.vocal_details === 'string') setVocalDetails(nextVocalDetails);
+      if (typeof body.arrangement === 'string') setArrangement(nextArrangement);
       // The model has the words and the mood in front of it, so it names the
       // track and says what its cover should show.
       if (typeof body.title === 'string' && body.title.trim()) setName(body.title.trim());
       if (typeof body.cover_prompt === 'string' && body.cover_prompt.trim()) setCoverPrompt(body.cover_prompt.trim());
-      // The assistant wrote the sections, so it knows how long they take; the
-      // form's 60 seconds is a default, not a decision anyone made.
-      if (typeof body.duration_seconds === 'number' && body.duration_seconds >= 10) {
+      // Only a complete-plan run may suggest a ceiling, and only while the
+      // person has not selected or imported one. Description/lyrics helpers
+      // never silently rewrite this control.
+      if (!cloudMode && target === 'all' && !duration.trim() && typeof body.duration_seconds === 'number' && body.duration_seconds >= 10) {
         setDuration(String(Math.min(360, Math.round(body.duration_seconds))));
+        setDurationSource('assistant');
       }
       const resolvedModel = result.receipt?.resolved_model;
       if (resolvedModel) setAssistModel(resolvedModel);
+      setAssistantTrace(previous => [...previous, {
+        target,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        status: 'completed',
+        request: payload,
+        visible_stages: visibleStages,
+        streamed_output: result.text || streamed,
+        final_draft: result.draft,
+        receipt: result.receipt,
+      }]);
       // The tab stays where it was. Switching to Studio showed what the
       // assistant had written, but it moved the user off the screen they were
       // working on to do it, and they can look for themselves.
@@ -583,7 +655,17 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       // Giving up on a run is not an error to report back at the person who
       // gave up on it.
       const cancelled = reason instanceof DOMException && reason.name === 'AbortError';
-      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setAssistantTrace(previous => [...previous, {
+        target,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        status: cancelled ? 'cancelled' : 'failed',
+        request: payload,
+        visible_stages: visibleStages,
+        error: cancelled ? 'Cancelled by the user.' : message,
+      }]);
+      if (!cancelled) setError(message);
     } finally {
       assistRun.current = null;
       setAssisting(null);
@@ -596,7 +678,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     if (!ready) { setError(t('downloadProfileFirst')); return; }
     if (!caption.trim()) { setError(t('captionRequired')); return; }
     if (!lyrics.trim()) { setError(t('lyricsRequired')); return; }
-    if (promptTokens > MAX_PROMPT_TOKENS) { setError(t('promptTooLong')); return; }
+    if (captionCharacters > MAX_CAPTION_CHARACTERS) { setError(t('captionTooLong')); return; }
+    if (lyricsCharacters > MAX_LYRICS_CHARACTERS) { setError(t('lyricsTooLong')); return; }
     setError(null);
     onGenerate(buildRequest());
   };
@@ -611,12 +694,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   ];
 
   const resetParameters = () => {
-    setDuration(''); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
+    setDuration(''); setDurationSource('default'); setLmSeed(''); setLmCfg(''); setLmTopK(''); setAudioCodes('');
     setSteps(''); setDitCfg(''); setSynthBatch(''); setSeed(''); setRandomizeSeed(true);
     setPeakClip(''); setMp3Bitrate('320'); setFormat('mp3'); setModels({});
   };
 
-  const overBudget = promptTokens > MAX_PROMPT_TOKENS;
+  const overBudget = captionCharacters > MAX_CAPTION_CHARACTERS || lyricsCharacters > MAX_LYRICS_CHARACTERS;
 
   return (
     <section className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-suno-panel dark:text-white">
@@ -887,9 +970,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <>
                 <span
                   className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums ${overBudget ? 'bg-rose-500/10 text-rose-600 dark:text-rose-300' : 'bg-zinc-200/70 text-zinc-500 dark:bg-white/10 dark:text-zinc-400'}`}
-                  title={`${t('promptBudget')} — ${t('caption')}: ${estimateTokens(caption)}, ${t('lyrics')}: ${estimateTokens(lyrics)}`}
+                  title={`${t('promptBudget')} — ${t('caption')}: ${captionCharacters}/${MAX_CAPTION_CHARACTERS}, ${t('lyrics')}: ${lyricsCharacters}/${MAX_LYRICS_CHARACTERS}`}
                 >
-                  {t('promptBudgetShort')} {promptTokens} / {MAX_PROMPT_TOKENS}
+                  {t('caption')} {captionCharacters}/{MAX_CAPTION_CHARACTERS} · {t('lyrics')} {lyricsCharacters}/{MAX_LYRICS_CHARACTERS}
                 </span>
                 <button type="button" onClick={() => setLyrics('')} className={ICON} title={t('resetPrompt')}><RotateCcw size={14} /></button>
               </>
@@ -939,7 +1022,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               className={`${CONTROL} resize-none font-mono text-xs leading-5`}
             />
             <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('lyricsHint')}</p>
-            {overBudget && <p className="mt-1 text-[11px] leading-4 text-rose-600 dark:text-rose-300">{t('promptTooLong')}</p>}
+            {captionCharacters > MAX_CAPTION_CHARACTERS && <p className="mt-1 text-[11px] leading-4 text-rose-600 dark:text-rose-300">{t('captionTooLong')}</p>}
+            {lyricsCharacters > MAX_LYRICS_CHARACTERS && <p className="mt-1 text-[11px] leading-4 text-rose-600 dark:text-rose-300">{t('lyricsTooLong')}</p>}
           </Card>
 
           <Card
@@ -951,17 +1035,26 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             }
           >
             <div className="space-y-3">
-              <SliderRow
-                label={t('maxDuration')}
-                value={duration}
-                fallback={Number(defaults.duration ?? 60)}
-                min={10}
-                max={MAX_DURATION_SECONDS}
-                step={5}
-                suffix=" s"
-                onChange={setDuration}
-              />
-              <p className="text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
+              {cloudMode ? (
+                <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] leading-5 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">
+                  {t('cloudDurationNotControlled')}
+                </div>
+              ) : (
+                <>
+                  <SliderRow
+                    label={t('maxDuration')}
+                    value={duration}
+                    fallback={Number(defaults.duration ?? 60)}
+                    min={10}
+                    max={MAX_DURATION_SECONDS}
+                    step={5}
+                    suffix=" s"
+                    onChange={value => { setDuration(value); setDurationSource('manual'); }}
+                  />
+                  <p className="text-[11px] leading-4 text-zinc-500">{t('maxDurationHint')}</p>
+                  <p className="text-[11px] leading-4 text-zinc-500">{t(durationSource === 'assistant' ? 'durationSourceAssistant' : durationSource === 'manual' ? 'durationSourceManual' : 'durationSourceDefault')}</p>
+                </>
+              )}
               {!cloudMode && (
                 <>
                   <SliderRow

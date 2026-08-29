@@ -91,6 +91,8 @@ export interface Music3Request {
   mp3_bitrate?: number;
   /** Library title only — never sent to the engine. */
   title?: string;
+  /** Studio-only provenance persisted for diagnostics, never sent to providers. */
+  studio_diagnostics?: Record<string, unknown>;
 }
 
 export interface Music3JobSong {
