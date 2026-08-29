@@ -80,6 +80,7 @@ import {
   resolveGenerationExecutionTarget,
   type GenerationModePreference,
 } from './services/studioExecution';
+import { isWritingAssistantAvailable, type WritingAssistantStatus } from './services/writingAssistant';
 
 const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
 const SUBMISSION_UNKNOWN_MESSAGE = '提交状态未知，禁止自动重试；请恢复查询或人工确认后再处理。';
@@ -143,6 +144,7 @@ function AppContent() {
   const [nativeSetupReady, setNativeSetupReady] = useState(false);
   const [studioExecutionStatus, setStudioExecutionStatus] = useState<OmniBridgeIntegrationStatus | null>(null);
   const [studioExecutionChecking, setStudioExecutionChecking] = useState(true);
+  const [writingAssistantReady, setWritingAssistantReady] = useState(false);
   const [generationMode, setGenerationMode] = useState<GenerationModePreference>(() => {
     try {
       return parseGenerationModePreference(localStorage.getItem(GENERATION_MODE_STORAGE_KEY));
@@ -183,6 +185,26 @@ function AppContent() {
     return () => {
       active = false;
       window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void fetch('/v1/assistant/status')
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
+      .then((status: WritingAssistantStatus) => {
+        if (active) setWritingAssistantReady(isWritingAssistantAvailable(status));
+      })
+      .catch(() => {
+        if (active) setWritingAssistantReady(false);
+      });
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    window.addEventListener('mm3:settings-changed', refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('mm3:settings-changed', refresh);
     };
   }, []);
 
@@ -1598,8 +1620,8 @@ function AppContent() {
         // is a decision to make, and an engine coming up is a wait to sit
         // through. They used to be the same page, which made a running studio
         // look like it owed 26 GB.
-        if (!useCloudExecution && nativeModels === 'offline') return <StudioOffline />;
-        if (!useCloudExecution && !nativeSetupReady) {
+        if (!useCloudExecution && nativeModels === 'offline' && !writingAssistantReady) return <StudioOffline />;
+        if (!useCloudExecution && !nativeSetupReady && !writingAssistantReady) {
           // Until the studio has answered, and while the engine is coming up,
           // this is a wait - not a decision. The download page appears only
           // when components are genuinely missing.

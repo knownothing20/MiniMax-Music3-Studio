@@ -779,6 +779,146 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             ))}
           </div>
 
+          {mode === 'studio' && (
+            <div className="space-y-3" data-testid="music3-assistant-workspace">
+              <div
+                className={'rounded-xl border p-3 ' + (assistantReady
+                  ? 'border-emerald-300 bg-emerald-50/80 dark:border-emerald-500/25 dark:bg-emerald-500/10'
+                  : 'border-amber-300 bg-amber-50/80 dark:border-amber-500/25 dark:bg-amber-500/10')}
+                data-testid="caption-rewriter-status"
+              >
+                <div className="flex items-start gap-2.5">
+                  <span className={'mt-0.5 rounded-lg p-1.5 ' + (assistantReady
+                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                    : 'bg-amber-500/15 text-amber-700 dark:text-amber-300')}>
+                    <Sparkles size={15} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-xs font-bold text-zinc-900 dark:text-white">Music3 Caption Rewriter</p>
+                      <span className={'rounded-full px-2 py-0.5 text-[10px] font-bold ' + (assistantReady
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-200'
+                        : 'bg-amber-500/15 text-amber-800 dark:text-amber-200')}>
+                        {t(assistantReady ? 'captionRewriterEnabled' : 'captionRewriterIntegrated')}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-4 text-zinc-600 dark:text-zinc-300">
+                      {t(assistantReady ? 'captionRewriterEnabledHint' : 'captionRewriterNeedsAssistant')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {assistantReady ? (
+                <div className="grid gap-3" data-testid="assistant-cards">
+                  <section
+                    aria-labelledby="caption-assistant-title"
+                    className="rounded-xl border border-pink-200 bg-white p-3 shadow-sm dark:border-pink-500/20 dark:bg-suno-card"
+                  >
+                    <div className="mb-2 flex items-start justify-between gap-2">
+                      <div>
+                        <h2 id="caption-assistant-title" className="text-sm font-bold text-zinc-900 dark:text-white">{t('structuredAssistantTitle')}</h2>
+                        <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('assistantCaptionOutput')}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-bold text-pink-600 dark:text-pink-300">Caption Rewriter</span>
+                    </div>
+                    <label className={LABEL} htmlFor="caption-assistant-brief">{t('assistantCaptionBriefLabel')}</label>
+                    <AutoTextarea
+                      id="caption-assistant-brief"
+                      value={captionInstruction}
+                      minRows={2}
+                      onChange={event => setCaptionInstruction(event.target.value)}
+                      placeholder={t('assistantCaptionBriefPlaceholder')}
+                      className={CONTROL + ' resize-none'}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void askAssistant('prompt')}
+                      disabled={assisting !== null || !captionInstruction.trim()}
+                      className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-pink-500 to-orange-500 py-2 text-xs font-bold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {assisting === 'prompt' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                      {assisting === 'prompt' ? t('assistantWritingCaption') : t('writeCaption')}
+                    </button>
+                    <p className="mt-2 rounded-lg bg-pink-50 px-2.5 py-1.5 text-[10px] font-semibold leading-4 text-pink-700 dark:bg-pink-500/10 dark:text-pink-200">
+                      {t('assistantCaptionSafeguards')}
+                    </p>
+                    <p className="mt-1 text-center text-[10px] font-semibold text-zinc-400">{t('assistantCaptionScope')}</p>
+                  </section>
+
+                  <section
+                    aria-labelledby="lyrics-assistant-title"
+                    className="rounded-xl border border-orange-200 bg-white p-3 shadow-sm dark:border-orange-500/20 dark:bg-suno-card"
+                  >
+                    <div className="mb-2 flex items-start justify-between gap-2">
+                      <div>
+                        <h2 id="lyrics-assistant-title" className="text-sm font-bold text-zinc-900 dark:text-white">{t('lyricsAssistantTitle')}</h2>
+                        <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('assistantLyricsOutput')}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-orange-500/10 px-2 py-0.5 text-[10px] font-bold text-orange-600 dark:text-orange-300">Lyrics</span>
+                    </div>
+                    <label className={LABEL} htmlFor="lyrics-assistant-brief">{t('assistantLyricsBriefLabel')}</label>
+                    <AutoTextarea
+                      id="lyrics-assistant-brief"
+                      value={lyricsInstruction}
+                      minRows={2}
+                      onChange={event => setLyricsInstruction(event.target.value)}
+                      placeholder={t('assistantLyricsBriefPlaceholder')}
+                      className={CONTROL + ' resize-none'}
+                    />
+                    <div className="mt-2 grid grid-cols-[1fr_auto] items-end gap-2">
+                      <Field label={t('lyricsLanguage')}>
+                        <select
+                          value={lyricsLanguage}
+                          onChange={event => setLyricsLanguage(event.target.value as LyricsLanguage)}
+                          className={CONTROL}
+                        >
+                          <option value="auto">{t('lyricsLanguageAuto')}</option>
+                          <option value="zh">{t('lyricsLanguageChinese')}</option>
+                          <option value="en">{t('lyricsLanguageEnglish')}</option>
+                        </select>
+                      </Field>
+                      <button
+                        type="button"
+                        onClick={() => void askAssistant('lyrics')}
+                        disabled={assisting !== null || !lyricsInstruction.trim()}
+                        className="inline-flex h-[38px] items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-orange-500 to-pink-500 px-3 text-xs font-bold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {assisting === 'lyrics' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                        {assisting === 'lyrics' ? t('assistantWritingLyrics') : t('writeLyrics')}
+                      </button>
+                    </div>
+                    <p className="mt-2 rounded-lg bg-orange-50 px-2.5 py-1.5 text-[10px] font-semibold leading-4 text-orange-700 dark:bg-orange-500/10 dark:text-orange-200">
+                      {t('assistantLyricsSafeguards')}
+                    </p>
+                    <p className="mt-1 text-center text-[10px] font-semibold text-zinc-400">{t('assistantLyricsScope')}</p>
+                  </section>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-white/10 dark:bg-suno-card">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg border border-pink-200 bg-pink-50/60 p-2.5 dark:border-pink-500/20 dark:bg-pink-500/5">
+                      <p className="text-xs font-bold text-zinc-800 dark:text-zinc-100">{t('structuredAssistantTitle')}</p>
+                      <p className="mt-1 text-[10px] leading-4 text-zinc-500">{t('assistantCaptionScope')}</p>
+                    </div>
+                    <div className="rounded-lg border border-orange-200 bg-orange-50/60 p-2.5 dark:border-orange-500/20 dark:bg-orange-500/5">
+                      <p className="text-xs font-bold text-zinc-800 dark:text-zinc-100">{t('lyricsAssistantTitle')}</p>
+                      <p className="mt-1 text-[10px] leading-4 text-zinc-500">{t('assistantLyricsScope')}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'models' }))}
+                    className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-300 py-2 text-xs font-bold text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
+                  >
+                    <Settings2 size={13} />
+                    {t('setUpAssistant')}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {mode === 'simple' && !assistantReady && (
             <Card title={t('songIdea')}>
               <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantNeedsModel')}</p>
@@ -839,21 +979,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   {t('cancelDownload')}
                 </button>
               )}
-            </Card>
-          )}
-
-          {mode === 'studio' && !assistantReady && (
-            <Card title={t('assistantSection')}>
-              <p className="text-xs leading-5 text-zinc-500 dark:text-zinc-400">{t('assistantNeedsModel')}</p>
-              <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantHint')}</p>
-              <button
-                type="button"
-                onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'models' }))}
-                className="mt-3 inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-pink-400 hover:text-pink-600 dark:border-white/15 dark:text-zinc-300"
-              >
-                <Settings2 size={13} />
-                {t('setUpAssistant')}
-              </button>
             </Card>
           )}
 
@@ -924,29 +1049,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               </>
             }
           >
-            {assistantReady && (
-              <div className="mb-3 rounded-lg border border-pink-200 bg-pink-50/60 p-3 dark:border-pink-500/20 dark:bg-pink-500/5">
-                <label className={LABEL} htmlFor="caption-assistant-brief">{t('assistantCaptionBriefLabel')}</label>
-                <AutoTextarea
-                  id="caption-assistant-brief"
-                  value={captionInstruction}
-                  minRows={2}
-                  onChange={event => setCaptionInstruction(event.target.value)}
-                  placeholder={t('assistantCaptionBriefPlaceholder')}
-                  className={CONTROL + ' resize-none'}
-                />
-                <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantCaptionOutput')}</p>
-                <button
-                  type="button"
-                  onClick={() => void askAssistant('prompt')}
-                  disabled={assisting !== null || !captionInstruction.trim()}
-                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-pink-300 bg-white py-2 text-xs font-bold text-pink-600 transition hover:bg-pink-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-pink-500/30 dark:bg-black/20 dark:text-pink-300"
-                >
-                  {assisting === 'prompt' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                  {assisting === 'prompt' ? t('assistantWritingCaption') : t('writeCaption')}
-                </button>
-              </div>
-            )}
             <input
               value={name}
               onChange={event => setName(event.target.value)}
@@ -978,42 +1080,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               </>
             }
           >
-            {assistantReady && (
-              <div className="mb-3 rounded-lg border border-pink-200 bg-pink-50/60 p-3 dark:border-pink-500/20 dark:bg-pink-500/5">
-                <label className={LABEL} htmlFor="lyrics-assistant-brief">{t('assistantLyricsBriefLabel')}</label>
-                <AutoTextarea
-                  id="lyrics-assistant-brief"
-                  value={lyricsInstruction}
-                  minRows={2}
-                  onChange={event => setLyricsInstruction(event.target.value)}
-                  placeholder={t('assistantLyricsBriefPlaceholder')}
-                  className={CONTROL + ' resize-none'}
-                />
-                <div className="mt-2 grid grid-cols-[1fr_auto] items-end gap-2">
-                  <Field label={t('lyricsLanguage')}>
-                    <select
-                      value={lyricsLanguage}
-                      onChange={event => setLyricsLanguage(event.target.value as LyricsLanguage)}
-                      className={CONTROL}
-                    >
-                      <option value="auto">{t('lyricsLanguageAuto')}</option>
-                      <option value="zh">{t('lyricsLanguageChinese')}</option>
-                      <option value="en">{t('lyricsLanguageEnglish')}</option>
-                    </select>
-                  </Field>
-                  <button
-                    type="button"
-                    onClick={() => void askAssistant('lyrics')}
-                    disabled={assisting !== null || !lyricsInstruction.trim()}
-                    className="inline-flex h-[38px] items-center justify-center gap-2 rounded-lg border border-pink-300 bg-white px-3 text-xs font-bold text-pink-600 transition hover:bg-pink-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-pink-500/30 dark:bg-black/20 dark:text-pink-300"
-                  >
-                    {assisting === 'lyrics' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                    {assisting === 'lyrics' ? t('assistantWritingLyrics') : t('writeLyrics')}
-                  </button>
-                </div>
-                <p className="mt-2 text-[11px] leading-4 text-zinc-500">{t('assistantLyricsOutput')}</p>
-              </div>
-            )}
             <AutoTextarea
               value={lyrics}
               minRows={10}
