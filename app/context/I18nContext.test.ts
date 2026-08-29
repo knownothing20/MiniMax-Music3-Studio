@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveInitialLanguage } from './I18nContext';
+import { translations } from '../i18n/translations';
 
 describe('resolveInitialLanguage', () => {
   it('defaults a new studio to Simplified Chinese', () => {
@@ -16,5 +17,20 @@ describe('resolveInitialLanguage', () => {
 
   it('falls back to Chinese for an invalid preference', () => {
     expect(resolveInitialLanguage('invalid')).toBe('zh');
+  });
+});
+
+describe('assistant discovery copy', () => {
+  it('keeps the Caption Rewriter status and both assistant scopes available in every language', () => {
+    for (const copy of Object.values(translations)) {
+      expect(copy.captionRewriterEnabled).toBeTruthy();
+      expect(copy.captionRewriterIntegrated).toBeTruthy();
+      expect(copy.structuredAssistantTitle).toBeTruthy();
+      expect(copy.lyricsAssistantTitle).toBeTruthy();
+      expect(copy.assistantCaptionScope).toBeTruthy();
+      expect(copy.assistantLyricsScope).toBeTruthy();
+    }
+    expect(translations.zh.captionRewriterEnabled).toBe('已启用');
+    expect(translations.zh.assistantCaptionScope).not.toBe(translations.zh.assistantLyricsScope);
   });
 });
