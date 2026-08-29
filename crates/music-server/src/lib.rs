@@ -23,6 +23,7 @@ mod mm_result;
 mod openrouter_stream;
 mod omnibridge;
 mod security;
+mod diagnostics;
 
 use std::{collections::HashMap, env, fs, net::SocketAddr, path::PathBuf, sync::Arc};
 use anyhow::Context;
@@ -160,6 +161,10 @@ struct CreateMusicJobRequest {
     /// What the cover should show, when the assistant already described it.
     /// Also library-only, for the same reason.
     cover_prompt: Option<String>,
+    /// Studio-only evidence for a future diagnostic export. It is persisted
+    /// beside the job but never forwarded to a music or text provider.
+    #[serde(default)]
+    studio_diagnostics: Value,
 }
 
 /// The name this request goes into the library under: the user's, or one taken
@@ -172,6 +177,19 @@ fn titled(request: &CreateMusicJobRequest) -> String {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| auto_title::auto_title(&request.caption, &request.lyrics, request.lyrics.trim().is_empty()))
+}
+
+fn stored_generation_settings(mut settings: Value, diagnostics: &Value) -> Value {
+    if diagnostics.is_null() {
+        return settings;
+    }
+    if !settings.is_object() {
+        settings = serde_json::json!({ "provider_request": settings });
+    }
+    if let Some(object) = settings.as_object_mut() {
+        object.insert("studio_diagnostics".into(), diagnostics.clone());
+    }
+    settings
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -654,6 +672,7 @@ pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::R
             post(import_library_audio).layer(DefaultBodyLimit::max(AUDIO_BODY_LIMIT)),
         )
         .route("/v1/library/songs/{id}", get(library_song).put(update_library_song).delete(delete_library_song))
+        .route("/v1/library/songs/{id}/diagnostics", get(export_library_song_diagnostics))
         .route("/v1/library/media/{song_id}", get(library_media))
         .route(
             "/v1/library/songs/{id}/cover",
@@ -745,6 +764,27 @@ pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::R
 
 async fn library_songs(State(state): State<AppState>) -> Result<Json<Vec<library::Song>>, (StatusCode, Json<ApiError>)> { state.library.list_songs().map(Json).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string())) }
 async fn library_song(State(state): State<AppState>,Path(id):Path<String>)->Result<Json<library::Song>,(StatusCode,Json<ApiError>)>{state.library.get_song(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?.map(Json).ok_or_else(||api_error(StatusCode::NOT_FOUND,"Song not found".into()))}
+async fn export_library_song_diagnostics(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    let song = state.library.get_song(&id)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
+    let library = state.library.clone();
+    let bytes = tokio::task::spawn_blocking(move || diagnostics::build_song_bundle(&library, &song))
+        .await
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("diagnostic bundle worker failed: {error}")))?
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let safe_id = id.chars().filter(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_')).collect::<String>();
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"music-maker-diagnostics-{safe_id}.zip\""))
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .expect("valid diagnostic bundle response"))
+}
 async fn library_media(State(state): State<AppState>, Path(song_id): Path<String>, headers: HeaderMap) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let song = state.library.get_song(&song_id).map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?.ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
     let path = state.library.media_path_for_song(&song).ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song audio is not available in the studio media library".into()))?;
@@ -1885,7 +1925,7 @@ async fn update_library_song(State(state):State<AppState>,Path(id):Path<String>,
     tag_stored_song(&state, &id).await;
     Ok(Json(song))
 }
-async fn delete_library_song(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,(StatusCode,Json<ApiError>)>{if state.library.delete_song(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?{Ok(StatusCode::NO_CONTENT)}else{Err(api_error(StatusCode::NOT_FOUND,"Song not found".into()))}}
+async fn delete_library_song(State(state):State<AppState>,Path(id):Path<String>)->Result<StatusCode,(StatusCode,Json<ApiError>)>{if state.library.delete_song_with_media(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?{Ok(StatusCode::NO_CONTENT)}else{Err(api_error(StatusCode::NOT_FOUND,"Song not found".into()))}}
 async fn library_playlists(State(state):State<AppState>)->Result<Json<Vec<library::Playlist>>,(StatusCode,Json<ApiError>)>{state.library.list_playlists().map(Json).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))}
 async fn create_library_playlist(State(state):State<AppState>,Json(input):Json<library::PlaylistInput>)->Result<(StatusCode,Json<library::Playlist>),(StatusCode,Json<ApiError>)>{state.library.create_playlist(input).map(|p|(StatusCode::CREATED,Json(p))).map_err(|e|api_error(StatusCode::BAD_REQUEST,e.to_string()))}
 async fn library_playlist(State(state):State<AppState>,Path(id):Path<String>)->Result<Json<library::Playlist>,(StatusCode,Json<ApiError>)>{state.library.get_playlist(&id).map_err(|e|api_error(StatusCode::INTERNAL_SERVER_ERROR,e.to_string()))?.map(Json).ok_or_else(||api_error(StatusCode::NOT_FOUND,"Playlist not found".into()))}
@@ -4345,6 +4385,7 @@ async fn create_music_job(
     };
     match state.music_server.submit(mm_request.clone()).await {
         Ok(remote) => {
+            let generation_settings = stored_generation_settings(mm_request.clone(), &request.studio_diagnostics);
             let job = MusicJob {
                 id: remote.id,
                 engine_id,
@@ -4356,7 +4397,7 @@ async fn create_music_job(
                 caption: request.caption,
                 lyrics: request.lyrics,
                 duration_seconds: request.duration_seconds,
-                generation_settings: mm_request.clone(),
+                generation_settings,
                 song: None,
                 songs: vec![],
                 message: "Submitted to mm-server. Progress is phase-only: queued, running, completed, failed, or cancelled.".into(),
@@ -4526,7 +4567,10 @@ async fn create_omnibridge_music_job(
         Ok(key) => key,
         Err(error) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
-    let generation_settings = serde_json::to_value(&submit).unwrap_or(Value::Null);
+    let generation_settings = stored_generation_settings(
+        serde_json::to_value(&submit).unwrap_or(Value::Null),
+        &request.studio_diagnostics,
+    );
     let title = titled(&request);
     let context = omnibridge::DurableMusicContext {
         caption: request.caption.clone(), lyrics: request.lyrics.clone(), duration_seconds: request.duration_seconds,
@@ -4722,10 +4766,11 @@ async fn create_openrouter_music_job(state: AppState, request: CreateMusicJobReq
         Ok(request) => request,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(failed_request_job(request, engine_id, error.to_string()))),
     };
+    let generation_settings = stored_generation_settings(stream_request.request.body.clone(), &request.studio_diagnostics);
     let job = MusicJob {
         id: format!("openrouter-{}", uuid_suffix()), engine_id: engine_id.clone(), cover_prompt: request.cover_prompt.clone(), title: Some(titled(&request)), status: MusicJobStatus::Running,
         dispatch: MusicJobDispatch::OpenRouter, phase: MusicJobPhase::Running, caption: request.caption, lyrics: request.lyrics,
-        duration_seconds: request.duration_seconds, generation_settings: stream_request.request.body.clone(), song: None, songs: vec![],
+        duration_seconds: request.duration_seconds, generation_settings, song: None, songs: vec![],
         message: "OpenRouter music stream started; the completed audio will be imported into the studio library.".into(),
     };
     state.jobs.write().await.insert(job.id.clone(), job.clone());
@@ -5481,6 +5526,7 @@ mod tests {
             execution_target: None,
             cover_prompt: None,
             title: None,
+            studio_diagnostics: Value::Null,
             caption: "night drive".into(),
             lyrics: "one line".into(),
             duration_seconds: 30.0,
@@ -5522,6 +5568,7 @@ mod tests {
             execution_target: None,
             cover_prompt: None,
             title: None,
+            studio_diagnostics: Value::Null,
             caption: "night drive".into(),
             lyrics: "one line".into(),
             duration_seconds: 30.0,
@@ -5554,6 +5601,7 @@ mod tests {
             execution_target: None,
             cover_prompt: None,
             title: None,
+            studio_diagnostics: Value::Null,
             caption: "night drive".into(), lyrics: "[verse] one line".into(), duration_seconds: 60.0,
             steps: None, seed: None, lm_seed: None, lm_cfg: None, lm_top_k: None,
             lm_batch_size: None, synth_batch_size: None, dit_cfg: None, peak_clip: None,
@@ -5626,6 +5674,7 @@ mod tests {
             execution_target: None,
                 cover_prompt: None,
                 title: None,
+                studio_diagnostics: Value::Null,
             caption: "night drive".into(),
                 lyrics: "one line".into(),
                 duration_seconds: 30.0,

@@ -387,10 +387,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("music-maker-model-port-{}", uuid::Uuid::now_v7()));
         let port = ModelPort::new(&root).expect("model port");
         let mut profile = port.profile().expect("profile");
+        let initial_revision = profile.profile_revision;
         profile.profile_revision += 1;
-        port.save(SaveProfileRequest { expected_profile_revision: 1, profile }).expect("first save");
+        port.save(SaveProfileRequest { expected_profile_revision: initial_revision, profile }).expect("first save");
         let stale = port.profile().expect("profile");
-        let error = port.save(SaveProfileRequest { expected_profile_revision: 1, profile: stale }).unwrap_err();
+        let error = port.save(SaveProfileRequest { expected_profile_revision: initial_revision, profile: stale }).unwrap_err();
         assert!(error.contains("revision conflict"));
         let _ = std::fs::remove_dir_all(root);
     }

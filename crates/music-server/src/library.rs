@@ -25,7 +25,7 @@ fn manual_source()->String{"manual".into()}
 /// The engine's replay request is sparse — a 60-second track omits the
 /// `duration` field because 60 is the default — so the only dependable source
 /// for a library row is the rendered file. WAV is read from its header; MP3 is
-/// derived from the declared constant bitrate.
+/// derived from its audio payload and the declared or first-frame bitrate.
 pub fn audio_duration_seconds(audio:&[u8],extension:&str,declared_bitrate_kbps:Option<u32>)->Option<f64>{
  match extension{
   "wav"=>{
@@ -40,11 +40,72 @@ pub fn audio_duration_seconds(audio:&[u8],extension:&str,declared_bitrate_kbps:O
    (bytes_per_second>0.0).then(||payload/bytes_per_second)
   }
   "mp3"=>{
-   let bitrate=declared_bitrate_kbps.unwrap_or(128) as f64*1000.0;
-   (bitrate>0.0).then(||(audio.len() as f64*8.0)/bitrate)
+   let bitrate=declared_bitrate_kbps.or_else(||mp3_bitrate_kbps(audio))? as f64*1000.0;
+   let payload=mp3_payload_bytes(audio)? as f64;
+   (bitrate>0.0).then(||(payload*8.0)/bitrate)
   }
   _=>None,
  }
+}
+
+fn mp3_payload_bytes(audio:&[u8])->Option<usize>{
+ let mut start=0usize;
+ if audio.starts_with(b"ID3"){
+  let size=audio.get(6..10)?;
+  if size.iter().any(|byte|byte&0x80!=0){return None}
+  let tag_size=((size[0] as usize)<<21)|((size[1] as usize)<<14)|((size[2] as usize)<<7)|(size[3] as usize);
+  start=10usize.checked_add(tag_size)?;
+  if audio.get(5).is_some_and(|flags|flags&0x10!=0){start=start.checked_add(10)?}
+ }
+ let mut end=audio.len();
+ if end>=128&&audio.get(end-128..end-125)==Some(b"TAG"){end-=128}
+ (end>start).then_some(end-start)
+}
+
+fn mp3_bitrate_kbps(audio:&[u8])->Option<u32>{
+ let start=if audio.starts_with(b"ID3"){
+  let size=audio.get(6..10)?;
+  if size.iter().any(|byte|byte&0x80!=0){return None}
+  10+(((size[0] as usize)<<21)|((size[1] as usize)<<14)|((size[2] as usize)<<7)|(size[3] as usize))
+ }else{0};
+ for frame in audio.get(start..)?.windows(4).take(65_536){
+  let header=u32::from_be_bytes(frame.try_into().ok()?);
+  if header&0xffe0_0000!=0xffe0_0000{continue}
+  let version=(header>>19)&0b11;
+  let layer=(header>>17)&0b11;
+  let index=((header>>12)&0b1111) as usize;
+  if version==0b01||layer!=0b01||index==0||index==15{continue}
+  const MPEG1_LAYER3:[u32;16]=[0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
+  const MPEG2_LAYER3:[u32;16]=[0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
+  return Some(if version==0b11{MPEG1_LAYER3[index]}else{MPEG2_LAYER3[index]});
+ }
+ None
+}
+
+fn configured_bitrate_kbps(settings:&serde_json::Value)->Option<u32>{
+ ["/payload/bitrate","/payload/mp3_bitrate","/bitrate","/mp3_bitrate"]
+  .iter()
+  .find_map(|pointer|settings.pointer(pointer).and_then(serde_json::Value::as_u64))
+  .and_then(|value|{
+   let value=if value>=8_000{(value+500)/1_000}else{value};
+   u32::try_from(value).ok().filter(|value|*value>0)
+  })
+}
+
+fn metadata_with_actual_duration(mut metadata:serde_json::Value,audio:&[u8],extension:&str,settings:&serde_json::Value)->serde_json::Value{
+ let Some(actual)=audio_duration_seconds(audio,extension,configured_bitrate_kbps(settings)) else{return metadata};
+ let requested=metadata.get("duration_seconds").and_then(serde_json::Value::as_f64);
+ if !metadata.is_object(){metadata=serde_json::json!({})}
+ let fields=metadata.as_object_mut().expect("metadata was normalized to an object");
+ if let Some(requested)=requested.filter(|requested|(requested-actual).abs()>0.25){
+  if let Some(value)=serde_json::Number::from_f64(requested){fields.entry("requested_duration_seconds").or_insert(serde_json::Value::Number(value));}
+ }
+ if let Some(value)=serde_json::Number::from_f64(actual){
+  fields.insert("actual_duration_seconds".into(),serde_json::Value::Number(value.clone()));
+  fields.insert("duration_seconds".into(),serde_json::Value::Number(value));
+  fields.insert("duration_source".into(),serde_json::Value::String("audio_file".into()));
+ }
+ metadata
 }
 
 /// A caption is a full style prompt, not a song name. Without an explicit
@@ -114,7 +175,8 @@ impl Library {
   let id=uuid::Uuid::now_v7().to_string();let filename=format!("{id}.{}",input.audio_extension);let target=self.media_dir.join(&filename);let temporary=self.media_dir.join(format!("{filename}.part"));
   {let mut file=fs::OpenOptions::new().create_new(true).write(true).open(&temporary)?;use std::io::Write;file.write_all(&input.audio)?;file.sync_all()?;}
   fs::rename(&temporary,&target).with_context(||format!("publish generated audio {}",target.display()))?;
-  let now=now();let title=input.title.map(|t|t.trim().to_owned()).filter(|t|!t.is_empty()).unwrap_or_else(||generated_title(&input.caption));let song=Song{id,title,audio_path:Some(target.display().to_string()),caption:input.caption,lyrics:input.lyrics,metadata:input.metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,replay_request:input.replay_request,audio_codes:input.audio_codes,source:input.source,created_at:now.clone(),updated_at:now};
+  let metadata=metadata_with_actual_duration(input.metadata,&input.audio,input.audio_extension,&input.generation_settings);
+  let now=now();let title=input.title.map(|t|t.trim().to_owned()).filter(|t|!t.is_empty()).unwrap_or_else(||generated_title(&input.caption));let song=Song{id,title,audio_path:Some(target.display().to_string()),caption:input.caption,lyrics:input.lyrics,metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,replay_request:input.replay_request,audio_codes:input.audio_codes,source:input.source,created_at:now.clone(),updated_at:now};
   if let Err(error)=self.save_song(&song){let _=fs::remove_file(&target);return Err(error.context("store generated song record"));}
   Ok(ImportedSong{song,audio_filename:filename})
  }
@@ -143,9 +205,10 @@ impl Library {
   }
   let now=now();
   let title=input.title.map(|t|t.trim().to_owned()).filter(|t|!t.is_empty()).unwrap_or_else(||generated_title(&input.caption));
+  let metadata=metadata_with_actual_duration(input.metadata,&input.audio,&extension,&input.generation_settings);
   let song=Song{
    id:id.to_owned(),title,audio_path:Some(target.display().to_string()),caption:input.caption,lyrics:input.lyrics,
-   metadata:input.metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,
+   metadata,generation_settings:input.generation_settings,engine_id:input.engine_id,profile_id:input.profile_id,
    replay_request:input.replay_request,audio_codes:input.audio_codes,source:input.source,created_at:now.clone(),updated_at:now,
   };
   if let Err(error)=self.save_song(&song){return Err(error.context("store idempotent generated song record"))}
@@ -229,6 +292,25 @@ impl Library {
  }
  pub fn update_song(&self,id:&str,input:SongInput)->Result<Option<Song>>{let Some(mut song)=self.get_song(id)? else{return Ok(None)};song.title=input.title;if input.audio_path.is_some(){song.audio_path=input.audio_path};song.caption=input.caption;song.lyrics=input.lyrics;song.metadata=input.metadata;song.generation_settings=input.generation_settings;song.engine_id=input.engine_id;song.profile_id=input.profile_id;if input.replay_request.is_some(){song.replay_request=input.replay_request};if input.audio_codes.is_some(){song.audio_codes=input.audio_codes};song.source=input.source;song.updated_at=now();self.save_song(&song)?;Ok(Some(song))}
  pub fn delete_song(&self,id:&str)->Result<bool>{Ok(self.connection.lock().unwrap().execute("DELETE FROM songs WHERE id=?",[id])?>0)}
+ /// Deletes the row and the media this library owns for it. External paths are
+ /// never removed: every candidate must resolve through the managed media dir.
+ pub fn delete_song_with_media(&self,id:&str)->Result<bool>{
+  let Some(song)=self.get_song(id)? else{return Ok(false)};
+  let mut owned=Vec::new();
+  if let Some(path)=self.media_path_for_song(&song){owned.push(path)}
+  if let Some((path,_))=self.cover_path_for_song(&song){owned.push(path)}
+  for stem in crate::separation::STEMS{
+   if let Some(path)=self.media_file(&format!("{id}-{stem}.wav")){owned.push(path)}
+  }
+  if !self.delete_song(id)?{return Ok(false)}
+  owned.sort();owned.dedup();
+  for path in owned{
+   if let Err(error)=fs::remove_file(&path){
+    if error.kind()!=std::io::ErrorKind::NotFound{eprintln!("could not remove deleted song media {}: {error}",path.display())}
+   }
+  }
+  Ok(true)
+ }
  fn save_song(&self,s:&Song)->Result<()> {self.connection.lock().unwrap().execute("INSERT INTO songs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,audio_path=excluded.audio_path,caption=excluded.caption,lyrics=excluded.lyrics,metadata_json=excluded.metadata_json,generation_settings_json=excluded.generation_settings_json,engine_id=excluded.engine_id,profile_id=excluded.profile_id,replay_request_json=excluded.replay_request_json,audio_codes_json=excluded.audio_codes_json,source=excluded.source,updated_at=excluded.updated_at",params![s.id,s.title,s.audio_path,s.caption,s.lyrics,s.metadata.to_string(),s.generation_settings.to_string(),s.engine_id,s.profile_id,s.replay_request.as_ref().map(|v|v.to_string()),s.audio_codes.as_ref().map(|v|v.to_string()),s.source,s.created_at,s.updated_at])?;Ok(())}
  pub fn list_playlists(&self)->Result<Vec<Playlist>>{let c=self.connection.lock().unwrap();let mut s=c.prepare("SELECT id,name,description,created_at,updated_at FROM playlists ORDER BY created_at DESC")?;Ok(s.query_map([],|r|playlist(&c,r))?.collect::<rusqlite::Result<_>>()?)}
  pub fn get_playlist(&self,id:&str)->Result<Option<Playlist>>{let c=self.connection.lock().unwrap();c.query_row("SELECT id,name,description,created_at,updated_at FROM playlists WHERE id=?",[id],|r|playlist(&c,r)).optional().map_err(Into::into)}
@@ -245,6 +327,24 @@ Basic Attributes: bpm is 118. key is F# minor, and scale is minor. Darkwave, Syn
   assert_eq!(generated_title("Bright uplifting synth-pop, punchy drums"),"Bright uplifting synth-pop, punchy drums");
  }
 #[test]fn imports_audio_and_full_provenance_atomically(){let root=std::env::temp_dir().join(format!("mm3-library-test-{}",uuid::Uuid::now_v7()));let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();let result=db.import_generated_song(GeneratedSongInput{title:None,metadata:serde_json::Value::Null,caption:"c".into(),lyrics:"l".into(),generation_settings:serde_json::json!({"seed":1}),replay_request:Some(serde_json::json!({"audio_codes":"1,2,3,4,5,6,7,8","seed":1})),audio_codes:Some(serde_json::json!("1,2,3,4,5,6,7,8")),engine_id:"mm".into(),profile_id:Some("recommended-light".into()),source:"local_generation".into(),audio_extension:"mp3",audio:b"ID3".to_vec()}).unwrap();assert_eq!(db.get_song(&result.song.id).unwrap().unwrap().audio_codes,Some(serde_json::json!("1,2,3,4,5,6,7,8")));assert_eq!(fs::read(db.media_file(&result.audio_filename).unwrap()).unwrap(),b"ID3");let _=fs::remove_dir_all(root);}
+#[test]fn deleting_a_song_removes_only_its_managed_media(){
+ let root=std::env::temp_dir().join(format!("mm3-delete-test-{}",uuid::Uuid::now_v7()));
+ let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();
+ let result=db.import_generated_song(GeneratedSongInput{title:Some("Delete me".into()),metadata:serde_json::Value::Null,caption:"c".into(),lyrics:"l".into(),generation_settings:serde_json::Value::Null,replay_request:None,audio_codes:None,engine_id:"test".into(),profile_id:None,source:"test".into(),audio_extension:"mp3",audio:b"ID3-delete".to_vec()}).unwrap();
+ let audio=db.media_file(&result.audio_filename).unwrap();
+ let cover=db.media_dir().join(format!("{}-cover.png",result.song.id));
+ fs::write(&cover,[0x89,b'P',b'N',b'G',0x0D,0x0A,0x1A,0x0A]).unwrap();
+ let mut song=db.get_song(&result.song.id).unwrap().unwrap();
+ song.metadata=serde_json::json!({"cover_filename":cover.file_name().unwrap().to_string_lossy(),"cover_media_type":"image/png"});
+ db.save_song(&song).unwrap();
+ let stem=db.media_dir().join(format!("{}-vocals.wav",result.song.id));
+ fs::write(&stem,b"stem").unwrap();
+ let unrelated=db.media_dir().join("unrelated.wav");fs::write(&unrelated,b"keep").unwrap();
+ assert!(db.delete_song_with_media(&result.song.id).unwrap());
+ assert!(db.get_song(&result.song.id).unwrap().is_none());
+ assert!(!audio.exists());assert!(!cover.exists());assert!(!stem.exists());assert!(unrelated.exists());
+ let _=fs::remove_dir_all(root);
+}
 #[test]fn playlist_can_be_read_updated_and_deleted(){let root=std::env::temp_dir().join(format!("mm3-playlist-test-{}",uuid::Uuid::now_v7()));let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();let song_a=db.create_song(SongInput{title:"A".into(),audio_path:None,caption:String::new(),lyrics:String::new(),metadata:serde_json::Value::Null,generation_settings:serde_json::Value::Null,engine_id:"manual".into(),profile_id:None,replay_request:None,audio_codes:None,source:"manual".into()}).unwrap().id;let song_b=db.create_song(SongInput{title:"B".into(),audio_path:None,caption:String::new(),lyrics:String::new(),metadata:serde_json::Value::Null,generation_settings:serde_json::Value::Null,engine_id:"manual".into(),profile_id:None,replay_request:None,audio_codes:None,source:"manual".into()}).unwrap().id;let created=db.create_playlist(PlaylistInput{name:"Drafts".into(),description:None,song_ids:vec![song_a]}).unwrap();let updated=db.update_playlist(&created.id,PlaylistInput{name:"Finished".into(),description:Some("native".into()),song_ids:vec![song_b.clone()]}).unwrap().unwrap();assert_eq!(updated.name,"Finished");assert_eq!(db.get_playlist(&created.id).unwrap().unwrap().song_ids,vec![song_b]);assert!(db.delete_playlist(&created.id).unwrap());assert!(db.get_playlist(&created.id).unwrap().is_none());let _=fs::remove_dir_all(root);}
 #[test]fn measures_wav_duration_from_the_header_and_mp3_from_its_bitrate(){
  // 1 second of 44.1 kHz stereo 16-bit PCM.
@@ -259,7 +359,24 @@ Basic Attributes: bpm is 118. key is F# minor, and scale is minor. Darkwave, Syn
  assert!((audio_duration_seconds(&wav,"wav",None).unwrap()-1.0).abs()<0.001);
  // 128 kbps MP3: 16 kB is one second.
  assert!((audio_duration_seconds(&vec![0u8;16000],"mp3",Some(128)).unwrap()-1.0).abs()<0.01);
+ let mut tagged_mp3=b"ID3\x04\x00\x00\x00\x00\x00\x20".to_vec();tagged_mp3.resize(10+32+32000,0);
+ assert!((audio_duration_seconds(&tagged_mp3,"mp3",Some(256)).unwrap()-1.0).abs()<0.01);
  assert!(audio_duration_seconds(b"not audio","wav",None).is_none());
+}
+#[test]fn generated_import_separates_requested_and_actual_duration(){
+ let root=std::env::temp_dir().join(format!("mm3-duration-test-{}",uuid::Uuid::now_v7()));
+ let db=Library::open_at(root.join("library.sqlite"),root.join("media")).unwrap();
+ let mut audio=b"ID3\x04\x00\x00\x00\x00\x00\x20".to_vec();audio.resize(10+32+32000,0);
+ let result=db.import_generated_song(GeneratedSongInput{
+  title:Some("Duration".into()),metadata:serde_json::json!({"duration_seconds":60.0}),caption:"c".into(),lyrics:"l".into(),
+  generation_settings:serde_json::json!({"payload":{"bitrate":256000}}),replay_request:None,audio_codes:None,
+  engine_id:"omnibridge".into(),profile_id:None,source:"omnibridge_generation".into(),audio_extension:"mp3",audio,
+ }).unwrap();
+ assert_eq!(result.song.metadata["requested_duration_seconds"],60.0);
+ assert!((result.song.metadata["actual_duration_seconds"].as_f64().unwrap()-1.0).abs()<0.01);
+ assert_eq!(result.song.metadata["duration_seconds"],result.song.metadata["actual_duration_seconds"]);
+ assert_eq!(result.song.metadata["duration_source"],"audio_file");
+ let _=fs::remove_dir_all(root);
 }
 #[test]fn a_generated_song_gets_a_readable_title_instead_of_the_whole_caption(){
  assert_eq!(generated_title("cinematic synthwave instrumental, 1980s analog synthesizers, warm bassline, soaring lead melody, polished production"),"cinematic synthwave instrumental, 1980s analog");

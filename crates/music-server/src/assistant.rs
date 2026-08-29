@@ -20,23 +20,34 @@ use serde_json::Value;
 /// fields carry exactly the labelled structure the model expects.
 /// The two extras every draft carries: a name for the track and a sentence the
 /// image model can draw from.
-const EXTRA: &str = "title: a short song title, two to five words, no quotation marks, in the language of the lyrics. cover_prompt: one sentence describing a cover image for this track - a scene, not a poster; no text, no lettering, no logos. duration_seconds: how long a track of this genre and arrangement normally runs, in seconds, between 30 and 360.";
+const COPY_EXTRA: &str = "title: a short song title, two to five words, no quotation marks, in the language of the lyrics. cover_prompt: one concise sentence describing a cover image for this track - a scene, not a poster; no text, no lettering, no logos.";
+const DURATION_EXTRA: &str = "duration_seconds: a suggested generation ceiling inferred from the completed lyrics and section structure, between 30 and 360 seconds. It is a planning suggestion, not a duration detected from audio.";
 
-const VALIDATION: &str = "Before answering, check your own draft: every explicit user constraint kept, an instrumental request still instrumental, vocal gender not contradicted, every section tag present in its own section, no lyric line quoted or summarised, no song title inside the caption fields, no invented exact BPM or key, and no sentence copied from a reference. Fix what fails, then answer.";
+/// The cloud API accepts one combined prompt of at most 2,000 characters.
+/// The assistant works to a lower product target so a model that counts
+/// loosely does not leave the editable draft one sentence away from rejection.
+const MAX_CAPTION_CHARS: usize = 1_900;
+const TARGET_CAPTION_CHARS: usize = 1_500;
+const MAX_LYRICS_CHARS: usize = 3_500;
+const CAPTION_HEADING_CHARS: usize = 44;
+
+const VALIDATION: &str = "Before answering, check your own draft: every explicit user constraint kept, an instrumental request still instrumental, vocal gender not contradicted, every section tag present in its own section, no lyric line quoted or summarised, no song title inside the caption fields, no invented exact BPM or key, no sentence copied from a reference, and the combined structured-caption and lyrics budgets satisfied. Fix what fails, then answer.";
 
 const CAPTION_CONTRACT: &str = r#"The three caption fields follow the exact labeled style the model was trained on, and the rules below are MiniMax's own, from the music-caption-rewriter skill they publish with the model.
 
-Be concrete and musical: describe an energy arc and instrument lifecycles, never a static equipment list or decorative adjectives. Preserve every explicit user constraint - an instrumental request stays instrumental, and a required vocal gender, tempo limit, required instrument or exclusion is never reversed. Do not invent a precise key, BPM, vocal gender or production technique when a broader description is sufficient; use a range or a qualitative tempo instead. Never quote, paraphrase or summarise a lyric line inside the caption, and never include a song title or track id. Total caption length roughly 250-450 English words. Write in English unless the user explicitly asks for another language.
+Be concrete and musical: describe an energy arc and instrument lifecycles, never a static equipment list or decorative adjectives. Preserve every explicit user constraint - an instrumental request stays instrumental, and a required vocal gender, tempo limit, required instrument or exclusion is never reversed. Do not invent a precise key, BPM, vocal gender or production technique when a broader description is sufficient; use a range or a qualitative tempo instead. Never quote, paraphrase or summarise a lyric line inside the caption, and never include a song title or track id. Write in English unless the user explicitly asks for another language.
+
+CLOUD API CHARACTER BUDGET (count every character including spaces): target <= 1450 characters for the three fields plus their headings, and never exceed the hard ceiling of 1900 characters. The server normalizes the draft to a 1500-character product target before it reaches the form, leaving substantial room below the official 2000-character prompt limit. There is no hard per-field allocation. Distribute the budget according to the song: as a starting point use roughly 350-450 characters for global_metadata, 220-300 for vocal_details, and the remaining space for arrangement; unused space from one field may be used by another. These are flexible guidance, not separate limits. Prefer short clauses, include only details that change the sound, and never repeat the same mood, instrument, vocal trait or section event in multiple fields. When the user supplies prose or copy to be sung as lyrics, keep its narrative in lyrics: the caption describes only the sound and must not retell, quote or paraphrase that prose.
 
 global_metadata: genre and subgenres, tempo, emotional progression, and the overall sonic and production profile, in this order: "Basic Attributes: bpm is <number or range>. key is <letter>, and scale is <major|minor>. <Genre / Subgenre>." then "Global Emotional Progression: <how the emotion evolves from the opening through the final section>." then "Application Scenarios & Imagery: <two or three vivid listening scenarios>." then "Sonics & Production Profile: <soundstage, frequency balance, dynamics, production character>." Include key and scale only when explicit or musically useful.
 
 vocal_details: for vocal music describe the lead configuration, timbre, register, delivery, harmony or backing vocals and restrained vocal effects: "Vocal Gender & Timbre: Singer A (<Male|Female>), <timbre and register>." then "Vocal Style: <delivery, and how it shifts per section>." then "Harmony/Backing Vocals: <where harmonies or doubles appear and their character>." then "Vocal FX: <restrained treatment: reverb, delay, light compression>." For instrumental music state that the piece is instrumental and name the instrument or texture carrying the lead melodic role. Do not invent lyrical subject matter.
 
-arrangement: the song as a section-by-section timeline: "Instrument Lifecycle Description (Primary/Secondary Layering): Primary: <core instruments present start to finish and their role>. Secondary: <instruments that enter, exit or intensify, and in which sections>." then "Groove & Foundation Progression: <how drums, bass and groove develop across sections>." then "Embellishments, Textures & Spatial FX: <fills, textures, transitional gestures, stereo and space treatment where relevant>." For every section say what enters, exits, changes or intensifies, aligned with the lyric section tags, and keep transitions musically plausible. Prefer concrete musical changes over decorative prose."#;
+arrangement: a compact section timeline: "Instrument Lifecycle Description: <one concise sentence for primary and secondary layers>." then "Groove & Foundation Progression: <one concise sentence>." then "Section Timeline: <at most six short section clauses, grouping sections that behave alike>." then "Textures & Spatial FX: <one concise sentence only when relevant>." State only meaningful entries, exits or intensifications aligned with the lyric tags; do not narrate every bar and do not repeat instrument lists."#;
 
 /// The lyric rules, likewise transcribed: the tag vocabulary and the structure
 /// sizing are what keep the sung result aligned with the requested length.
-const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag - the engine keeps the tag and throws that line's words away. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds, and keep neighbouring lines close in length: a line much denser than the one before it gets sung rushed. The engine does not budget time - it sings until the clock runs out and stops there, mid-phrase if it has to - so write slightly less than the duration allows and never leave the song's payoff line for the outro. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, write the same structure a sung song would have - [intro] [verse] [chorus] [bridge] [outro] - with no words under any of them, and use [instrumental] or [solo] only where a real instrumental passage belongs, the way a band would play one. Alternating [instrumental] with every other tag is not what the tag is for. Write the lyrics in the language the user wrote their request in: a Russian idea gets Russian lyrics, a Japanese one Japanese. The caption fields stay English - that is what the engine reads - but nobody asked for an English song."#;
+const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag - the engine keeps the tag and throws that line's words away. The complete lyrics must not exceed 3500 characters. When the user supplies prose or copy and asks to sing it, preserve its meaning and key phrases, reshape only for singability and repetition, and do not expand it with a new plot, viewpoint or commentary. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds, and keep neighbouring lines close in length: a line much denser than the one before it gets sung rushed. The engine does not budget time - it sings until the clock runs out and stops there, mid-phrase if it has to - so write slightly less than the duration allows and never leave the song's payoff line for the outro. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, write the same structure a sung song would have - [intro] [verse] [chorus] [bridge] [outro] - with no words under any of them, and use [instrumental] or [solo] only where a real instrumental passage belongs, the way a band would play one. Alternating [instrumental] with every other tag is not what the tag is for. Write the lyrics in the language the user wrote their request in: a Russian idea gets Russian lyrics, a Japanese one Japanese. The caption fields stay English - that is what the engine reads - but nobody asked for an English song."#;
 
 /// Pronunciation, which the caption cannot reach: the engine reads the lyrics
 /// as characters, so the only place to correct a mis-sung word is the word.
@@ -131,8 +142,8 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
             format!(
                 "You write the structured caption for MiniMax Music 3, a lyrics+description music generation model.\n\
                  Given a sound instruction and/or lyrics, produce global_metadata, vocal_details and arrangement. Build the arrangement timeline around the lyric section tags when lyrics are provided. {CAPTION_CONTRACT}{notes}\n\
-                 Also write {EXTRA}\n\
-                 Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds."
+                 Also write {COPY_EXTRA}\n\
+                 Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement, title, cover_prompt. Do not return duration_seconds for this description-only task."
             ),
             &["global_metadata", "vocal_details", "arrangement"],
         ),
@@ -142,13 +153,38 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
                  Given a song description and a target duration, produce:\n\
                  1. {LYRICS_RULES}\n\
                  2-4. global_metadata, vocal_details, arrangement — a structured caption. {CAPTION_CONTRACT}{notes}\n\
-                 5-6. {EXTRA}\n\
+                 5-6. {COPY_EXTRA}\n\
+                 7. {DURATION_EXTRA}\n\
                  Answer with ONLY a JSON object with keys: lyrics, global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds.
                  {VALIDATION}{references}"
             ),
             &["lyrics", "global_metadata", "vocal_details", "arrangement"],
         ),
     }
+}
+
+/// Stable application-owned prompt contracts that may be exported in a song
+/// diagnostic bundle. These are product logic, not hidden model reasoning.
+pub fn diagnostic_prompt_contracts() -> Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "note": "Effective prompts are assembled from these contracts plus the recorded user task and the song context. Hidden model reasoning is never requested or exported.",
+        "targets": {
+            "all": "lyrics + structured caption + title + cover prompt + suggested duration",
+            "prompt": "structured caption + title + cover prompt + suggested duration",
+            "lyrics": "lyrics coherent with the current structured caption"
+        },
+        "caption_contract": CAPTION_CONTRACT,
+        "lyrics_rules": LYRICS_RULES,
+        "copy_output_contract": COPY_EXTRA,
+        "duration_output_contract": DURATION_EXTRA,
+        "validation_contract": VALIDATION,
+        "conditional_rules": {
+            "diction": DICTION_RULE,
+            "duet": DUET_RULE,
+            "instrumental": INSTRUMENTAL_RULE
+        }
+    })
 }
 
 /// The rules that only apply to some songs.
@@ -302,7 +338,7 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
             bail!("the assistant answer is missing '{key}'");
         }
     }
-    Ok(AssistDraft {
+    let mut draft = AssistDraft {
         lyrics: field("lyrics"),
         global_metadata: field("global_metadata"),
         vocal_details: field("vocal_details"),
@@ -315,7 +351,224 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
             .get("duration_seconds")
             .and_then(|value| value.as_u64().or_else(|| value.as_str().and_then(|text| text.trim().parse().ok())))
             .map(|seconds| seconds.clamp(10, 360) as u32),
-    })
+    };
+
+    let within = |label: &str, value: Option<&String>, limit: usize| -> Result<()> {
+        if let Some(value) = value {
+            let count = value.encode_utf16().count();
+            if count > limit {
+                bail!("the assistant returned {label} with {count} characters; the limit is {limit}");
+            }
+        }
+        Ok(())
+    };
+    // MiniMax cloud limits the combined prompt, not three arbitrary slices.
+    // Only lyrics have an independent API ceiling.
+    within("lyrics", draft.lyrics.as_ref(), MAX_LYRICS_CHARS)?;
+    compact_caption(&mut draft);
+    let caption_chars = caption_chars(&draft);
+    debug_assert!(caption_chars <= TARGET_CAPTION_CHARS);
+    if caption_chars > MAX_CAPTION_CHARS {
+        bail!("the assistant caption could not be compacted below {MAX_CAPTION_CHARS} characters");
+    }
+    Ok(draft)
+}
+
+fn caption_chars(draft: &AssistDraft) -> usize {
+    draft.global_metadata.as_deref().unwrap_or_default().encode_utf16().count()
+        + draft.vocal_details.as_deref().unwrap_or_default().encode_utf16().count()
+        + draft.arrangement.as_deref().unwrap_or_default().encode_utf16().count()
+        + CAPTION_HEADING_CHARS
+}
+
+/// Hosted models do not always obey a character budget exactly. Compact their
+/// answer deterministically instead of asking for another paid generation or
+/// returning an error to the form. Short fields are protected first; only the
+/// material that can actually shrink shares the required reduction.
+fn compact_caption(draft: &mut AssistDraft) {
+    let lengths = [
+        draft.global_metadata.as_deref().unwrap_or_default().encode_utf16().count(),
+        draft.vocal_details.as_deref().unwrap_or_default().encode_utf16().count(),
+        draft.arrangement.as_deref().unwrap_or_default().encode_utf16().count(),
+    ];
+    let content_budget = TARGET_CAPTION_CHARS.saturating_sub(CAPTION_HEADING_CHARS);
+    let total: usize = lengths.iter().sum();
+    if total <= content_budget {
+        return;
+    }
+
+    // These are preservation floors, not API field limits. They keep a short
+    // field intact and let a verbose field absorb more of the reduction.
+    let floors = [
+        300_usize.min(lengths[0]),
+        220_usize.min(lengths[1]),
+        400_usize.min(lengths[2]),
+    ];
+    let capacities = [
+        lengths[0] - floors[0],
+        lengths[1] - floors[1],
+        lengths[2] - floors[2],
+    ];
+    let capacity_total: usize = capacities.iter().sum();
+    let excess = total - content_budget;
+    let mut reductions = [0_usize; 3];
+    if capacity_total > 0 {
+        for index in 0..3 {
+            reductions[index] = excess.saturating_mul(capacities[index]) / capacity_total;
+        }
+    }
+    let mut remaining = excess.saturating_sub(reductions.iter().sum());
+    while remaining > 0 {
+        let mut progressed = false;
+        for index in 0..3 {
+            if reductions[index] < capacities[index] {
+                reductions[index] += 1;
+                remaining -= 1;
+                progressed = true;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    let budgets = [
+        lengths[0].saturating_sub(reductions[0]),
+        lengths[1].saturating_sub(reductions[1]),
+        lengths[2].saturating_sub(reductions[2]),
+    ];
+
+    compact_field(
+        &mut draft.global_metadata,
+        &[
+            "Basic Attributes:",
+            "Global Emotional Progression:",
+            "Application Scenarios & Imagery:",
+            "Sonics & Production Profile:",
+        ],
+        budgets[0],
+    );
+    compact_field(
+        &mut draft.vocal_details,
+        &["Vocal Gender & Timbre:", "Vocal Style:", "Harmony/Backing Vocals:", "Vocal FX:"],
+        budgets[1],
+    );
+    compact_field(
+        &mut draft.arrangement,
+        &[
+            "Instrument Lifecycle Description:",
+            "Groove & Foundation Progression:",
+            "Section Timeline:",
+            "Textures & Spatial FX:",
+        ],
+        budgets[2],
+    );
+}
+
+fn compact_field(field: &mut Option<String>, labels: &[&str], budget: usize) {
+    let Some(value) = field.as_mut() else { return };
+    if value.encode_utf16().count() <= budget {
+        return;
+    }
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.encode_utf16().count() <= budget {
+        *value = normalized;
+        return;
+    }
+
+    let mut found = labels
+        .iter()
+        .filter_map(|label| normalized.find(label).map(|start| (start, *label)))
+        .collect::<Vec<_>>();
+    found.sort_by_key(|(start, _)| *start);
+    if found.len() < 2 {
+        *value = truncate_utf16(&normalized, budget);
+        return;
+    }
+
+    let mut bodies = Vec::with_capacity(found.len());
+    for index in 0..found.len() {
+        let (start, label) = found[index];
+        let body_start = start + label.len();
+        let body_end = found.get(index + 1).map(|(next, _)| *next).unwrap_or(normalized.len());
+        bodies.push(normalized[body_start..body_end].trim());
+    }
+    let label_cost = found.iter().map(|(_, label)| label.encode_utf16().count()).sum::<usize>() + found.len() - 1;
+    if label_cost >= budget {
+        *value = truncate_utf16(&normalized, budget);
+        return;
+    }
+    let body_budget = budget - label_cost;
+    let body_lengths = bodies.iter().map(|body| body.encode_utf16().count()).collect::<Vec<_>>();
+    let body_total: usize = body_lengths.iter().sum();
+    let mut allocations = vec![0_usize; bodies.len()];
+    if body_total > 0 {
+        for index in 0..bodies.len() {
+            allocations[index] = body_budget.saturating_mul(body_lengths[index]) / body_total;
+        }
+        let mut remainder = body_budget.saturating_sub(allocations.iter().sum());
+        for index in 0..allocations.len() {
+            if remainder == 0 {
+                break;
+            }
+            allocations[index] += 1;
+            remainder -= 1;
+        }
+    }
+
+    let mut compacted = String::new();
+    for (index, ((_, label), body)) in found.iter().zip(bodies.iter()).enumerate() {
+        if index > 0 {
+            compacted.push(' ');
+        }
+        compacted.push_str(label);
+        let body = truncate_utf16(body, allocations[index]);
+        if !body.is_empty() {
+            compacted.push(' ');
+            compacted.push_str(&body);
+        }
+    }
+    *value = truncate_utf16(&compacted, budget);
+}
+
+fn truncate_utf16(value: &str, budget: usize) -> String {
+    if value.encode_utf16().count() <= budget {
+        return value.to_owned();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    let text_budget = budget.saturating_sub(1);
+    let mut prefix = String::new();
+    let mut used = 0_usize;
+    for ch in value.chars() {
+        let units = ch.len_utf16();
+        if used + units > text_budget {
+            break;
+        }
+        prefix.push(ch);
+        used += units;
+    }
+    let minimum = text_budget / 2;
+    let mut boundary = None;
+    for (index, ch) in prefix.char_indices().rev() {
+        let end = if matches!(ch, '.' | '!' | '?' | ';' | '。' | '！' | '？' | '；') {
+            index + ch.len_utf8()
+        } else if ch.is_whitespace() {
+            index
+        } else {
+            continue;
+        };
+        if prefix[..end].encode_utf16().count() >= minimum {
+            boundary = Some(end);
+            break;
+        }
+    }
+    prefix.truncate(boundary.unwrap_or(prefix.len()));
+    let prefix = prefix.trim_end();
+    format!("{prefix}…")
 }
 
 /// The shape the answer must have, as a schema the server can enforce.
@@ -327,16 +580,20 @@ pub fn draft_schema(required: &[&str]) -> Value {
     // A minimum length, not just a type: "required" only forces the key to be
     // present, and a model that answers with an empty string satisfies that
     // while leaving the field blank on screen.
-    let text = serde_json::json!({ "type": "string", "minLength": 40 });
-    let lyric = serde_json::json!({ "type": "string", "minLength": 20 });
+    // Grammar generation can bound each field by the shared ceiling, while
+    // `parse_draft` enforces their actual combined size.
+    let global_metadata = serde_json::json!({ "type": "string", "minLength": 40, "maxLength": MAX_CAPTION_CHARS });
+    let vocal_details = serde_json::json!({ "type": "string", "minLength": 40, "maxLength": MAX_CAPTION_CHARS });
+    let arrangement = serde_json::json!({ "type": "string", "minLength": 40, "maxLength": MAX_CAPTION_CHARS });
+    let lyric = serde_json::json!({ "type": "string", "minLength": 20, "maxLength": MAX_LYRICS_CHARS });
     let short = serde_json::json!({ "type": "string", "minLength": 3 });
     serde_json::json!({
         "type": "object",
         "properties": {
             "lyrics": lyric,
-            "global_metadata": text,
-            "vocal_details": text,
-            "arrangement": text,
+            "global_metadata": global_metadata,
+            "vocal_details": vocal_details,
+            "arrangement": arrangement,
             "title": short,
             "cover_prompt": short,
             "duration_seconds": { "type": "number" },
@@ -528,7 +785,8 @@ mod tests {
             let (system, _) = instructions(&sample);
             assert!(system.contains("music-caption-rewriter"), "the skill is not cited for {target:?}");
             assert!(system.contains("Global Emotional Progression"), "caption shape missing for {target:?}");
-            assert!(system.contains("250-450"), "length rule missing for {target:?}");
+            assert!(system.contains("target <= 1450 characters"), "safe target missing for {target:?}");
+            assert!(system.contains("hard ceiling of 1900 characters"), "hard ceiling missing for {target:?}");
 
             let body = chat_body("any-model", &system, "idea");
             let sent = body["messages"][0]["content"].as_str().unwrap_or_default();
@@ -585,6 +843,85 @@ mod tests {
         let mut instrumental = request(AssistTarget::All);
         instrumental.instrumental = true;
         assert!(user_message(&instrumental).contains("instrumental"));
+    }
+
+    #[test]
+    fn a_longer_section_is_accepted_when_the_combined_caption_fits() {
+        let answer = serde_json::json!({
+            "global_metadata": "g".repeat(777),
+            "vocal_details": "v".repeat(80),
+            "arrangement": "a".repeat(120),
+        });
+        parse_draft(
+            &answer.to_string(),
+            &["global_metadata", "vocal_details", "arrangement"],
+        )
+        .expect("the cloud contract has no 520-character field limit");
+    }
+
+    #[test]
+    fn an_oversized_combined_caption_is_compacted_before_it_reaches_the_form() {
+        let answer = serde_json::json!({
+            "global_metadata": "g".repeat(900),
+            "vocal_details": "v".repeat(500),
+            "arrangement": "a".repeat(600),
+        });
+        let draft = parse_draft(
+            &answer.to_string(),
+            &["global_metadata", "vocal_details", "arrangement"],
+        )
+        .expect("an overlong model answer should be repaired without another model call");
+        assert!(caption_chars(&draft) <= TARGET_CAPTION_CHARS);
+        assert!(draft.global_metadata.unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn a_caption_below_the_api_ceiling_is_still_compacted_to_the_product_target() {
+        let answer = serde_json::json!({
+            "global_metadata": "g".repeat(700),
+            "vocal_details": "v".repeat(350),
+            "arrangement": "a".repeat(500),
+        });
+        let draft = parse_draft(
+            &answer.to_string(),
+            &["global_metadata", "vocal_details", "arrangement"],
+        )
+        .unwrap();
+        assert!(caption_chars(&draft) <= TARGET_CAPTION_CHARS);
+        assert!(draft.global_metadata.unwrap().ends_with('…'));
+    }
+
+    #[test]
+    fn compaction_preserves_structural_labels_and_unicode_boundaries() {
+        let repeat = "温柔而有磁性的细节 ".repeat(90);
+        let answer = serde_json::json!({
+            "global_metadata": format!("Basic Attributes: {repeat} Global Emotional Progression: {repeat} Application Scenarios & Imagery: {repeat} Sonics & Production Profile: {repeat}"),
+            "vocal_details": format!("Vocal Gender & Timbre: {repeat} Vocal Style: {repeat} Harmony/Backing Vocals: {repeat} Vocal FX: {repeat}"),
+            "arrangement": format!("Instrument Lifecycle Description: {repeat} Groove & Foundation Progression: {repeat} Section Timeline: {repeat} Textures & Spatial FX: {repeat}"),
+        });
+        let draft = parse_draft(
+            &answer.to_string(),
+            &["global_metadata", "vocal_details", "arrangement"],
+        )
+        .unwrap();
+        assert!(caption_chars(&draft) <= TARGET_CAPTION_CHARS);
+        let joined = format!(
+            "{} {} {}",
+            draft.global_metadata.unwrap(),
+            draft.vocal_details.unwrap(),
+            draft.arrangement.unwrap()
+        );
+        for label in [
+            "Basic Attributes:",
+            "Global Emotional Progression:",
+            "Vocal Gender & Timbre:",
+            "Vocal FX:",
+            "Instrument Lifecycle Description:",
+            "Section Timeline:",
+            "Textures & Spatial FX:",
+        ] {
+            assert!(joined.contains(label), "compaction dropped {label}");
+        }
     }
 
     #[test]
@@ -715,6 +1052,7 @@ neon on the wet road"));
     fn the_schema_asks_for_content_not_just_a_key() {
         let schema = super::draft_schema(&["global_metadata"]);
         assert_eq!(schema["properties"]["global_metadata"]["minLength"], 40);
+        assert_eq!(schema["properties"]["global_metadata"]["maxLength"], MAX_CAPTION_CHARS);
         assert_eq!(schema["required"][0], "global_metadata");
     }
 }
