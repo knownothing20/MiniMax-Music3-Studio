@@ -1,12 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Song, Playlist } from '../types';
-import { Heart, Plus, Music, Play, MoreHorizontal, Trash2, Upload, Loader2 } from 'lucide-react';
+import { Heart, Plus, Music, Play, MoreHorizontal, Trash2, Upload, Loader2, Search, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
 import { openStems } from '../services/openStems';
 import { useI18n } from '../context/I18nContext';
 import { captionSummary } from '../services/examples';
+import { matchesLibrarySong } from '../services/libraryNavigation';
 
 interface LibraryViewProps {
   allSongs: Song[];
@@ -20,6 +21,8 @@ interface LibraryViewProps {
   onDeleteSong?: (song: Song) => void;
   onImported?: () => void;
   isNativeLibrary?: boolean;
+  initialSearchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({ 
@@ -34,6 +37,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     onDeleteSong,
     onImported,
     isNativeLibrary = false,
+    initialSearchQuery = '',
+    onSearchQueryChange,
 }) => {
     const { t } = useI18n();
     const { user } = useAuth();
@@ -41,7 +46,26 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     const [activeTab, setActiveTab] = useState<'all' | 'playlists' | 'liked' | 'import'>('all');
     const [importing, setImporting] = useState(false);
     const [importError, setImportError] = useState<string | null>(null);
+    const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
     const importInput = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        setSearchQuery(initialSearchQuery);
+        if (initialSearchQuery) setActiveTab('all');
+    }, [initialSearchQuery]);
+
+    const visibleAllSongs = useMemo(
+        () => allSongs.filter(song => matchesLibrarySong(song, searchQuery)),
+        [allSongs, searchQuery],
+    );
+
+    const updateSearch = (value: string) => {
+        setSearchQuery(value);
+        onSearchQueryChange?.(value);
+        const path = value.trim() ? '/library?q=' + encodeURIComponent(value.trim()) : '/library';
+        window.history.replaceState({}, '', path);
+        if (value.trim()) setActiveTab('all');
+    };
 
     /// Imports an existing MP3 or WAV into the local library. The service
     /// stores the media and the row atomically, rolling both back on failure.
@@ -94,6 +118,28 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </button>
              </div>
 
+             <div className="relative mb-6" data-testid="library-search">
+                <Search size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+                <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => updateSearch(event.target.value)}
+                    placeholder={t('searchLocalHint')}
+                    aria-label={t('searchYourSongs')}
+                    className="w-full rounded-xl border border-zinc-200 bg-zinc-50 py-3 pl-10 pr-10 text-sm text-zinc-900 outline-none transition focus:border-pink-500 dark:border-white/10 dark:bg-black/20 dark:text-white"
+                />
+                {searchQuery && (
+                    <button
+                        type="button"
+                        onClick={() => updateSearch('')}
+                        title={t('clear')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-pink-500"
+                    >
+                        <X size={15} />
+                    </button>
+                )}
+             </div>
+
              {/* Tabs */}
              <div className="mb-8 flex max-w-full items-center gap-4 overflow-x-auto border-b border-zinc-200 pb-1 dark:border-white/10">
                  <button 
@@ -129,11 +175,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
              {/* Content */}
              {activeTab === 'all' && (
                  <div className="space-y-1">
-                    {allSongs.length === 0 ? (
-                        <div className="text-sm text-zinc-500 dark:text-zinc-400">{t('noSongsYet')}</div>
+                    {visibleAllSongs.length === 0 ? (
+                        <div className="text-sm text-zinc-500 dark:text-zinc-400">{searchQuery.trim() ? t('noResults') : t('noSongsYet')}</div>
                     ) : (
-                        allSongs.map((song, idx) => (
-                            <div key={song.id} className="group flex min-w-0 items-center gap-2 rounded p-2 transition-colors hover:bg-zinc-100 dark:hover:bg-white/10 sm:gap-4" onClick={() => onPlaySong(song, allSongs)}>
+                        visibleAllSongs.map((song, idx) => (
+                            <div key={song.id} className="group flex min-w-0 items-center gap-2 rounded p-2 transition-colors hover:bg-zinc-100 dark:hover:bg-white/10 sm:gap-4" onClick={() => onPlaySong(song, visibleAllSongs)}>
                                 <span className="text-zinc-400 dark:text-zinc-500 w-6 text-center group-hover:hidden">{idx + 1}</span>
                                 <span className="text-zinc-900 dark:text-white w-6 text-center hidden group-hover:block"><Play size={14} fill="currentColor" /></span>
                                 

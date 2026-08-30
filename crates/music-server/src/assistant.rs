@@ -31,6 +31,11 @@ const TARGET_CAPTION_CHARS: usize = 1_500;
 const MAX_LYRICS_CHARS: usize = 3_500;
 const CAPTION_HEADING_CHARS: usize = 44;
 
+const STANDARD_LYRICS_VERSION: &str = "standard_lyrics.v1";
+const STORY_SONGWRITING_VERSION: &str = "story_songwriting.v1";
+const STANDARD_CAPTION_VERSION: &str = "standard_caption.v1";
+const CAPTION_REWRITER_VERSION: &str = "music3_caption_rewriter.v1";
+
 const VALIDATION: &str = "Before answering, check your own draft: every explicit user constraint kept, an instrumental request still instrumental, vocal gender not contradicted, every section tag present in its own section, no lyric line quoted or summarised, no song title inside the caption fields, no invented exact BPM or key, no sentence copied from a reference, and the combined structured-caption and lyrics budgets satisfied. Fix what fails, then answer.";
 
 const CAPTION_CONTRACT: &str = r#"The three caption fields follow the exact labeled style the model was trained on, and the rules below are MiniMax's own, from the music-caption-rewriter skill they publish with the model.
@@ -45,9 +50,23 @@ vocal_details: for vocal music describe the lead configuration, timbre, register
 
 arrangement: a compact section timeline: "Instrument Lifecycle Description: <one concise sentence for primary and secondary layers>." then "Groove & Foundation Progression: <one concise sentence>." then "Section Timeline: <at most six short section clauses, grouping sections that behave alike>." then "Textures & Spatial FX: <one concise sentence only when relevant>." State only meaningful entries, exits or intensifications aligned with the lyric tags; do not narrate every bar and do not repeat instrument lists."#;
 
+const STANDARD_CAPTION_CONTRACT: &str = r#"Write a clear standard structured description in the same three fields the Music3 form accepts. This is the project's ordinary description writer, not the Music3 Caption Rewriter skill: do not use its reference-caption router or template examples.
+
+Keep the description concrete, concise and in English unless the user asks otherwise. Preserve explicit genre, tempo, vocal, instrumentation and exclusion constraints. Do not quote lyrics inside the description. The three fields plus headings target at most 1450 characters and must never exceed the same hard ceiling of 1900 characters used by the enhanced path.
+
+global_metadata: summarize genre, tempo, mood progression and overall production character in a compact paragraph.
+
+vocal_details: summarize lead voice, delivery, harmony and restrained vocal effects; for instrumental music state that there are no vocals and identify the lead melodic instrument.
+
+arrangement: summarize the section order, core instrumentation, groove changes and the most important entries, exits or transitions without narrating every bar."#;
+
 /// The lyric rules, likewise transcribed: the tag vocabulary and the structure
 /// sizing are what keep the sung result aligned with the requested length.
 const LYRICS_RULES: &str = r#"lyrics: singable lyrics using ONLY these section tags, each ALWAYS ALONE on its own line: [intro] [verse] [pre-chorus] [chorus] [post-chorus] [bridge] [instrumental] [solo] [outro]. Never put words on the same line as a tag - the engine keeps the tag and throws that line's words away. The complete lyrics must not exceed 3500 characters. When the user supplies prose or copy and asks to sing it, preserve its meaning and key phrases, reshape only for singability and repetition, and do not expand it with a new plot, viewpoint or commentary. Size the structure to the duration: <=30s: one verse + one chorus; ~60s: verse/pre-chorus/chorus/verse/chorus; >=120s: full structure with bridge and outro. Roughly 12-16 sung words per 10 seconds, and keep neighbouring lines close in length: a line much denser than the one before it gets sung rushed. The engine does not budget time - it sings until the clock runs out and stops there, mid-phrase if it has to - so write slightly less than the duration allows and never leave the song's payoff line for the outro. Musical instructions (tempo, instruments, dynamics) never belong in the lyrics. If the song is instrumental, write the same structure a sung song would have - [intro] [verse] [chorus] [bridge] [outro] - with no words under any of them, and use [instrumental] or [solo] only where a real instrumental passage belongs, the way a band would play one. Alternating [instrumental] with every other tag is not what the tag is for. Write the lyrics in the language the user wrote their request in: a Russian idea gets Russian lyrics, a Japanese one Japanese. The caption fields stay English - that is what the engine reads - but nobody asked for an English song."#;
+
+const STORY_SONGWRITING_CONTRACT: &str = r#"Story songwriting is an application-owned lyrics method. Treat supplied prose as source material, not an invitation to invent a larger story. Preserve concrete, verifiable details and the author's original point of view; do not add important facts, events, opinions or relationships that are not present. Find one concise hook that carries the central meaning, then build a clear emotional arc toward it. Prefer short, singable lines with natural breath points and restrained repetition. Keep distinctive source phrases when they sing cleanly, but never imitate a named writer, lyricist or artist.
+
+This stage produces only a short title and lyrics. Do not output music direction, genre, tempo, instruments, vocal production, structured-caption fields, external websites, registration steps, audio-generation instructions or hidden reasoning. When the source is a review, essay or personal account, retain its meaning without turning it into a new plot or adding a new conclusion."#;
 
 /// Pronunciation, which the caption cannot reach: the engine reads the lyrics
 /// as characters, so the only place to correct a mis-sung word is the word.
@@ -58,7 +77,7 @@ Diction: the model sings the letters it is given. In Russian write ё as ё rath
 /// generations with pinned seeds, one variable at a time. Describing both
 /// singers in the caption alone never worked; short tags in the lyrics did.
 const DUET_RULE: &str = r#"
-Two voices: name both singers in vocal_details ("Singer A (Male), <timbre>. Singer B (Female), <timbre>."), say plainly which one is heard first, and state each assignment in full - "Singer B sings the second verse alone; the male voice is absent there, not even as harmony". When exactly two voices are wanted, say so as an exclusion: no doubling, no stacked harmonies, no backing choir, never more than two human voices at once - otherwise the second voice arrives as a group. Mark the switches in the lyrics with a tag of one or two words alone on its own line - [male vocal], [female vocal], [duet] - and never longer, because a tag of several words gets sung aloud as if it were a line. Switch at section or couplet level, never line by line. Let the male voice open when both are needed, and bring the second voice in early rather than after a long stretch of the first. Describe each voice once, plainly and confidently: repeating a description or hedging it ("small, quiet, never doubled") makes that voice disappear instead."#;
+Two voices: name both singers in vocal_details ("Singer A (Male), <timbre>. Singer B (Female), <timbre>."), say plainly which one is heard first, and state each section assignment in full. When exactly two voices are wanted, say so as an exclusion: no doubling, no stacked harmonies, no backing choir, never more than two human voices at once. Keep singer assignments in vocal_details and arrangement; lyrics may use only the accepted structural tags and must never introduce speaker tags such as [male vocal], [female vocal] or [duet]. Switch at section or couplet level, never line by line. Describe each voice once, plainly and confidently."#;
 
 /// The failure mode of an instrumental request: vocals creep back in. Naming
 /// what carries the melody instead leaves the model something to sing with.
@@ -74,6 +93,14 @@ pub enum AssistTarget {
     Lyrics,
     /// Rewrite only the caption, keeping it coherent with the current lyrics.
     Prompt,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LyricsStrategy {
+    #[default]
+    Standard,
+    StorySongwriting,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,6 +122,14 @@ pub struct AssistRequest {
     pub duration_seconds: f64,
     #[serde(default)]
     pub instrumental: bool,
+    #[serde(default = "default_true")]
+    pub use_caption_rewriter: bool,
+    #[serde(default)]
+    pub lyrics_strategy: LyricsStrategy,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_duration() -> f64 {
@@ -124,26 +159,46 @@ pub struct AssistDraft {
     pub duration_seconds: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AssistAudit {
+    pub stage: &'static str,
+    pub strategy_name: String,
+    pub contract_version: &'static str,
+    pub input_summary: Value,
+    pub output_summary: Value,
+    pub validation: Vec<String>,
+    pub compression_actions: Vec<String>,
+}
+
 /// The system prompt and the JSON keys the answer must carry.
 pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]) {
-    let references = references_for(request);
+    // Simple and Studio share one persisted choice. Turning the Skill off
+    // keeps description generation available through the standard contract.
+    let caption_rewriter = request.use_caption_rewriter;
+    let references = if caption_rewriter { references_for(request) } else { String::new() };
+    let caption_contract = if caption_rewriter { CAPTION_CONTRACT } else { STANDARD_CAPTION_CONTRACT };
     let notes = craft_notes(request);
     match request.target {
         AssistTarget::Lyrics => (
             format!(
-                "You write lyrics for MiniMax Music 3, a lyrics+description music generation model.\n\
-                 Given a lyrics instruction, the current structured prompt (global metadata, vocal details, arrangement) and a target duration, write lyrics coherent with that structured prompt.\n\
-                 {LYRICS_RULES}{notes}\n\
-                 Answer with ONLY a JSON object with key: lyrics."
+                "You are the isolated lyrics-stage role for MiniMax Music 3. Given a lyrics instruction, optional current structured-caption context and a target duration, write a title and lyrics.\n\
+                 {LYRICS_RULES}\n\
+                 {strategy_contract}{notes}\n\
+                 Return only visible final copy. Answer with ONLY a JSON object with keys: title, lyrics.",
+                strategy_contract = match request.lyrics_strategy {
+                    LyricsStrategy::Standard => "Use the standard project lyrics rules. Do not output structured-caption fields, music direction, external-service instructions or hidden reasoning.",
+                    LyricsStrategy::StorySongwriting => STORY_SONGWRITING_CONTRACT,
+                }
             ),
-            &["lyrics"],
+            &["title", "lyrics"],
         ),
         AssistTarget::Prompt => (
             format!(
                 "You write the structured caption for MiniMax Music 3, a lyrics+description music generation model.\n\
-                 Given a sound instruction and/or lyrics, produce global_metadata, vocal_details and arrangement. Build the arrangement timeline around the lyric section tags when lyrics are provided. {CAPTION_CONTRACT}{notes}\n\
-                 Also write {COPY_EXTRA}\n\
-                 Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement, title, cover_prompt. Do not return duration_seconds for this description-only task."
+                 Given a sound instruction and/or lyrics, produce global_metadata, vocal_details and arrangement. Build the arrangement timeline around the lyric section tags when lyrics are provided. {caption_contract}{notes}\n\
+                 Do not quote, rewrite or return the lyrics. Do not return title, cover_prompt, duration_seconds or hidden reasoning.\n\
+                 Answer with ONLY a JSON object with keys: global_metadata, vocal_details, arrangement.
+                 {references}"
             ),
             &["global_metadata", "vocal_details", "arrangement"],
         ),
@@ -152,7 +207,7 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
                 "You write inputs for MiniMax Music 3, a lyrics+description music generation model.\n\
                  Given a song description and a target duration, produce:\n\
                  1. {LYRICS_RULES}\n\
-                 2-4. global_metadata, vocal_details, arrangement — a structured caption. {CAPTION_CONTRACT}{notes}\n\
+                 2-4. global_metadata, vocal_details, arrangement — a structured caption. {caption_contract}{notes}\n\
                  5-6. {COPY_EXTRA}\n\
                  7. {DURATION_EXTRA}\n\
                  Answer with ONLY a JSON object with keys: lyrics, global_metadata, vocal_details, arrangement, title, cover_prompt, duration_seconds.
@@ -175,7 +230,16 @@ pub fn diagnostic_prompt_contracts() -> Value {
             "lyrics": "lyrics coherent with the current structured caption"
         },
         "caption_contract": CAPTION_CONTRACT,
+        "standard_caption_contract": STANDARD_CAPTION_CONTRACT,
+        "simple_mode_caption_rewriter_default": true,
         "lyrics_rules": LYRICS_RULES,
+        "story_songwriting_contract": STORY_SONGWRITING_CONTRACT,
+        "contract_versions": {
+            "standard_lyrics": STANDARD_LYRICS_VERSION,
+            "story_songwriting": STORY_SONGWRITING_VERSION,
+            "standard_caption": STANDARD_CAPTION_VERSION,
+            "caption_rewriter": CAPTION_REWRITER_VERSION,
+        },
         "copy_output_contract": COPY_EXTRA,
         "duration_output_contract": DURATION_EXTRA,
         "validation_contract": VALIDATION,
@@ -372,6 +436,177 @@ pub fn parse_draft(content: &str, required: &[&str]) -> Result<AssistDraft> {
         bail!("the assistant caption could not be compacted below {MAX_CAPTION_CHARS} characters");
     }
     Ok(draft)
+}
+
+/// Parse and validate one visible stage. This keeps the two assistants from
+/// leaking fields into one another while retaining parse_draft for legacy callers.
+pub fn parse_draft_for_request(
+    content: &str,
+    required: &[&str],
+    request: &AssistRequest,
+) -> Result<(AssistDraft, AssistAudit)> {
+    let mut draft = parse_draft(content, required)?;
+    let mut validation = Vec::new();
+    let mut compression_actions = Vec::new();
+
+    match request.target {
+        AssistTarget::Lyrics => {
+            if draft.global_metadata.is_some()
+                || draft.vocal_details.is_some()
+                || draft.arrangement.is_some()
+                || draft.cover_prompt.is_some()
+                || draft.duration_seconds.is_some()
+            {
+                bail!("the isolated lyrics stage returned structured-caption or generation fields");
+            }
+            let lyrics = draft.lyrics.take().context("the assistant answer is missing 'lyrics'")?;
+            let normalized = normalize_lyrics_tags(&lyrics)?;
+            validation.push("lyrics_tags_normalized".to_owned());
+            if request.lyrics_strategy == LyricsStrategy::StorySongwriting {
+                let visible = format!("{}\n{}", draft.title.as_deref().unwrap_or_default(), normalized).to_lowercase();
+                if ["http://", "https://", "www.", "register at", "sign up at", "注册网站"]
+                    .iter()
+                    .any(|needle| visible.contains(needle))
+                {
+                    bail!("the story songwriting stage returned prohibited external-service instructions");
+                }
+                validation.push("story_output_has_no_external_instructions".to_owned());
+            }
+            draft.lyrics = Some(normalized);
+        }
+        AssistTarget::Prompt => {
+            if draft.lyrics.is_some()
+                || draft.title.is_some()
+                || draft.cover_prompt.is_some()
+                || draft.duration_seconds.is_some()
+            {
+                bail!("the isolated description stage returned lyrics, title or generation fields");
+            }
+            reject_lyric_quotes(&draft, &request.lyrics)?;
+            validation.push("caption_contains_no_lyric_lines".to_owned());
+            if caption_chars(&draft) >= TARGET_CAPTION_CHARS {
+                compression_actions.push("deterministic_caption_compaction_checked".to_owned());
+            }
+        }
+        AssistTarget::All => {
+            if let Some(lyrics) = draft.lyrics.take() {
+                draft.lyrics = Some(normalize_lyrics_tags(&lyrics)?);
+                validation.push("lyrics_tags_normalized".to_owned());
+            }
+        }
+    }
+
+    let stage = match request.target {
+        AssistTarget::Lyrics => "lyrics",
+        AssistTarget::Prompt => "structured_caption",
+        AssistTarget::All => "legacy_combined",
+    };
+    let (strategy_name, contract_version) = match request.target {
+        AssistTarget::Lyrics => match request.lyrics_strategy {
+            LyricsStrategy::Standard => ("standard", STANDARD_LYRICS_VERSION),
+            LyricsStrategy::StorySongwriting => ("story_songwriting", STORY_SONGWRITING_VERSION),
+        },
+        AssistTarget::Prompt | AssistTarget::All if request.use_caption_rewriter => {
+            ("music3_caption_rewriter", CAPTION_REWRITER_VERSION)
+        }
+        AssistTarget::Prompt | AssistTarget::All => ("standard_description", STANDARD_CAPTION_VERSION),
+    };
+    validation.push("stage_schema_isolated".to_owned());
+    validation.push("visible_output_only".to_owned());
+
+    let audit = AssistAudit {
+        stage,
+        strategy_name: strategy_name.to_owned(),
+        contract_version,
+        input_summary: serde_json::json!({
+            "instruction_chars": request.instruction.encode_utf16().count(),
+            "description_chars": request.description.encode_utf16().count(),
+            "lyrics_context_chars": request.lyrics.encode_utf16().count(),
+            "duration_seconds": request.duration_seconds,
+            "instrumental": request.instrumental,
+        }),
+        output_summary: serde_json::json!({
+            "title": draft.title,
+            "lyrics_chars": draft.lyrics.as_deref().unwrap_or_default().encode_utf16().count(),
+            "caption_chars": caption_chars(&draft),
+            "section_tags": draft.lyrics.as_deref().map(section_tags).unwrap_or_default(),
+        }),
+        validation,
+        compression_actions,
+    };
+    Ok((draft, audit))
+}
+
+fn normalize_lyrics_tags(lyrics: &str) -> Result<String> {
+    let mut normalized = Vec::new();
+    let mut saw_tag = false;
+    for line in lyrics.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if !trimmed.ends_with(']') || trimmed.matches(']').count() != 1 {
+                bail!("lyrics section tags must be alone on their line: '{trimmed}'");
+            }
+            let inner = trimmed[1..trimmed.len() - 1]
+                .trim()
+                .to_lowercase()
+                .replace('_', "-")
+                .replace(' ', "-");
+            let plain = inner
+                .split('-')
+                .filter(|part| !part.is_empty() && !part.chars().all(|ch| ch.is_ascii_digit()))
+                .filter(|part| !matches!(*part, "final" | "repeat" | "reprise"))
+                .collect::<Vec<_>>()
+                .join("-");
+            let tag = match plain.as_str() {
+                "intro" => "intro",
+                "verse" => "verse",
+                "pre-chorus" | "prechorus" => "pre-chorus",
+                "chorus" => "chorus",
+                "post-chorus" | "postchorus" => "post-chorus",
+                "bridge" => "bridge",
+                "instrumental" => "instrumental",
+                "solo" => "solo",
+                "outro" => "outro",
+                _ => bail!("the assistant returned unsupported lyrics tag '{trimmed}'"),
+            };
+            normalized.push(format!("[{tag}]"));
+            saw_tag = true;
+        } else {
+            normalized.push(line.trim_end().to_owned());
+        }
+    }
+    if !saw_tag {
+        bail!("the assistant lyrics contain no supported section tags");
+    }
+    Ok(normalized.join("\n").trim().to_owned())
+}
+
+fn section_tags(lyrics: &str) -> Vec<&str> {
+    lyrics
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('[') && line.ends_with(']'))
+        .collect()
+}
+
+fn reject_lyric_quotes(draft: &AssistDraft, lyrics: &str) -> Result<()> {
+    let caption = format!(
+        "{} {} {}",
+        draft.global_metadata.as_deref().unwrap_or_default(),
+        draft.vocal_details.as_deref().unwrap_or_default(),
+        draft.arrangement.as_deref().unwrap_or_default()
+    )
+    .to_lowercase();
+    for line in lyrics.lines().map(str::trim).filter(|line| {
+        !line.is_empty()
+            && !(line.starts_with('[') && line.ends_with(']'))
+            && line.chars().count() >= 6
+    }) {
+        if caption.contains(&line.to_lowercase()) {
+            bail!("the structured caption repeats a lyric line");
+        }
+    }
+    Ok(())
 }
 
 fn caption_chars(draft: &AssistDraft) -> usize {
@@ -724,6 +959,8 @@ mod tests {
             arrangement: String::new(),
             duration_seconds: 60.0,
             instrumental: false,
+            use_caption_rewriter: true,
+            lyrics_strategy: LyricsStrategy::Standard,
         };
         let (system, _) = super::instructions(&request);
         println!("system prompt: {} characters, {} reference blocks", system.len(), system.matches("--- reference").count());
@@ -745,6 +982,8 @@ mod tests {
             arrangement: String::new(),
             duration_seconds: 60.0,
             instrumental: false,
+            use_caption_rewriter: true,
+            lyrics_strategy: LyricsStrategy::Standard,
         };
         let (system, _) = super::instructions(&request);
         assert!(system.contains("Reference captions from MiniMax"), "the skill's references are missing from the prompt");
@@ -766,6 +1005,8 @@ mod tests {
             arrangement: String::new(),
             duration_seconds: 60.0,
             instrumental: false,
+            use_caption_rewriter: true,
+            lyrics_strategy: LyricsStrategy::Standard,
         };
         let message = super::user_message(&request);
         assert!(!message.contains("60"), "the prompt still carries the default: {message}");
@@ -795,6 +1036,57 @@ mod tests {
     }
 
     #[test]
+    fn simple_mode_switch_changes_only_the_description_contract() {
+        let enhanced = request(AssistTarget::All);
+        let mut standard = enhanced.clone();
+        standard.use_caption_rewriter = false;
+
+        let (enhanced_system, enhanced_required) = instructions(&enhanced);
+        let (standard_system, standard_required) = instructions(&standard);
+
+        assert!(enhanced_system.contains("music-caption-rewriter"));
+        assert!(enhanced_system.contains("Reference captions from MiniMax"));
+        assert!(standard_system.contains("ordinary description writer"));
+        assert!(!standard_system.contains("Reference captions from MiniMax"));
+        assert!(!standard_system.contains("music-caption-rewriter"));
+        assert!(enhanced_system.contains(LYRICS_RULES));
+        assert!(standard_system.contains(LYRICS_RULES));
+        assert_eq!(enhanced_required, standard_required);
+        assert!(standard_required.contains(&"lyrics"));
+        assert!(enhanced_system.contains("hard ceiling of 1900 characters"));
+        assert!(standard_system.contains("hard ceiling of 1900 characters"));
+    }
+
+    #[test]
+    fn studio_caption_assistant_follows_the_shared_skill_choice() {
+        let enhanced = request(AssistTarget::Prompt);
+        let mut standard = enhanced.clone();
+        standard.use_caption_rewriter = false;
+
+        let (enhanced_system, enhanced_required) = instructions(&enhanced);
+        let (standard_system, standard_required) = instructions(&standard);
+
+        assert!(enhanced_system.contains("music-caption-rewriter"));
+        assert!(enhanced_system.contains("Reference captions from MiniMax"));
+        assert!(standard_system.contains("ordinary description writer"));
+        assert!(!standard_system.contains("music-caption-rewriter"));
+        assert!(!standard_system.contains("Reference captions from MiniMax"));
+        assert_eq!(enhanced_required, &["global_metadata", "vocal_details", "arrangement"]);
+        assert_eq!(standard_required, enhanced_required);
+        assert!(standard_system.contains("hard ceiling of 1900 characters"));
+    }
+
+    #[test]
+    fn omitted_caption_rewriter_choice_defaults_to_enabled() {
+        let request: AssistRequest = serde_json::from_value(serde_json::json!({
+            "target": "all",
+            "instruction": "night drive"
+        }))
+        .expect("request");
+        assert!(request.use_caption_rewriter);
+    }
+
+    #[test]
     fn an_answer_that_arrives_as_reasoning_is_still_an_answer() {
         let response = serde_json::json!({
             "choices": [{ "message": { "content": "", "reasoning_content": "{\"lyrics\": \"[verse]\"}" } }]
@@ -816,6 +1108,8 @@ mod tests {
             arrangement: "Primary: synths".into(),
             duration_seconds: 90.0,
             instrumental: false,
+            use_caption_rewriter: true,
+            lyrics_strategy: LyricsStrategy::Standard,
         }
     }
 
@@ -823,7 +1117,7 @@ mod tests {
     /// a partial answer would silently blank a pane the user had filled in.
     #[test]
     fn every_target_declares_the_fields_it_writes() {
-        assert_eq!(instructions(&request(AssistTarget::Lyrics)).1, &["lyrics"]);
+        assert_eq!(instructions(&request(AssistTarget::Lyrics)).1, &["title", "lyrics"]);
         assert_eq!(instructions(&request(AssistTarget::Prompt)).1, &["global_metadata", "vocal_details", "arrangement"]);
         assert_eq!(instructions(&request(AssistTarget::All)).1.len(), 4);
     }
@@ -843,6 +1137,86 @@ mod tests {
         let mut instrumental = request(AssistTarget::All);
         instrumental.instrumental = true;
         assert!(user_message(&instrumental).contains("instrumental"));
+    }
+
+    #[test]
+    fn all_four_strategy_combinations_keep_two_independent_contracts() {
+        for strategy in [LyricsStrategy::Standard, LyricsStrategy::StorySongwriting] {
+            for caption_rewriter in [false, true] {
+                let mut lyrics_request = request(AssistTarget::Lyrics);
+                lyrics_request.lyrics_strategy = strategy;
+                lyrics_request.use_caption_rewriter = caption_rewriter;
+                let (lyrics_system, lyrics_fields) = instructions(&lyrics_request);
+                assert_eq!(lyrics_fields, &["title", "lyrics"]);
+                assert!(!lyrics_system.contains("global_metadata, vocal_details and arrangement"));
+                assert_eq!(lyrics_system.contains("application-owned lyrics method"), strategy == LyricsStrategy::StorySongwriting);
+
+                let mut caption_request = lyrics_request.clone();
+                caption_request.target = AssistTarget::Prompt;
+                let (caption_system, caption_fields) = instructions(&caption_request);
+                assert_eq!(caption_fields, &["global_metadata", "vocal_details", "arrangement"]);
+                assert_eq!(caption_system.contains("Reference captions from MiniMax"), caption_rewriter);
+                assert!(!caption_system.contains("application-owned lyrics method"));
+            }
+        }
+    }
+
+    #[test]
+    fn story_stage_normalizes_safe_tag_aliases_and_records_audit() {
+        let mut request = request(AssistTarget::Lyrics);
+        request.lyrics_strategy = LyricsStrategy::StorySongwriting;
+        let answer = serde_json::json!({
+            "title": "灵魂的回声",
+            "lyrics": "[Verse 1]\n灵魂本就孤独\n[Pre Chorus]\n世界喧哗\n[Final Chorus]\n同频的人看见光\n[Outro]\n人间有了回声"
+        });
+        let (draft, audit) = parse_draft_for_request(&answer.to_string(), &["title", "lyrics"], &request).unwrap();
+        let lyrics = draft.lyrics.unwrap();
+        assert!(lyrics.contains("[verse]"));
+        assert!(lyrics.contains("[pre-chorus]"));
+        assert!(lyrics.contains("[chorus]"));
+        assert!(!lyrics.contains("Verse 1"));
+        assert_eq!(audit.strategy_name, "story_songwriting");
+        assert_eq!(audit.contract_version, STORY_SONGWRITING_VERSION);
+        assert!(audit.validation.contains(&"stage_schema_isolated".to_owned()));
+    }
+
+    #[test]
+    fn unknown_tags_and_cross_stage_fields_are_rejected() {
+        let lyrics_request = request(AssistTarget::Lyrics);
+        let unknown = serde_json::json!({ "title": "x", "lyrics": "[narration]\nhello" });
+        assert!(parse_draft_for_request(&unknown.to_string(), &["title", "lyrics"], &lyrics_request).is_err());
+        let inline = serde_json::json!({ "title": "x", "lyrics": "[verse] words on the tag line" });
+        assert!(parse_draft_for_request(&inline.to_string(), &["title", "lyrics"], &lyrics_request).is_err());
+        let polluted = serde_json::json!({
+            "title": "x", "lyrics": "[verse]\nhello", "global_metadata": "music"
+        });
+        assert!(parse_draft_for_request(&polluted.to_string(), &["title", "lyrics"], &lyrics_request).is_err());
+
+        let prompt_request = request(AssistTarget::Prompt);
+        let prompt_polluted = serde_json::json!({
+            "global_metadata": "g", "vocal_details": "v", "arrangement": "a", "lyrics": "[verse]\nhello"
+        });
+        assert!(parse_draft_for_request(
+            &prompt_polluted.to_string(),
+            &["global_metadata", "vocal_details", "arrangement"],
+            &prompt_request,
+        ).is_err());
+    }
+
+    #[test]
+    fn caption_stage_rejects_a_quoted_lyric_line() {
+        let mut prompt_request = request(AssistTarget::Prompt);
+        prompt_request.lyrics = "[verse]\n同频的人才能看见彼此灵魂深处的光".into();
+        let answer = serde_json::json!({
+            "global_metadata": "同频的人才能看见彼此灵魂深处的光",
+            "vocal_details": "warm female voice",
+            "arrangement": "verse then chorus"
+        });
+        assert!(parse_draft_for_request(
+            &answer.to_string(),
+            &["global_metadata", "vocal_details", "arrangement"],
+            &prompt_request,
+        ).is_err());
     }
 
     #[test]
@@ -965,6 +1339,8 @@ neon on the wet road"));
             arrangement: String::new(),
             duration_seconds: 60.0,
             instrumental: false,
+            use_caption_rewriter: true,
+            lyrics_strategy: LyricsStrategy::Standard,
         };
         let (system, _) = super::instructions(&request);
         assert!(system.contains("language the user wrote their request in"));
@@ -984,6 +1360,8 @@ neon on the wet road"));
             arrangement: String::new(),
             duration_seconds: 90.0,
             instrumental: false,
+            use_caption_rewriter: true,
+            lyrics_strategy: LyricsStrategy::Standard,
         };
         let (system, _) = super::instructions(&request);
         assert!(system.contains("combining acute"), "nothing tells the model how to fix a stress");

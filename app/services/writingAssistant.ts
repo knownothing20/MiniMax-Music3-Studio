@@ -1,4 +1,5 @@
 export type WritingAssistantTarget = 'all' | 'lyrics' | 'prompt';
+export type LyricsStrategy = 'standard' | 'story_songwriting';
 
 export type WritingAssistantDraft = {
   lyrics?: string;
@@ -43,10 +44,24 @@ export type WritingAssistantRequest = {
   arrangement: string;
   duration_seconds: number;
   instrumental: boolean;
+  /** Both modes share this independent description contract choice. */
+  use_caption_rewriter: boolean;
+  lyrics_strategy: LyricsStrategy;
+};
+
+export type WritingAssistantAudit = {
+  stage: 'lyrics' | 'structured_caption' | 'legacy_combined';
+  strategy_name: string;
+  contract_version: string;
+  input_summary: Record<string, unknown>;
+  output_summary: Record<string, unknown>;
+  validation: string[];
+  compression_actions: string[];
 };
 
 export type WritingAssistantDone = {
   draft: WritingAssistantDraft;
+  audit?: WritingAssistantAudit;
   text?: string;
   receipt?: WritingAssistantReceipt;
 };
@@ -58,6 +73,7 @@ export type WritingAssistantStreamEvent = {
   error?: string;
   model?: string;
   draft?: WritingAssistantDraft;
+  audit?: WritingAssistantAudit;
   receipt?: WritingAssistantReceipt;
 };
 
@@ -129,6 +145,7 @@ export async function streamWritingAssistant(
     if (!isDraft(event.draft)) return null;
     return {
       draft: event.draft,
+      ...(event.audit && typeof event.audit === 'object' ? { audit: event.audit } : {}),
       ...(typeof event.text === 'string' ? { text: event.text } : {}),
       ...(event.receipt && typeof event.receipt === 'object' ? { receipt: event.receipt } : {}),
     };
