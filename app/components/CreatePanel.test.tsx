@@ -44,10 +44,12 @@ describe('CreatePanel Caption Rewriter control', () => {
           <CreatePanel
             onGenerate={vi.fn()}
             isGenerating={false}
+            executionTarget="cloud"
             generationMode="auto"
             onGenerationModeChange={vi.fn()}
             cloudAvailable
-            localAvailable
+            localRouteAvailable
+            deviceLocalAvailable
           />
         </I18nProvider>,
       );
@@ -144,10 +146,12 @@ describe('CreatePanel Caption Rewriter control', () => {
           <CreatePanel
             onGenerate={vi.fn()}
             isGenerating={false}
+            executionTarget="cloud"
             generationMode="auto"
             onGenerationModeChange={vi.fn()}
             cloudAvailable
-            localAvailable
+            localRouteAvailable
+            deviceLocalAvailable
           />
         </I18nProvider>,
       );
@@ -175,6 +179,103 @@ describe('CreatePanel Caption Rewriter control', () => {
     expect(Array.from(host.querySelectorAll<HTMLTextAreaElement>('textarea')).some(area => area.value.includes('灵魂本就孤独'))).toBe(true);
     expect(host.querySelector('[data-testid="retry-simple-caption"]')).not.toBeNull();
     expect(Array.from(host.querySelectorAll<HTMLInputElement>('input')).some(input => input.value === '灵魂的回声')).toBe(true);
+
+    flushSync(() => root.unmount());
+    host.remove();
+  });
+
+  it('submits OmniBridge local without polling or requiring the device engine', async () => {
+    const onGenerate = vi.fn();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    flushSync(() => {
+      root.render(
+        <I18nProvider>
+          <CreatePanel
+            onGenerate={onGenerate}
+            isGenerating={false}
+            executionTarget="local"
+            generationMode="local"
+            onGenerationModeChange={vi.fn()}
+            cloudAvailable
+            localRouteAvailable
+            deviceLocalAvailable={false}
+          />
+        </I18nProvider>,
+      );
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const exampleButton = host.querySelector<HTMLButtonElement>('[title="示例"]');
+    expect(exampleButton).not.toBeNull();
+    flushSync(() => exampleButton?.click());
+    const textareas = Array.from(host.querySelectorAll<HTMLTextAreaElement>('textarea'));
+    expect(textareas.some(area => area.value.trim().length > 0)).toBe(true);
+    flushSync(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      textareas.forEach(area => {
+        setter?.call(area, 'short test copy');
+        area.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+    const createButton = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.trim() === '创作');
+    expect(createButton).not.toBeUndefined();
+    flushSync(() => createButton?.click());
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toBeUndefined();
+    expect(onGenerate).toHaveBeenCalledOnce();
+    expect(onGenerate.mock.calls[0][0]).toMatchObject({ execution_target: 'local' });
+    expect(onGenerate.mock.calls[0][0]).not.toHaveProperty('steps');
+    const urls = vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+    expect(urls).not.toContain('/setup/status');
+    expect(urls).not.toContain('/v1/local-models/music');
+
+    flushSync(() => root.unmount());
+    host.remove();
+  });
+
+  it('keeps setup polling and native engine controls for device-local', async () => {
+    const onGenerate = vi.fn();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    flushSync(() => {
+      root.render(
+        <I18nProvider>
+          <CreatePanel
+            onGenerate={onGenerate}
+            isGenerating={false}
+            executionTarget="device-local"
+            generationMode="device-local"
+            onGenerationModeChange={vi.fn()}
+            cloudAvailable
+            localRouteAvailable
+            deviceLocalAvailable
+          />
+        </I18nProvider>,
+      );
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const exampleButton = host.querySelector<HTMLButtonElement>('[title="示例"]');
+    expect(exampleButton).not.toBeNull();
+    flushSync(() => exampleButton?.click());
+    flushSync(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      host.querySelectorAll<HTMLTextAreaElement>('textarea').forEach(area => {
+        setter?.call(area, 'short test copy');
+        area.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+    const createButton = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.trim() === '创作');
+    flushSync(() => createButton?.click());
+
+    expect(onGenerate).toHaveBeenCalledOnce();
+    expect(onGenerate.mock.calls[0][0]).toMatchObject({ execution_target: 'device-local', steps: 30 });
+    const urls = vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+    expect(urls).toContain('/setup/status');
+    expect(urls).toContain('/v1/local-models/music');
 
     flushSync(() => root.unmount());
     host.remove();

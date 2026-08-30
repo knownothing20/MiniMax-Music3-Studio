@@ -5,7 +5,7 @@ import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { joinCaption, randomExample, splitCaption } from '../services/examples';
 import { GENRE_KEYS } from '../data/genres';
-import type { GenerationModePreference } from '../services/studioExecution';
+import type { GenerationExecutionTarget, GenerationModePreference } from '../services/studioExecution';
 import {
   isWritingAssistantAvailable,
   streamWritingAssistant,
@@ -55,11 +55,12 @@ interface CreatePanelProps {
   isGenerating: boolean;
   activeJobCount?: number;
   initialData?: { song: Song; timestamp: number } | null;
-  cloudMode?: boolean;
+  executionTarget: GenerationExecutionTarget | null;
   generationMode: GenerationModePreference;
   onGenerationModeChange: (mode: GenerationModePreference) => void;
   cloudAvailable: boolean;
-  localAvailable: boolean;
+  localRouteAvailable: boolean;
+  deviceLocalAvailable: boolean;
 }
 
 type EngineDefaults = Partial<Record<string, number | string>>;
@@ -254,11 +255,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   isGenerating,
   activeJobCount = 0,
   initialData,
-  cloudMode = false,
+  executionTarget,
   generationMode,
   onGenerationModeChange,
   cloudAvailable,
-  localAvailable,
+  localRouteAvailable,
+  deviceLocalAvailable,
 }) => {
   const { t, language } = useI18n();
 
@@ -362,7 +364,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [error, setError] = useState<string | null>(null);
   const promptFile = useRef<HTMLInputElement | null>(null);
 
-  const ready = cloudMode || (setup?.ready === true && setup?.engine_ready === true);
+  const usesCloud = executionTarget === 'cloud';
+  const usesLocalRoute = executionTarget === 'local';
+  const usesDeviceEngine = executionTarget === 'device-local';
+  const ready = executionTarget !== null
+    && (!usesDeviceEngine || (setup?.ready === true && setup?.engine_ready === true));
   const defaults = catalog?.defaults ?? {};
   const placeholder = (key: string) => (defaults[key] === undefined ? '' : String(defaults[key]));
   const caption = joinCaption(globalMetadata, vocalDetails, arrangement);
@@ -407,7 +413,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   }, []);
 
   useEffect(() => {
-    if (cloudMode) {
+    if (!usesDeviceEngine) {
       setSetup(null);
       setServiceDown(false);
       return;
@@ -416,10 +422,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     poll();
     const timer = window.setInterval(poll, 5000);
     return () => window.clearInterval(timer);
-  }, [cloudMode, refreshSetup]);
+  }, [refreshSetup, usesDeviceEngine]);
 
   useEffect(() => {
-    if (cloudMode) {
+    if (!usesDeviceEngine) {
       setCatalog(null);
       return;
     }
@@ -427,7 +433,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       .then(response => (response.ok ? response.json() : Promise.reject(new Error())))
       .then((body: { catalog?: EngineCatalog }) => setCatalog(body.catalog ?? null))
       .catch(() => setCatalog(null));
-  }, [cloudMode, setup?.engine_ready]);
+  }, [setup?.engine_ready, usesDeviceEngine]);
 
   useEffect(() => {
     // Asked once at mount, the panel kept saying "configure the assistant"
@@ -492,7 +498,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
   const buildRequest = () => {
     const request: Music3Request & { title?: string; cover_prompt?: string; audio_codes?: string; models?: Record<string, string> } = {
-      execution_target: cloudMode ? 'omnibridge' : 'configuration',
+      execution_target: executionTarget ?? 'auto',
       caption: caption.trim(),
       // An instrumental has no words, whatever is still sitting in the box. The
       // lyrics of the previous track stayed there, went to the engine and came
@@ -501,7 +507,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       duration_seconds: Math.min(numberOrUndefined(duration) ?? 60, MAX_DURATION_SECONDS),
       output_format: format,
     };
-    if (!cloudMode) {
+    if (usesDeviceEngine) {
       Object.assign(request, {
         steps: numberOrUndefined(steps) ?? 30,
         seed: randomizeSeed ? undefined : numberOrUndefined(seed),
@@ -517,8 +523,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     }
     if (name.trim()) request.title = name.trim();
     if (coverPrompt.trim()) request.cover_prompt = coverPrompt.trim();
-    if (!cloudMode && audioCodes.trim()) request.audio_codes = audioCodes.trim();
-    if (!cloudMode && Object.keys(models).length === 5) request.models = models;
+    if (usesDeviceEngine && audioCodes.trim()) request.audio_codes = audioCodes.trim();
+    if (usesDeviceEngine && Object.keys(models).length === 5) request.models = models;
     request.studio_diagnostics = {
       schema_version: 1,
       captured_at: new Date().toISOString(),
@@ -778,30 +784,35 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         <div className="space-y-3 p-4 pb-6">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <h1 className="truncate text-base font-bold">{cloudMode ? `MiniMax Music 3 · ${t('cloudReadyBadge')}` : t('createMusic')}</h1>
-              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">{cloudMode ? t('cloudNoLocalDownload') : t('localInference')}</p>
+              <h1 className="truncate text-base font-bold">{usesCloud ? `MiniMax Music 3 · ${t('cloudReadyBadge')}` : usesLocalRoute ? `MiniMax Music 3 · ${t('generationModeLocal')}` : t('createMusic')}</h1>
+              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">{usesCloud ? t('cloudNoLocalDownload') : usesLocalRoute ? t('localRouteNoDeviceDownload') : t('localInference')}</p>
             </div>
             <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${ready ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300'}`}>
               <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              {cloudMode ? t('cloudReadyBadge') : serviceDown ? t('serviceUnavailable') : ready ? t('engineReady') : t('profileRequired')}
+              {usesCloud ? t('cloudReadyBadge') : usesLocalRoute ? t('generationModeLocal') : serviceDown ? t('serviceUnavailable') : ready ? t('engineReady') : t('profileRequired')}
             </span>
           </div>
 
           <div className="rounded-xl border border-zinc-200 bg-white p-2 dark:border-white/10 dark:bg-suno-card">
             <p className="mb-1.5 px-1 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{t('generationSource')}</p>
-            <div className="grid grid-cols-3 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-black/30">
-              {(['auto', 'cloud', 'local'] as const).map(value => {
-                const available = value === 'auto' || (value === 'cloud' ? cloudAvailable : localAvailable);
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-100 p-1 sm:grid-cols-4 dark:bg-black/30">
+              {(['auto', 'cloud', 'local', 'device-local'] as const).map(value => {
+                const available = value === 'auto'
+                  || (value === 'cloud' ? cloudAvailable : value === 'local' ? localRouteAvailable : deviceLocalAvailable);
                 const label = value === 'auto'
                   ? t('generationModeAuto')
                   : value === 'cloud'
                     ? t('generationModeCloud')
-                    : t('generationModeLocal');
+                    : value === 'local'
+                      ? t('generationModeLocal')
+                      : t('generationModeDeviceLocal');
                 const unavailableTitle = value === 'cloud'
                   ? t('cloudApiUnavailable')
                   : value === 'local'
-                    ? t('localModelNotInstalled')
-                    : undefined;
+                    ? t('localRouteUnavailable')
+                    : value === 'device-local'
+                      ? t('localModelNotInstalled')
+                      : undefined;
                 return (
                   <button
                     key={value}
@@ -820,12 +831,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 );
               })}
             </div>
-            {!localAvailable && (
+            {!deviceLocalAvailable && generationMode === 'device-local' && (
               <p className="mt-1.5 px-1 text-[10px] leading-4 text-zinc-400">{t('localModelNotInstalled')}</p>
             )}
           </div>
 
-          {!cloudMode && (serviceDown ? (
+          {usesDeviceEngine && (serviceDown ? (
             <div className="flex gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs leading-5 text-rose-700 dark:text-rose-200">
               <CircleAlert className="mt-0.5 shrink-0" size={15} />
               <div><b>{t('serviceUnavailable')}</b><br />{t('serviceUnavailableHint')}</div>
@@ -1216,9 +1227,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             }
           >
             <div className="space-y-3">
-              {cloudMode ? (
+              {!usesDeviceEngine ? (
                 <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] leading-5 text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200">
-                  {t('cloudDurationNotControlled')}
+                  {t(usesCloud ? 'cloudDurationNotControlled' : 'localRouteDurationNotControlled')}
                 </div>
               ) : (
                 <>
@@ -1236,7 +1247,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <p className="text-[11px] leading-4 text-zinc-500">{t(durationSource === 'assistant' ? 'durationSourceAssistant' : durationSource === 'manual' ? 'durationSourceManual' : 'durationSourceDefault')}</p>
                 </>
               )}
-              {!cloudMode && (
+              {usesDeviceEngine && (
                 <>
                   <SliderRow
                     label={t('ditSteps')}
@@ -1260,7 +1271,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               )}
             </div>
 
-            {!cloudMode && <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 dark:border-white/5">
+            {usesDeviceEngine && <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 dark:border-white/5">
               {/* No batch slider. The engine reserves KV cache for the whole
                   batch when it loads its weights and takes the number only as a
                   launch flag, so a control here could not change anything about
@@ -1286,7 +1297,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             </div>}
           </Card>
 
-          {!cloudMode && <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
+          {usesDeviceEngine && <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-white/5 dark:bg-suno-card">
             <button
               type="button"
               onClick={() => setShowAdvanced(current => !current)}
@@ -1391,7 +1402,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             )}
           </div>}
 
-          {!cloudMode && <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+          {usesDeviceEngine && <div className="flex items-center justify-between px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
             <button
               type="button"
               onClick={() => window.dispatchEvent(new CustomEvent('mm3:open-settings', { detail: 'models' }))}
@@ -1402,7 +1413,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             </button>
             <button type="button" onClick={() => void refreshSetup().catch(() => undefined)} className="hover:text-pink-500">{t('refresh')}</button>
           </div>}
-          {!cloudMode && setup?.hardware?.reason && <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>}
+          {usesDeviceEngine && setup?.hardware?.reason && <p className="px-1 text-[10px] text-zinc-400">{setup.hardware.reason}</p>}
           {error && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs leading-5 text-red-700 dark:text-red-200">{error}</div>}
         </div>
       </div>

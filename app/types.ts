@@ -69,7 +69,7 @@ export interface Comment {
  */
 export interface Music3Request {
   /** Per-request execution target. Omit to retain the server-managed default. */
-  execution_target?: 'omnibridge' | 'configuration';
+  execution_target?: 'auto' | 'cloud' | 'local' | 'device-local';
   caption: string;
   lyrics: string;
   duration_seconds: number;

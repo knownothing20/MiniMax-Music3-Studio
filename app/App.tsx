@@ -75,6 +75,7 @@ import {
   CLOUD_FIRST_RUN_STORAGE_KEY,
   GENERATION_MODE_STORAGE_KEY,
   isOmniBridgeCloudReady,
+  isOmniBridgeLocalReady,
   parseGenerationModePreference,
   readStudioExecutionStatus,
   resolveGenerationExecutionTarget,
@@ -209,6 +210,7 @@ function AppContent() {
   }, []);
 
   const cloudExecutionReady = isOmniBridgeCloudReady(studioExecutionStatus);
+  const localRouteExecutionReady = isOmniBridgeLocalReady(studioExecutionStatus);
   // A track sent here from a menu's "separate into stems".
   const [stemsSongId, setStemsSongId] = useState<string | null>(null);
   // Which of the three situations the studio is in. It starts unknown, and
@@ -234,25 +236,32 @@ function AppContent() {
     const timer = window.setInterval(read, 2000);
     return () => window.clearInterval(timer);
   }, []);
-  const localExecutionReady = nativeModels === 'installed' && nativeSetupReady;
+  const deviceLocalExecutionReady = nativeModels === 'installed' && nativeSetupReady;
   const resolvedGenerationTarget = resolveGenerationExecutionTarget(
     generationMode,
     cloudExecutionReady,
-    localExecutionReady,
+    localRouteExecutionReady,
+    deviceLocalExecutionReady,
   );
-  const useCloudExecution = resolvedGenerationTarget === 'omnibridge';
+  const useCloudExecution = resolvedGenerationTarget === 'cloud';
+  const requiresDeviceSetup = generationMode === 'device-local'
+    || (generationMode === 'auto' && resolvedGenerationTarget === null);
 
   useEffect(() => {
     if (generationMode === 'cloud' && !studioExecutionChecking && !cloudExecutionReady) {
       updateGenerationMode('auto');
     }
-    if (generationMode === 'local' && nativeModels !== 'unknown' && !localExecutionReady) {
+    if (generationMode === 'local' && !studioExecutionChecking && !localRouteExecutionReady) {
+      updateGenerationMode('auto');
+    }
+    if (generationMode === 'device-local' && nativeModels !== 'unknown' && !deviceLocalExecutionReady) {
       updateGenerationMode('auto');
     }
   }, [
     cloudExecutionReady,
+    deviceLocalExecutionReady,
     generationMode,
-    localExecutionReady,
+    localRouteExecutionReady,
     nativeModels,
     studioExecutionChecking,
     updateGenerationMode,
@@ -1614,8 +1623,8 @@ function AppContent() {
         // is a decision to make, and an engine coming up is a wait to sit
         // through. They used to be the same page, which made a running studio
         // look like it owed 26 GB.
-        if (!useCloudExecution && nativeModels === 'offline' && !writingAssistantReady) return <StudioOffline />;
-        if (!useCloudExecution && !nativeSetupReady && !writingAssistantReady) {
+        if (requiresDeviceSetup && nativeModels === 'offline' && !writingAssistantReady) return <StudioOffline />;
+        if (requiresDeviceSetup && !nativeSetupReady && !writingAssistantReady) {
           // Until the studio has answered, and while the engine is coming up,
           // this is a wait - not a decision. The download page appears only
           // when components are genuinely missing.
@@ -1638,11 +1647,12 @@ function AppContent() {
                 isGenerating={isGenerating}
                 activeJobCount={activeJobCount + pendingClickCount}
                 initialData={reuseData}
-                cloudMode={useCloudExecution}
+                executionTarget={resolvedGenerationTarget}
                 generationMode={generationMode}
                 onGenerationModeChange={updateGenerationMode}
                 cloudAvailable={cloudExecutionReady}
-                localAvailable={localExecutionReady}
+                localRouteAvailable={localRouteExecutionReady}
+                deviceLocalAvailable={deviceLocalExecutionReady}
               />
             </div>
             {leftPanel.handle}

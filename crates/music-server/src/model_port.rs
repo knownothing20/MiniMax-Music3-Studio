@@ -131,6 +131,10 @@ impl ModelPort {
         self.role_route("music_generation_cloud")
     }
 
+    pub fn local_music_route(&self) -> Result<String, String> {
+        self.role_route("music_generation_local")
+    }
+
     pub fn assistant_role(request: &crate::assistant::AssistRequest) -> &'static str {
         use crate::assistant::AssistTarget;
         match request.target {
@@ -189,6 +193,7 @@ pub fn role_definitions() -> Vec<RoleDefinition> {
         RoleDefinition { id: "music_prompt_structuring", label_zh: "音乐描述结构化", description_zh: "整理全局元数据、人声细节与编曲", capability: "text" },
         RoleDefinition { id: "title_cover_brief", label_zh: "标题与封面简报", description_zh: "为歌曲生成标题及视觉方向", capability: "text" },
         RoleDefinition { id: "music_generation_cloud", label_zh: "云端音乐生成", description_zh: "提交 MiniMax Music 生成任务", capability: "music" },
+        RoleDefinition { id: "music_generation_local", label_zh: "本地音乐生成", description_zh: "通过 OmniBridge 委派给 Compute Hub Music3", capability: "music" },
     ]
 }
 
@@ -370,6 +375,7 @@ mod tests {
         assert_eq!(resolve_role_route(&profile, "song_concept_draft").unwrap(), "route:text:fast");
         assert_eq!(resolve_role_route(&profile, "song_package_draft").unwrap(), "route:text:quality");
         assert_eq!(resolve_role_route(&profile, "music_generation_cloud").unwrap(), "route:music:default");
+        assert_eq!(resolve_role_route(&profile, "music_generation_local").unwrap(), "route:music:local");
     }
 
     #[test]
