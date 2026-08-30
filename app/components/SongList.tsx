@@ -29,6 +29,7 @@ interface SongListProps {
     onDelete?: (song: Song) => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onDeleteMany?: (songs: Song[]) => void;
+    onRecoverUnknown?: (song: Song) => void;
     onCancelJob?: (jobId: string) => void;
     onResetJob?: (jobId: string) => void;
     onCancelAll?: () => void;
@@ -110,6 +111,7 @@ export const SongList: React.FC<SongListProps> = ({
     onDelete,
     onSongUpdate,
     onDeleteMany,
+    onRecoverUnknown,
     onCancelJob,
     onCancelAll,
     onResetJob,
@@ -422,6 +424,7 @@ export const SongList: React.FC<SongListProps> = ({
                                     onReplayMusic={item.song.nativeReplayAvailable ? () => onReplayMusic?.(item.song) : undefined}
                                     onExportVideo={item.song.audioUrl ? () => onExportVideo?.(item.song) : undefined}
                                     onDelete={() => onDelete?.(item.song)}
+                                    onRecoverUnknown={() => onRecoverUnknown?.(item.song)}
                                     onSongUpdate={onSongUpdate}
                                     // Cancel button is also available during pre-flight (placeholder
                                     // card with no jobId yet) — pass `song.id` (= tempId) and the
@@ -489,6 +492,7 @@ interface SongItemProps {
     onReplayMusic?: () => void;
     onExportVideo?: () => void;
     onDelete?: () => void;
+    onRecoverUnknown?: () => void;
     onSongUpdate?: (updatedSong: Song) => void;
     onCancelJob?: () => void;
     onResetJob?: () => void;
@@ -515,6 +519,7 @@ const SongItem: React.FC<SongItemProps> = ({
     onReplayMusic,
     onExportVideo,
     onDelete,
+    onRecoverUnknown,
     onSongUpdate,
     onCancelJob,
     onResetJob,
@@ -716,7 +721,7 @@ const SongItem: React.FC<SongItemProps> = ({
                         {captionSummary(song.style)}
                     </p>
                     {song.isGenerating && (
-                        <div className="pt-2">
+                        <div className="pt-2" data-testid="generation-progress">
                             <div className="h-1 rounded-full bg-zinc-200/70 dark:bg-white/10 overflow-hidden">
                                 <div
                                     className={`h-full bg-gradient-to-r from-pink-500 to-purple-600 transition-all ${song.progress === undefined ? 'opacity-40' : ''}`}
@@ -737,7 +742,7 @@ const SongItem: React.FC<SongItemProps> = ({
                 </div>
 
                 {/* Actions Row - Hidden while generating */}
-                {!song.isGenerating && (
+                {!song.isGenerating && !song.submissionUnknown && (
                     <div className="flex items-center gap-1 pt-2">
                         <button
                             className={`flex items-center gap-1 px-3 py-1.5 rounded-full hover:bg-white/5 transition-colors ${isLiked ? 'text-pink-600 dark:text-pink-500 bg-pink-100 dark:bg-pink-500/10' : 'text-zinc-400 hover:text-black dark:hover:text-white'}`}
@@ -815,7 +820,28 @@ const SongItem: React.FC<SongItemProps> = ({
 
             {/* Timestamp / Status */}
             <div className="text-xs font-mono text-zinc-500 dark:text-zinc-600 self-start pt-1 text-right">
-                {song.isGenerating ? (
+                {song.submissionUnknown ? (
+                    <div className="flex max-w-64 flex-col items-end gap-1 font-sans">
+                        <span className="font-semibold text-amber-500">{t('submissionUnknownStatus')}</span>
+                        <span className="text-[10px] leading-4 text-zinc-500 dark:text-zinc-400">
+                            {t('submissionUnknownExplanation')}
+                        </span>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={(event) => { event.stopPropagation(); onRecoverUnknown?.(); }}
+                                className="text-[10px] text-zinc-500 transition-colors hover:text-amber-500"
+                            >
+                                {t('checkRecoveryStatus')}
+                            </button>
+                            <button
+                                onClick={(event) => { event.stopPropagation(); onDelete?.(); }}
+                                className="text-[10px] text-zinc-500 transition-colors hover:text-red-400"
+                            >
+                                {t('hideRecoveryCard')}
+                            </button>
+                        </div>
+                    </div>
+                ) : song.isGenerating ? (
                     <div className="flex flex-col items-end gap-0.5">
                         <span className={song.queuePosition ? 'text-amber-500' : 'text-pink-500'}>
                             {song.queuePosition ? `#${song.queuePosition}` : (t(song.stage) || song.stage || t('creating') || 'Creating...')}

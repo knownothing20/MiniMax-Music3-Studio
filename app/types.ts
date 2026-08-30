@@ -7,6 +7,8 @@ export interface Song {
   duration: string;
   createdAt: Date;
   isGenerating?: boolean;
+  /** Durable no-handle submission retained for explicit recovery or dismissal. */
+  submissionUnknown?: boolean;
   jobId?: string; // Active generation job ID for cancel
   queuePosition?: number; // Position in queue (undefined = actively generating, number = waiting in queue)
   progress?: number;

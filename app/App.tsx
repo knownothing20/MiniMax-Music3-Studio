@@ -68,7 +68,8 @@ import { StudioOffline } from './components/StudioOffline';
 import { StudioToolsPanel } from './components/StudioToolsPanel';
 import { OmniBridgeMusicCase } from './components/OmniBridgeMusicCase';
 import { CloudFirstRun } from './components/CloudFirstRun';
-import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
+import { createNativePlaylist, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
+import { removeLibraryItems } from './services/libraryRemoval';
 import { readLibrarySearchQuery, resolveLegacySearchLocation } from './services/libraryNavigation';
 import type { OmniBridgeIntegrationStatus } from './services/omnibridgeMusic';
 import {
@@ -84,7 +85,6 @@ import {
 import { isWritingAssistantAvailable, type WritingAssistantStatus } from './services/writingAssistant';
 
 const NATIVE_LIKED_SONG_IDS_KEY = 'minimax-music3-native-liked-song-ids';
-const SUBMISSION_UNKNOWN_MESSAGE = '提交状态未知，禁止自动重试；请恢复查询或人工确认后再处理。';
 const CANCEL_RECOVERY_MESSAGE = '远程任务未确认取消，已保留恢复卡；请继续查询，禁止重新提交。';
 const POLL_BASE_DELAY_MS = 1500;
 const POLL_MAX_DELAY_MS = 30_000;
@@ -92,7 +92,6 @@ const POLL_MAX_DELAY_MS = 30_000;
 type ActiveMusicJob = {
   tempId: string;
   pollInterval?: ReturnType<typeof setTimeout>;
-  submissionUnknown?: boolean;
 };
 
 type CancelJobResult = {
@@ -919,6 +918,26 @@ function AppContent() {
     drainQueueWaiters();
   }, []);
 
+  const retainUnknownRecoveryCard = useCallback((jobId: string, tempId: string, message?: string) => {
+    const jobData = activeJobsRef.current.get(jobId);
+    if (jobData?.pollInterval !== undefined) clearTimeout(jobData.pollInterval);
+    activeJobsRef.current.delete(jobId);
+    setActiveJobCount(activeJobsRef.current.size);
+    setIsGenerating(activeJobsRef.current.size > 0);
+    drainQueueWaiters();
+    setSongs(previous => previous.map(song => song.id === tempId
+      ? {
+        ...song,
+        jobId,
+        isGenerating: false,
+        submissionUnknown: true,
+        stage: message || t('submissionUnknownStatus'),
+        progress: undefined,
+        queuePosition: undefined,
+      }
+      : song));
+  }, [drainQueueWaiters, t]);
+
   // Cancel a single generation. The `id` may be either:
   //  - a backend jobId (track is past pre-flight, audio gen is running) → POST /cancel
   //  - a pre-flight tempId (still in OpenRouter LLM call, no jobId yet)  → abort the
@@ -1073,18 +1092,8 @@ function AppContent() {
           consecutiveFailures = 0;
 
           if (isSubmissionUnknown(job)) {
-            activeJobsRef.current.set(jobId, { tempId, submissionUnknown: true });
-            setSongs(prev => prev.map(song => song.id === tempId
-              ? {
-                ...song,
-                jobId,
-                isGenerating: true,
-                stage: SUBMISSION_UNKNOWN_MESSAGE,
-                progress: undefined,
-                queuePosition: undefined,
-              }
-              : song));
-            showToast(SUBMISSION_UNKNOWN_MESSAGE, 'error');
+            retainUnknownRecoveryCard(jobId, tempId, t('submissionUnknownStatus'));
+            showToast(t('submissionUnknownExplanation'), 'error');
             return;
           }
 
@@ -1129,7 +1138,43 @@ function AppContent() {
 
     schedulePoll(POLL_BASE_DELAY_MS);
     setActiveJobCount(activeJobsRef.current.size);
-  }, [cleanupJob, refreshSongsList, t]);
+  }, [cleanupJob, refreshSongsList, retainUnknownRecoveryCard, t]);
+
+  const recheckUnknownSubmission = useCallback(async (song: Song) => {
+    if (!song.jobId) {
+      showToast(t('submissionUnknownExplanation'), 'error');
+      return;
+    }
+    try {
+      const response = await fetch(`/v1/music/jobs/${encodeURIComponent(song.jobId)}`);
+      if (!response.ok) throw new Error(`Recovery status request failed (${response.status})`);
+      const job: Music3Job = await response.json();
+      if (isSubmissionUnknown(job)) {
+        showToast(t('recoveryStillUnknown'), 'info');
+        return;
+      }
+      if (job.status === 'queued' || job.status === 'running') {
+        setSongs(previous => previous.map(item => item.id === song.id
+          ? {
+            ...item,
+            isGenerating: true,
+            submissionUnknown: false,
+            stage: job.message,
+          }
+          : item));
+        beginPollingJob(job.id, song.id);
+        return;
+      }
+      if (job.status === 'completed') {
+        beginPollingJob(job.id, song.id);
+        return;
+      }
+      setSongs(previous => previous.filter(item => item.id !== song.id));
+      showToast(job.message || `${t('generationFailed')}`, job.status === 'failed' ? 'error' : 'info');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Recovery status request failed', 'error');
+    }
+  }, [beginPollingJob, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1150,24 +1195,22 @@ function AppContent() {
             .map(job => ({
               id: `recovered-${job.id}`,
               jobId: job.id,
-              title: job.title?.trim() || t('generating') || 'Generating...',
+              title: job.title?.trim() || (isSubmissionUnknown(job) ? t('submissionUnknownStatus') : t('generating')),
               lyrics: job.lyrics || '',
               style: job.caption || '',
               coverUrl: '',
               duration: '--:--',
               createdAt: new Date(),
-              isGenerating: true,
-              stage: isSubmissionUnknown(job) ? SUBMISSION_UNKNOWN_MESSAGE : job.message,
+              isGenerating: !isSubmissionUnknown(job),
+              submissionUnknown: isSubmissionUnknown(job),
+              stage: isSubmissionUnknown(job) ? t('submissionUnknownStatus') : job.message,
               tags: ['music3'],
             } satisfies Song));
           return [...recovered, ...previous];
         });
         recoverable.forEach(job => {
-          const tempId = `recovered-${job.id}`;
-          if (isSubmissionUnknown(job)) {
-            activeJobsRef.current.set(job.id, { tempId, submissionUnknown: true });
-          } else {
-            beginPollingJob(job.id, tempId);
+          if (!isSubmissionUnknown(job)) {
+            beginPollingJob(job.id, `recovered-${job.id}`);
           }
         });
         setActiveJobCount(activeJobsRef.current.size);
@@ -1221,14 +1264,14 @@ function AppContent() {
           const generating = prev.filter(song =>
             song.isGenerating
             && song.jobId
-            && !activeJobsRef.current.get(song.jobId)?.submissionUnknown);
+            && !song.submissionUnknown);
           if (generating.length === 0) return prev;
           const active = generating.reduce((oldest, song) =>
             (song.createdAt?.getTime() ?? 0) < (oldest.createdAt?.getTime() ?? 0) ? song : oldest,
           );
           return prev.map(song => {
             if (!song.isGenerating || !song.jobId) return song;
-            if (activeJobsRef.current.get(song.jobId)?.submissionUnknown) return song;
+            if (song.submissionUnknown) return song;
             if (song.id === active.id) return { ...song, progress, stage: stage ?? song.stage };
             return { ...song, progress: 0, stage: 'stageWaitingInQueue' };
           });
@@ -1284,19 +1327,9 @@ function AppContent() {
       if (!job.id) throw new Error('Music3 submission response did not contain a recovery handle.');
       setSongs(prev => prev.map(song => song.id === tempId ? { ...song, jobId: job.id } : song));
       if (isSubmissionUnknown(job)) {
-        activeJobsRef.current.set(job.id, { tempId, submissionUnknown: true });
-        setActiveJobCount(activeJobsRef.current.size);
-        setSongs(prev => prev.map(song => song.id === tempId
-          ? {
-            ...song,
-            isGenerating: true,
-            stage: SUBMISSION_UNKNOWN_MESSAGE,
-            progress: undefined,
-            queuePosition: undefined,
-          }
-          : song));
+        retainUnknownRecoveryCard(job.id, tempId, t('submissionUnknownStatus'));
         decrementPendingClicks(1);
-        showToast(SUBMISSION_UNKNOWN_MESSAGE, 'error');
+        showToast(t('submissionUnknownExplanation'), 'error');
         return;
       }
       beginPollingJob(job.id, tempId);
@@ -1311,20 +1344,9 @@ function AppContent() {
         return;
       }
       console.error('Generation submission result is unknown; automatic replay is disabled.');
-      beginPollingJob(recoveryJobId, tempId);
-      setActiveJobCount(activeJobsRef.current.size);
-      setSongs(prev => prev.map(song => song.id === tempId
-        ? {
-          ...song,
-          jobId: recoveryJobId,
-          isGenerating: true,
-          stage: SUBMISSION_UNKNOWN_MESSAGE,
-          progress: undefined,
-          queuePosition: undefined,
-        }
-        : song));
+      retainUnknownRecoveryCard(recoveryJobId, tempId, t('submissionUnknownStatus'));
       decrementPendingClicks(1);
-      showToast(SUBMISSION_UNKNOWN_MESSAGE, 'error');
+      showToast(t('submissionUnknownExplanation'), 'error');
     }
   };
 
@@ -1408,11 +1430,19 @@ function AppContent() {
   const handleDeleteSongs = (songsToDelete: Song[]) => {
     if (songsToDelete.length === 0) return;
 
+    const recoveryCount = songsToDelete.filter(song => song.submissionUnknown).length;
     const isSingle = songsToDelete.length === 1;
-    const title = isSingle ? t('confirmDeleteTitle') : t('confirmDeleteManyTitle');
-    const message = isSingle
-      ? t('deleteSongConfirm').replace('{title}', songsToDelete[0].title)
-      : t('deleteSongsConfirm').replace('{count}', String(songsToDelete.length));
+    const onlyRecoveryCards = recoveryCount === songsToDelete.length;
+    const title = onlyRecoveryCards
+      ? t('hideRecoveryConfirmTitle')
+      : (isSingle ? t('confirmDeleteTitle') : t('confirmDeleteManyTitle'));
+    const message = onlyRecoveryCards
+      ? t('hideRecoveryConfirm').replace('{count}', String(recoveryCount))
+      : recoveryCount > 0
+        ? t('removeItemsConfirm').replace('{count}', String(songsToDelete.length))
+        : isSingle
+          ? t('deleteSongConfirm').replace('{title}', songsToDelete[0].title)
+          : t('deleteSongsConfirm').replace('{count}', String(songsToDelete.length));
 
     setConfirmDialog({
       title,
@@ -1421,18 +1451,7 @@ function AppContent() {
         setConfirmDialog(null);
 
         const idsToDelete = new Set(songsToDelete.map(song => song.id));
-        const succeeded: string[] = [];
-        const failed: string[] = [];
-
-        for (const song of songsToDelete) {
-          try {
-            await deleteNativeSong(song.id);
-            succeeded.push(song.id);
-          } catch (error) {
-            console.error('Failed to delete song:', error);
-            failed.push(song.id);
-          }
-        }
+        const { succeeded, failed } = await removeLibraryItems(songsToDelete);
 
         if (succeeded.length > 0) {
           setSongs(prev => prev.filter(s => !idsToDelete.has(s.id) || failed.includes(s.id)));
@@ -1460,9 +1479,14 @@ function AppContent() {
         }
 
         if (failed.length > 0) {
-          showToast(t('songsDeletedPartial').replace('{succeeded}', String(succeeded.length)).replace('{total}', String(songsToDelete.length)), 'error');
+          const key = recoveryCount > 0 ? 'itemsRemovedPartial' : 'songsDeletedPartial';
+          showToast(t(key).replace('{succeeded}', String(succeeded.length)).replace('{total}', String(songsToDelete.length)), 'error');
+        } else if (onlyRecoveryCards) {
+          showToast(t('recoveryCardHidden'));
         } else if (isSingle) {
           showToast(t('songDeleted'));
+        } else if (recoveryCount > 0) {
+          showToast(t('itemsRemovedSuccess'));
         } else {
           showToast(t('songsDeletedSuccess'));
         }
@@ -1682,6 +1706,7 @@ function AppContent() {
                 onExportVideo={setSongForVideo}
                 onDelete={handleDeleteSong}
                 onDeleteMany={handleDeleteSongs}
+                onRecoverUnknown={recheckUnknownSubmission}
                 onSongUpdate={handleSongUpdate}
                 onCancelJob={cancelGeneration}
                 onResetJob={resetSingleJob}

@@ -16,6 +16,7 @@ Windows build.
 
 ### Fixed
 
+- OmniBridge submissions with an unknown outcome and no remote handle now render as truthful, non-running recovery cards. They cannot be cancelled or auto-replayed, can be explicitly rechecked, and can be hidden persistently without deleting the durable intent, idempotency key, payload digest, or diagnostic evidence; mixed library bulk removal now routes these cards to local dismissal instead of song deletion.
 - Generated and historical songs now keep requested duration as planning provenance but publish the playable duration measured from the finished audio bytes; the library no longer labels a 152-second cloud result as 60 seconds, even for rows created before the fix.
 - Writing-assistant captions now target 1450 characters and are deterministically compacted to 1500 before the form, while retaining the Music Route's 1900-character hard safety gate.
 
