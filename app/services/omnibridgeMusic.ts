@@ -157,7 +157,7 @@ export async function submitOmniBridgeMusicJobOnce(
         caption: input.caption.trim(),
         lyrics: input.lyrics.replace(/\r\n?/g, '\n').trim(),
         duration_seconds: 30,
-        output_format: 'mp3',
+        output_format: 'wav',
       }),
     });
   } catch (error) {

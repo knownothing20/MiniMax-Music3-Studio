@@ -91,7 +91,7 @@ describe('OmniBridge Music API case client', () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({
       client_request_id: 'api-case-fixed',
       duration_seconds: 30,
-      output_format: 'mp3',
+      output_format: 'wav',
     });
   });
 

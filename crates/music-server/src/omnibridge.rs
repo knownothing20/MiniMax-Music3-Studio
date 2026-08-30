@@ -669,14 +669,16 @@ impl MusicSubmitRequest {
             ));
         }
         let output_format = output_format.into().trim().to_ascii_lowercase();
-        if output_format != "mp3" {
+        if !matches!(output_format.as_str(), "mp3" | "wav") {
             return Err(OmniBridgeError::InvalidInput(
-                "the current MiniMax Music route only verifies mp3 output".to_owned(),
+                "music output format must be mp3 or wav".to_owned(),
             ));
         }
-        if sample_rate != 44_100 || bitrate != 256_000 {
+        if ![16_000, 24_000, 32_000, 44_100].contains(&sample_rate)
+            || ![32_000, 64_000, 128_000, 256_000].contains(&bitrate)
+        {
             return Err(OmniBridgeError::InvalidInput(
-                "the current MiniMax Music route requires 44100 Hz and 256000 bps".to_owned(),
+                "music sample_rate or bitrate is outside the public contract".to_owned(),
             ));
         }
         Ok(Self {
@@ -788,12 +790,13 @@ impl OmniBridgeMusicClient {
         &self,
         prompt: impl Into<String>,
         lyrics: impl Into<String>,
+        output_format: impl Into<String>,
     ) -> Result<MusicSubmitRequest, OmniBridgeError> {
         MusicSubmitRequest::new(
             self.config.music_route.clone(),
             prompt,
             lyrics,
-            "mp3",
+            output_format,
             44_100,
             256_000,
         )
@@ -1707,7 +1710,7 @@ mod tests {
             "route:music:minimax-3",
             "soft electronic pop",
             "[Verse]\nSafe test lyric",
-            "mp3",
+            "wav",
             44_100,
             256_000,
         )
@@ -1721,7 +1724,7 @@ mod tests {
             duration_seconds: 30.0,
             title: Some("Test".into()),
             cover_prompt: None,
-            generation_settings: serde_json::json!({"format":"mp3"}),
+            generation_settings: serde_json::json!({"format":"wav"}),
         }
     }
 
@@ -1793,8 +1796,19 @@ mod tests {
         assert_eq!(value["kind"], KIND);
         assert_eq!(value["model"], "route:music:minimax-3");
         assert_eq!(value["payload"]["model"], "route:music:minimax-3");
-        assert_eq!(value["payload"]["format"], "mp3");
+        assert_eq!(value["payload"]["format"], "wav");
         assert_eq!(value["payload"]["sample_rate"], 44_100);
+        assert!(
+            MusicSubmitRequest::new(
+                "route:music:minimax-3",
+                "instrumental",
+                "[Verse]\nSafe test lyric",
+                "flac",
+                44_100,
+                256_000,
+            )
+            .is_err()
+        );
         assert!(
             MusicSubmitRequest::new(
                 "route:music:minimax-3",
