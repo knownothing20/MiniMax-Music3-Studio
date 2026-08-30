@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { canOpenExternalAudioSource, openExternalAudioEditor } from '../services/externalLinks';
 import { apiUrl } from '../services/apiBase';
+import { downloadSongDiagnostics } from '../services/diagnostics';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { AlbumCover } from './AlbumCover';
 import { openStems } from '../services/openStems';
@@ -175,20 +176,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
         setDiagnosticsBusy(true);
         setDiagnosticsError(null);
         try {
-            const response = await fetch(`/v1/library/songs/${encodeURIComponent(song.id)}/diagnostics`);
-            if (!response.ok) {
-                const body = await response.json().catch(() => null) as { error?: string } | null;
-                throw new Error(body?.error || `Diagnostic export failed (${response.status})`);
-            }
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `music-maker-diagnostics-${song.id}.zip`;
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            URL.revokeObjectURL(url);
+            await downloadSongDiagnostics(song);
         } catch (reason) {
             setDiagnosticsError(reason instanceof Error ? reason.message : String(reason));
         } finally {
