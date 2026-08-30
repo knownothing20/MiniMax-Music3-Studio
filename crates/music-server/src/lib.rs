@@ -3476,12 +3476,14 @@ async fn assistant_openrouter_model(state: &AppState, config: &AssistantConfig) 
 
 fn assistant_done_event(
     draft: assistant::AssistDraft,
+    audit: assistant::AssistAudit,
     text: String,
     receipt: Option<omnibridge::RequestReceipt>,
 ) -> Value {
     serde_json::json!({
         "stage": "done",
         "draft": draft,
+        "audit": audit,
         "text": text,
         "receipt": receipt,
     })
@@ -3624,8 +3626,8 @@ async fn assistant_write_stream(
                 started.elapsed().as_secs_f64(),
                 whole.chars().count(),
             );
-            let draft = match assistant::parse_draft(&whole, &required) {
-                Ok(draft) => draft,
+            let (draft, audit) = match assistant::parse_draft_for_request(&whole, &required, &request) {
+                Ok(parsed) => parsed,
                 Err(error) => {
                     request_log::unusable("assistant", &route_id, &error.to_string(), &whole);
                     emit(
@@ -3640,7 +3642,7 @@ async fn assistant_write_stream(
                     return;
                 }
             };
-            emit(sender.clone(), assistant_done_event(draft, whole, receipt)).await;
+            emit(sender.clone(), assistant_done_event(draft, audit, whole, receipt)).await;
             return;
         }
 
@@ -3792,8 +3794,8 @@ async fn assistant_write_stream(
         // The answer is kept whenever it cannot be turned into a draft. That is
         // the case this log exists for: the window shows one red line, and
         // without this the text behind it is gone the moment it is closed.
-        let draft = match assistant::parse_draft(&whole, &required) {
-            Ok(draft) => draft,
+        let (draft, audit) = match assistant::parse_draft_for_request(&whole, &required, &request) {
+            Ok(parsed) => parsed,
             Err(error) => {
                 request_log::unusable("assistant", &model, &error.to_string(), &whole);
                 emit(
@@ -3805,7 +3807,7 @@ async fn assistant_write_stream(
                 return;
             }
         };
-        emit(sender.clone(), assistant_done_event(draft, whole, None)).await;
+        emit(sender.clone(), assistant_done_event(draft, audit, whole, None)).await;
         // The card belongs to whatever runs next unless the user asked for
         // everything to stay resident.
         release_assistant_unless_kept(&state).await;
@@ -3960,7 +3962,7 @@ async fn assistant_write(
         request_log::unusable("assistant", "", &error.to_string(), &response.to_string());
         api_error(StatusCode::BAD_GATEWAY, error.to_string())
     })?;
-    let draft = assistant::parse_draft(&content, required).map_err(|error| {
+    let (draft, _audit) = assistant::parse_draft_for_request(&content, required, &request).map_err(|error| {
         // The answer, kept: this is the difference between "invalid JSON" and
         // seeing that the model wrote an apology instead of a song.
         request_log::unusable("assistant", "", &error.to_string(), &content);
