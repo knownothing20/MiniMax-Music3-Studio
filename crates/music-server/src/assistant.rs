@@ -218,6 +218,43 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
     }
 }
 
+/// Stable application-owned prompt contracts and generation rules.
+///
+/// This describes current product logic. It is not hidden model reasoning and
+/// must not be presented as a verbatim prompt used by a historical run.
+pub fn diagnostic_prompt_contracts() -> Value {
+    serde_json::json!({
+        "schema_version": 2,
+        "kind": "application_prompt_contracts",
+        "scope": "Stable application-owned prompt contracts and generation rules used by Music Maker.",
+        "runtime_prompt_semantics": "This file is not model hidden reasoning and is not evidence of the verbatim runtime prompt for a historical request. Actual user input and persisted assistant activity are exported separately; unrecorded runtime text is not reconstructed.",
+        "targets": {
+            "all": "lyrics + structured caption + title + cover prompt + suggested duration",
+            "prompt": "structured caption + title + cover prompt + suggested duration",
+            "lyrics": "lyrics coherent with the current structured caption"
+        },
+        "caption_contract": CAPTION_CONTRACT,
+        "standard_caption_contract": STANDARD_CAPTION_CONTRACT,
+        "simple_mode_caption_rewriter_default": true,
+        "lyrics_rules": LYRICS_RULES,
+        "story_songwriting_contract": STORY_SONGWRITING_CONTRACT,
+        "contract_versions": {
+            "standard_lyrics": STANDARD_LYRICS_VERSION,
+            "story_songwriting": STORY_SONGWRITING_VERSION,
+            "standard_caption": STANDARD_CAPTION_VERSION,
+            "caption_rewriter": CAPTION_REWRITER_VERSION,
+        },
+        "copy_output_contract": COPY_EXTRA,
+        "duration_output_contract": DURATION_EXTRA,
+        "validation_contract": VALIDATION,
+        "conditional_rules": {
+            "diction": DICTION_RULE,
+            "duet": DUET_RULE,
+            "instrumental": INSTRUMENTAL_RULE
+        }
+    })
+}
+
 /// The rules that only apply to some songs.
 ///
 /// Everything here costs prompt room and, on a small local model, attention.

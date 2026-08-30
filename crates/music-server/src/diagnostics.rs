@@ -296,6 +296,18 @@ pub fn build_song_bundle(library: &Library, input: SongBundleInput) -> Result<Ve
         ));
     }
 
+    push_entry(
+        &mut entries,
+        "logic/application-prompt-contracts.json",
+        "current Music Maker application-owned prompt contracts and generation rules",
+        json_bytes(&redacted(&crate::assistant::diagnostic_prompt_contracts()))?,
+        Some(json!({
+            "semantics": "stable_application_logic_not_historical_verbatim_runtime_prompt",
+            "hidden_model_reasoning": "not_included",
+            "unrecorded_runtime_prompt": "not_reconstructed"
+        })),
+    )?;
+
     if diagnostics
         .pointer("/form/final_copy")
         .is_some_and(Value::is_object)
@@ -646,6 +658,7 @@ mod tests {
             "manifest.json",
             "input/creative-brief.txt",
             "input/assistant-activity.json",
+            "logic/application-prompt-contracts.json",
             "structured/song-plan.json",
             "structured/caption.txt",
             "structured/lyrics.txt",
@@ -673,6 +686,33 @@ mod tests {
         assert!(!request.contains("/home/leon"));
         let receipt = zip_text(&mut zip, "generation/receipt.json");
         assert!(!receipt.contains("do-not-export"));
+        let logic = zip_text(&mut zip, "logic/application-prompt-contracts.json");
+        let logic_json: Value = serde_json::from_str(&logic).unwrap();
+        assert_eq!(logic_json["kind"], "application_prompt_contracts");
+        assert!(
+            logic_json["runtime_prompt_semantics"]
+                .as_str()
+                .unwrap()
+                .contains("not evidence of the verbatim runtime prompt")
+        );
+        for secret in ["do-not-export", "task_token", "Authorization", "Cookie"] {
+            assert!(!logic.contains(secret), "logic contract leaked {secret}");
+        }
+        let logic_file = manifest["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "logic/application-prompt-contracts.json")
+            .unwrap();
+        assert_eq!(logic_file["exists"], true);
+        assert_eq!(
+            logic_file["metadata"]["hidden_model_reasoning"],
+            "not_included"
+        );
+        assert_eq!(
+            logic_file["metadata"]["unrecorded_runtime_prompt"],
+            "not_reconstructed"
+        );
         let checksum = zip_text(&mut zip, "checksums.sha256");
         assert!(checksum.contains(&format!("{}  artifacts/audio.wav", sha256(&audio))));
         let _ = fs::remove_dir_all(root);
