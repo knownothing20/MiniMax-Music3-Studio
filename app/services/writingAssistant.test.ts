@@ -11,6 +11,7 @@ const REQUEST: WritingAssistantRequest = {
   arrangement: '',
   duration_seconds: 60,
   instrumental: false,
+  use_caption_rewriter: true,
 };
 
 function sseResponse(...chunks: string[]): Response {
@@ -37,6 +38,19 @@ describe('streamWritingAssistant', () => {
     }));
     expect(result.draft).toEqual({ title: '霓虹夜航', lyrics: '[verse]\n夜色' });
     expect(result.receipt?.route_id).toBe('route:text:quality');
+  });
+
+  it('forwards the simple-mode caption contract choice in the request body', async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue(sseResponse(
+      'data: {"stage":"done","draft":{"lyrics":"[verse]\\nnight","global_metadata":"g","vocal_details":"v","arrangement":"a"}}\n\n',
+    ));
+    await streamWritingAssistant({ ...REQUEST, use_caption_rewriter: false }, { fetchImpl });
+    const init = fetchImpl.mock.calls[0]?.[1];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      target: 'all',
+      use_caption_rewriter: false,
+      lyrics: '',
+    });
   });
 
   it('surfaces a stream error without replaying the request', async () => {

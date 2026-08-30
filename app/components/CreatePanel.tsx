@@ -4,6 +4,7 @@ import { AlertTriangle, ChevronDown, CircleAlert, Dices, FolderOpen, Loader2, Ro
 import type { Music3Request, Song } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { joinCaption, randomExample, splitCaption } from '../services/examples';
+import { GENRE_KEYS } from '../data/genres';
 import type { GenerationModePreference } from '../services/studioExecution';
 import {
   isWritingAssistantAvailable,
@@ -12,9 +13,17 @@ import {
   type WritingAssistantDraft,
   type WritingAssistantReceipt,
   type WritingAssistantRequest,
+  type WritingAssistantAudit,
+  type LyricsStrategy,
 } from '../services/writingAssistant';
 import {
+  appendStyleSuggestion,
   buildAssistantInstruction,
+  resolveCaptionRewriterPreference,
+  resolveLyricsStrategyPreference,
+  MUSIC3_LYRICS_STRATEGY_STORAGE_KEY,
+  SIMPLE_CAPTION_REWRITER_STORAGE_KEY,
+  useCaptionRewriterForTarget,
   type AssistantTarget,
   type LyricsLanguage,
 } from '../services/assistantBrief';
@@ -65,6 +74,7 @@ type AssistantTraceEntry = {
   streamed_output?: string;
   final_draft?: WritingAssistantDraft;
   receipt?: WritingAssistantReceipt;
+  audit?: WritingAssistantAudit;
   error?: string;
 };
 
@@ -88,7 +98,7 @@ type EngineCatalog = {
 /** 9000 acoustic frames at 25 frames per second, as the model card states. */
 const MAX_DURATION_SECONDS = 360;
 /** Exact OmniBridge MiniMax Music route limits (JavaScript length is UTF-16). */
-const MAX_CAPTION_CHARACTERS = 2000;
+const MAX_CAPTION_CHARACTERS = 1900;
 const MAX_LYRICS_CHARACTERS = 3500;
 
 const PROFILE_LABEL: Record<string, string> = {
@@ -329,6 +339,21 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [assistSeconds, setAssistSeconds] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [mode, setMode] = useState<'simple' | 'studio'>('studio');
+  const [captionRewriterEnabled, setCaptionRewriterEnabled] = useState(() => {
+    try {
+      return resolveCaptionRewriterPreference(localStorage.getItem(SIMPLE_CAPTION_REWRITER_STORAGE_KEY));
+    } catch {
+      return true;
+    }
+  });
+  const [lyricsStrategy, setLyricsStrategy] = useState<LyricsStrategy>(() => {
+    try {
+      return resolveLyricsStrategyPreference(localStorage.getItem(MUSIC3_LYRICS_STRATEGY_STORAGE_KEY));
+    } catch {
+      return 'story_songwriting';
+    }
+  });
+  const [captionRetryPending, setCaptionRetryPending] = useState(false);
   const [assistInstruction, setAssistInstruction] = useState('');
   const [captionInstruction, setCaptionInstruction] = useState('');
   const [lyricsInstruction, setLyricsInstruction] = useState('');
@@ -349,6 +374,22 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     const id = setup?.selected_profile_id;
     return id ? PROFILE_LABEL[id] ?? id : '—';
   }, [setup, t]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIMPLE_CAPTION_REWRITER_STORAGE_KEY, String(captionRewriterEnabled));
+    } catch {
+      // A blocked preference store must not stop the assistant from working.
+    }
+  }, [captionRewriterEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MUSIC3_LYRICS_STRATEGY_STORAGE_KEY, lyricsStrategy);
+    } catch {
+      // Persistence is optional; the active choice still applies to this session.
+    }
+  }, [lyricsStrategy]);
 
   useEffect(() => {
     if (!assisting) return;
@@ -559,112 +600,142 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     setAssistStage(null);
     setAssistDraft('');
   };
-  const askAssistant = async (target: AssistantTarget) => {
+  const askAssistant = async (target: AssistantTarget, instructionOverride?: string) => {
     if (!assistantReady || assisting) return;
-    const instruction = buildAssistantInstruction(target, {
+    const instruction = instructionOverride?.trim() || buildAssistantInstruction(target, {
       all: assistInstruction,
       prompt: captionInstruction,
       lyrics: lyricsInstruction,
     }, lyricsLanguage, language);
-    // Never turn an empty click into a generic model request. Each assistant
-    // action has a visible, task-specific brief and must receive one.
     if (!instruction) return;
+
     const run = new AbortController();
     assistRun.current = run;
     setAssisting(target);
     setError(null);
-    const startedAt = new Date().toISOString();
-    const visibleStages: string[] = [];
-    const payload: WritingAssistantRequest = {
-      target,
-      description: name.trim(),
-      instruction,
-      lyrics: lyrics.trim(),
-      global_metadata: globalMetadata.trim(),
-      vocal_details: vocalDetails.trim(),
-      arrangement: arrangement.trim(),
-      duration_seconds: numberOrUndefined(duration) ?? 60,
-      instrumental,
-    };
-    try {
+    let lyricsStageCompleted = false;
 
-      // Watch the same request happen: the studio reports when it goes out,
-      // when the model starts answering, and then the text as it arrives. The
-      // draft appears in front of the user instead of after a minute of
-      // nothing.
+    const runStage = async (payload: WritingAssistantRequest) => {
+      const startedAt = new Date().toISOString();
+      const visibleStages: string[] = [];
       setAssistStage('preparing');
       setAssistDraft('');
       let streamed = '';
-      const result = await streamWritingAssistant(payload, {
-        signal: run.signal,
-        onEvent: event => {
-          if (event.stage) {
-            setAssistStage(event.stage);
-            if (visibleStages.at(-1) !== event.stage) visibleStages.push(event.stage);
-          }
-          if (event.model) setAssistModel(event.model);
-          if (event.delta) {
-            streamed += event.delta;
-            setAssistDraft(streamed);
-          }
-        },
-      });
-      const body = result.draft;
-      const nextLyrics = typeof body.lyrics === 'string' ? body.lyrics : lyrics;
+      try {
+        const result = await streamWritingAssistant(payload, {
+          signal: run.signal,
+          onEvent: event => {
+            if (event.stage) {
+              setAssistStage(event.stage);
+              if (visibleStages.at(-1) !== event.stage) visibleStages.push(event.stage);
+            }
+            if (event.model) setAssistModel(event.model);
+            if (event.delta) {
+              streamed += event.delta;
+              setAssistDraft(streamed);
+            }
+          },
+        });
+        setAssistantTrace(previous => [...previous, {
+          target: payload.target,
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+          status: 'completed',
+          request: payload,
+          visible_stages: visibleStages,
+          streamed_output: result.text || streamed,
+          final_draft: result.draft,
+          receipt: result.receipt,
+          audit: result.audit,
+        }]);
+        return result;
+      } catch (reason) {
+        const cancelled = reason instanceof DOMException && reason.name === 'AbortError';
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setAssistantTrace(previous => [...previous, {
+          target: payload.target,
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+          status: cancelled ? 'cancelled' : 'failed',
+          request: payload,
+          visible_stages: visibleStages,
+          error: cancelled ? 'Cancelled by the user.' : message,
+        }]);
+        throw reason;
+      }
+    };
+
+    const common = {
+      description: name.trim(),
+      duration_seconds: numberOrUndefined(duration) ?? 60,
+      instrumental,
+      use_caption_rewriter: captionRewriterEnabled,
+      lyrics_strategy: lyricsStrategy,
+    };
+    const applyLyrics = (body: WritingAssistantDraft) => {
+      if (typeof body.lyrics !== 'string') throw new Error('Lyrics stage returned no lyrics.');
+      if (body.lyrics.length > MAX_LYRICS_CHARACTERS) throw new Error(t('assistantLyricsTooLong'));
+      setLyrics(body.lyrics);
+      if (typeof body.title === 'string' && body.title.trim()) setName(body.title.trim());
+    };
+    const applyCaption = (body: WritingAssistantDraft) => {
       const nextGlobalMetadata = typeof body.global_metadata === 'string' ? body.global_metadata : globalMetadata;
       const nextVocalDetails = typeof body.vocal_details === 'string' ? body.vocal_details : vocalDetails;
       const nextArrangement = typeof body.arrangement === 'string' ? body.arrangement : arrangement;
       if (joinCaption(nextGlobalMetadata, nextVocalDetails, nextArrangement).length > MAX_CAPTION_CHARACTERS) {
         throw new Error(t('assistantCaptionTooLong'));
       }
-      if (nextLyrics.length > MAX_LYRICS_CHARACTERS) {
-        throw new Error(t('assistantLyricsTooLong'));
-      }
-      if (typeof body.lyrics === 'string') setLyrics(nextLyrics);
       if (typeof body.global_metadata === 'string') setGlobalMetadata(nextGlobalMetadata);
       if (typeof body.vocal_details === 'string') setVocalDetails(nextVocalDetails);
       if (typeof body.arrangement === 'string') setArrangement(nextArrangement);
-      // The model has the words and the mood in front of it, so it names the
-      // track and says what its cover should show.
-      if (typeof body.title === 'string' && body.title.trim()) setName(body.title.trim());
-      if (typeof body.cover_prompt === 'string' && body.cover_prompt.trim()) setCoverPrompt(body.cover_prompt.trim());
-      // Only a complete-plan run may suggest a ceiling, and only while the
-      // person has not selected or imported one. Description/lyrics helpers
-      // never silently rewrite this control.
-      if (!cloudMode && target === 'all' && !duration.trim() && typeof body.duration_seconds === 'number' && body.duration_seconds >= 10) {
-        setDuration(String(Math.min(360, Math.round(body.duration_seconds))));
-        setDurationSource('assistant');
+    };
+
+    try {
+      if (target === 'all') {
+        const lyricsResult = await runStage({
+          ...common,
+          target: 'lyrics',
+          instruction,
+          lyrics: '',
+          global_metadata: globalMetadata.trim(),
+          vocal_details: vocalDetails.trim(),
+          arrangement: arrangement.trim(),
+        });
+        applyLyrics(lyricsResult.draft);
+        lyricsStageCompleted = true;
+        setCaptionRetryPending(false);
+
+        const generatedLyrics = lyricsResult.draft.lyrics || '';
+        const captionResult = await runStage({
+          ...common,
+          target: 'prompt',
+          instruction: assistInstruction.trim(),
+          lyrics: generatedLyrics,
+          global_metadata: '',
+          vocal_details: '',
+          arrangement: '',
+        });
+        applyCaption(captionResult.draft);
+      } else {
+        const result = await runStage({
+          ...common,
+          target,
+          instruction,
+          lyrics: lyrics.trim(),
+          global_metadata: globalMetadata.trim(),
+          vocal_details: vocalDetails.trim(),
+          arrangement: arrangement.trim(),
+        });
+        if (target === 'lyrics') applyLyrics(result.draft);
+        if (target === 'prompt') {
+          applyCaption(result.draft);
+          setCaptionRetryPending(false);
+        }
       }
-      const resolvedModel = result.receipt?.resolved_model;
-      if (resolvedModel) setAssistModel(resolvedModel);
-      setAssistantTrace(previous => [...previous, {
-        target,
-        started_at: startedAt,
-        completed_at: new Date().toISOString(),
-        status: 'completed',
-        request: payload,
-        visible_stages: visibleStages,
-        streamed_output: result.text || streamed,
-        final_draft: result.draft,
-        receipt: result.receipt,
-      }]);
-      // The tab stays where it was. Switching to Studio showed what the
-      // assistant had written, but it moved the user off the screen they were
-      // working on to do it, and they can look for themselves.
     } catch (reason) {
-      // Giving up on a run is not an error to report back at the person who
-      // gave up on it.
       const cancelled = reason instanceof DOMException && reason.name === 'AbortError';
       const message = reason instanceof Error ? reason.message : String(reason);
-      setAssistantTrace(previous => [...previous, {
-        target,
-        started_at: startedAt,
-        completed_at: new Date().toISOString(),
-        status: cancelled ? 'cancelled' : 'failed',
-        request: payload,
-        visible_stages: visibleStages,
-        error: cancelled ? 'Cancelled by the user.' : message,
-      }]);
+      if (target === 'all' && lyricsStageCompleted && !cancelled) setCaptionRetryPending(true);
       if (!cancelled) setError(message);
     } finally {
       assistRun.current = null;
@@ -779,36 +850,62 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             ))}
           </div>
 
+          <div
+            className="w-full max-w-full overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.04]"
+            data-testid="caption-rewriter-toolbar"
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-pink-500/10 text-pink-600 dark:text-pink-300">
+                <Sparkles size={15} />
+              </span>
+              <div className="min-w-0 flex-1 break-words" data-testid="caption-rewriter-copy">
+                <p className="break-words text-xs font-bold leading-4 text-zinc-900 dark:text-white">{t('simpleCaptionRewriterLabel')}</p>
+                <p className="mt-0.5 break-words text-[10px] leading-4 text-zinc-500 dark:text-zinc-400" data-testid="caption-rewriter-mode">
+                  {t(captionRewriterEnabled ? 'captionRewriterActiveMode' : 'captionRewriterStandardMode')}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={captionRewriterEnabled}
+                aria-label={t('simpleCaptionRewriterLabel')}
+                onClick={() => setCaptionRewriterEnabled(enabled => !enabled)}
+                className={'relative h-6 w-11 min-w-11 shrink-0 self-center rounded-full transition-colors ' + (captionRewriterEnabled ? 'bg-pink-500' : 'bg-zinc-300 dark:bg-zinc-600')}
+              >
+                <span className={'absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ' + (captionRewriterEnabled ? 'translate-x-5' : 'translate-x-0')} />
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="w-full max-w-full overflow-hidden rounded-xl border border-zinc-200 bg-white px-3 py-2.5 dark:border-white/10 dark:bg-suno-card"
+            data-testid="lyrics-strategy-toolbar"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-nowrap">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold leading-4 text-zinc-900 dark:text-white">{t('lyricsStrategyLabel')}</p>
+                <p className="mt-0.5 break-words text-[10px] leading-4 text-zinc-500 dark:text-zinc-400">{t('lyricsStrategyHint')}</p>
+              </div>
+              <div className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-lg bg-zinc-100 p-1 sm:w-auto" role="group" aria-label={t('lyricsStrategyLabel')}>
+                {(['standard', 'story_songwriting'] as LyricsStrategy[]).map(strategy => (
+                  <button
+                    key={strategy}
+                    type="button"
+                    aria-pressed={lyricsStrategy === strategy}
+                    onClick={() => setLyricsStrategy(strategy)}
+                    className={'whitespace-nowrap rounded-md px-2.5 py-1.5 text-[10px] font-semibold transition ' + (lyricsStrategy === strategy
+                      ? 'bg-white text-pink-600 shadow-sm dark:bg-zinc-700 dark:text-pink-300'
+                      : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-300')}
+                  >
+                    {t(strategy === 'standard' ? 'lyricsStrategyStandard' : 'lyricsStrategyStory')}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {mode === 'studio' && (
             <div className="space-y-3" data-testid="music3-assistant-workspace">
-              <div
-                className={'rounded-xl border p-3 ' + (assistantReady
-                  ? 'border-emerald-300 bg-emerald-50/80 dark:border-emerald-500/25 dark:bg-emerald-500/10'
-                  : 'border-amber-300 bg-amber-50/80 dark:border-amber-500/25 dark:bg-amber-500/10')}
-                data-testid="caption-rewriter-status"
-              >
-                <div className="flex items-start gap-2.5">
-                  <span className={'mt-0.5 rounded-lg p-1.5 ' + (assistantReady
-                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-                    : 'bg-amber-500/15 text-amber-700 dark:text-amber-300')}>
-                    <Sparkles size={15} />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-xs font-bold text-zinc-900 dark:text-white">Music3 Caption Rewriter</p>
-                      <span className={'rounded-full px-2 py-0.5 text-[10px] font-bold ' + (assistantReady
-                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-200'
-                        : 'bg-amber-500/15 text-amber-800 dark:text-amber-200')}>
-                        {t(assistantReady ? 'captionRewriterEnabled' : 'captionRewriterIntegrated')}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[11px] leading-4 text-zinc-600 dark:text-zinc-300">
-                      {t(assistantReady ? 'captionRewriterEnabledHint' : 'captionRewriterNeedsAssistant')}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
               {assistantReady ? (
                 <div className="grid gap-3" data-testid="assistant-cards">
                   <section
@@ -820,7 +917,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         <h2 id="caption-assistant-title" className="text-sm font-bold text-zinc-900 dark:text-white">{t('structuredAssistantTitle')}</h2>
                         <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('assistantCaptionOutput')}</p>
                       </div>
-                      <span className="shrink-0 rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-bold text-pink-600 dark:text-pink-300">Caption Rewriter</span>
                     </div>
                     <label className={LABEL} htmlFor="caption-assistant-brief">{t('assistantCaptionBriefLabel')}</label>
                     <AutoTextarea
@@ -831,6 +927,21 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       placeholder={t('assistantCaptionBriefPlaceholder')}
                       className={CONTROL + ' resize-none'}
                     />
+                    <div className="mt-2" data-testid="caption-style-suggestions">
+                      <p className="mb-1.5 text-[10px] font-semibold text-zinc-500">{t('genres')}</p>
+                      <div className="flex max-h-20 flex-wrap gap-1.5 overflow-y-auto">
+                        {GENRE_KEYS.map(genre => (
+                          <button
+                            key={genre}
+                            type="button"
+                            onClick={() => setCaptionInstruction(current => appendStyleSuggestion(current, genre))}
+                            className="rounded-full border border-zinc-200 px-2 py-1 text-[10px] font-medium text-zinc-600 transition hover:border-pink-400 hover:text-pink-600 dark:border-white/10 dark:text-zinc-300"
+                          >
+                            {genre}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <button
                       type="button"
                       onClick={() => void askAssistant('prompt')}
@@ -840,10 +951,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       {assisting === 'prompt' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
                       {assisting === 'prompt' ? t('assistantWritingCaption') : t('writeCaption')}
                     </button>
-                    <p className="mt-2 rounded-lg bg-pink-50 px-2.5 py-1.5 text-[10px] font-semibold leading-4 text-pink-700 dark:bg-pink-500/10 dark:text-pink-200">
-                      {t('assistantCaptionSafeguards')}
-                    </p>
-                    <p className="mt-1 text-center text-[10px] font-semibold text-zinc-400">{t('assistantCaptionScope')}</p>
                   </section>
 
                   <section
@@ -855,7 +962,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         <h2 id="lyrics-assistant-title" className="text-sm font-bold text-zinc-900 dark:text-white">{t('lyricsAssistantTitle')}</h2>
                         <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t('assistantLyricsOutput')}</p>
                       </div>
-                      <span className="shrink-0 rounded-full bg-orange-500/10 px-2 py-0.5 text-[10px] font-bold text-orange-600 dark:text-orange-300">Lyrics</span>
                     </div>
                     <label className={LABEL} htmlFor="lyrics-assistant-brief">{t('assistantLyricsBriefLabel')}</label>
                     <AutoTextarea
@@ -888,10 +994,6 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         {assisting === 'lyrics' ? t('assistantWritingLyrics') : t('writeLyrics')}
                       </button>
                     </div>
-                    <p className="mt-2 rounded-lg bg-orange-50 px-2.5 py-1.5 text-[10px] font-semibold leading-4 text-orange-700 dark:bg-orange-500/10 dark:text-orange-200">
-                      {t('assistantLyricsSafeguards')}
-                    </p>
-                    <p className="mt-1 text-center text-[10px] font-semibold text-zinc-400">{t('assistantLyricsScope')}</p>
                   </section>
                 </div>
               ) : (
@@ -969,6 +1071,19 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 {assisting === 'all' ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
                 {assisting === 'all' ? `${t('assistantWriting')} · ${assistSeconds} ${t('secondsShort')}` : t('writeEverything')}
               </button>
+
+              {captionRetryPending && (
+                <button
+                  type="button"
+                  data-testid="retry-simple-caption"
+                  onClick={() => void askAssistant('prompt', assistInstruction)}
+                  disabled={assisting !== null}
+                  className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-amber-400/60 bg-amber-50 py-2 text-xs font-semibold text-amber-700 transition hover:border-amber-500 dark:bg-amber-500/10 dark:text-amber-200"
+                >
+                  <RotateCcw size={13} />
+                  {t('retryCaptionOnly')}
+                </button>
+              )}
               {assisting === 'all' && (
                 <button
                   type="button"

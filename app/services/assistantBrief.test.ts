@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildAssistantInstruction } from './assistantBrief';
+import {
+  appendStyleSuggestion,
+  buildAssistantInstruction,
+  resolveCaptionRewriterPreference,
+  resolveLyricsStrategyPreference,
+  useCaptionRewriterForTarget,
+} from './assistantBrief';
 
 const BRIEFS = {
   all: '写一首夜归主题的完整歌曲',
@@ -26,5 +32,36 @@ describe('buildAssistantInstruction', () => {
 
   it('defaults automatic lyric language to Chinese in the Chinese interface', () => {
     expect(buildAssistantInstruction('lyrics', BRIEFS, 'auto', 'zh')).toMatch(/未指定时使用简体中文/);
+  });
+});
+
+describe('Caption style suggestions', () => {
+  it('fills or appends the description brief without duplicating a selected style', () => {
+    expect(appendStyleSuggestion('', 'Synthwave')).toBe('Synthwave');
+    expect(appendStyleSuggestion('Warm female vocal', 'Synthwave')).toBe('Warm female vocal, Synthwave');
+    expect(appendStyleSuggestion('Warm Synthwave', 'synthwave')).toBe('Warm Synthwave');
+  });
+});
+
+describe('Lyrics strategy policy', () => {
+  it('defaults to the recommended story method and preserves an explicit standard choice', () => {
+    expect(resolveLyricsStrategyPreference(null)).toBe('story_songwriting');
+    expect(resolveLyricsStrategyPreference('invalid')).toBe('story_songwriting');
+    expect(resolveLyricsStrategyPreference('standard')).toBe('standard');
+  });
+});
+
+describe('Caption Rewriter mode policy', () => {
+  it('defaults the simple-mode preference to enabled', () => {
+    expect(resolveCaptionRewriterPreference(null)).toBe(true);
+    expect(resolveCaptionRewriterPreference('invalid')).toBe(true);
+    expect(resolveCaptionRewriterPreference('false')).toBe(false);
+  });
+
+  it('shares one choice across simple, Studio description, and lyrics requests', () => {
+    for (const target of ['all', 'prompt', 'lyrics'] as const) {
+      expect(useCaptionRewriterForTarget(target, true)).toBe(true);
+      expect(useCaptionRewriterForTarget(target, false)).toBe(false);
+    }
   });
 });
