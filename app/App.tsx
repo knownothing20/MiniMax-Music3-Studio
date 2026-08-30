@@ -60,7 +60,6 @@ import { I18nProvider, useI18n } from './context/I18nContext';
 import { List } from 'lucide-react';
 import { PlaylistDetail } from './components/PlaylistDetail';
 import { Toast, ToastType } from './components/Toast';
-import { SearchPage } from './components/SearchPage';
 import { NewsPage } from './components/NewsPage';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { SetupGate } from './components/SetupGate';
@@ -70,6 +69,7 @@ import { StudioToolsPanel } from './components/StudioToolsPanel';
 import { OmniBridgeMusicCase } from './components/OmniBridgeMusicCase';
 import { CloudFirstRun } from './components/CloudFirstRun';
 import { createNativePlaylist, deleteNativeSong, loadNativeLibrarySongs, loadNativePlaylists, updateNativePlaylist } from './services/nativeLibrary';
+import { readLibrarySearchQuery, resolveLegacySearchLocation } from './services/libraryNavigation';
 import type { OmniBridgeIntegrationStatus } from './services/omnibridgeMusic';
 import {
   CLOUD_FIRST_RUN_STORAGE_KEY,
@@ -374,6 +374,7 @@ function AppContent() {
 
   // Navigation State - default to create view
   const [currentView, setCurrentView] = useState<View>('create');
+  const [librarySearchQuery, setLibrarySearchQuery] = useState('');
 
   // Content State
   const [songs, setSongs] = useState<Song[]>([]);
@@ -583,12 +584,17 @@ function AppContent() {
   useEffect(() => {
     const handleUrlChange = () => {
       const path = window.location.pathname;
-      const params = new URLSearchParams(window.location.search);
+      const legacySearch = resolveLegacySearchLocation(path, window.location.search);
 
-      if (path === '/create' || path === '/') {
+      if (legacySearch) {
+        window.history.replaceState({}, '', legacySearch.redirectPath);
+        setLibrarySearchQuery(legacySearch.query);
+        setCurrentView('library');
+      } else if (path === '/create' || path === '/') {
         setCurrentView('create');
         setMobileShowList(false);
       } else if (path === '/library') {
+        setLibrarySearchQuery(readLibrarySearchQuery(window.location.search));
         setCurrentView('library');
       } else if (path.startsWith('/playlist/')) {
         const playlistId = path.substring(10);
@@ -596,8 +602,6 @@ function AppContent() {
           setViewingPlaylistId(playlistId);
           setCurrentView('playlist');
         }
-      } else if (path === '/search') {
-        setCurrentView('search');
       } else if (path === '/news') {
         setCurrentView('news');
       } else if (path === '/tools') {
@@ -1555,6 +1559,8 @@ function AppContent() {
             onReusePrompt={handleReuse}
             onDeleteSong={handleDeleteSong}
             isNativeLibrary
+            initialSearchQuery={librarySearchQuery}
+            onSearchQueryChange={setLibrarySearchQuery}
             onImported={() => { void refreshNativeLibrary(); }}
           />
         );
@@ -1571,18 +1577,6 @@ function AppContent() {
               setSelectedSong(s);
               setShowRightSidebar(true);
             }}
-          />
-        );
-
-      case 'search':
-        return (
-          <SearchPage
-            songs={songs}
-            playlists={playlists}
-            onPlaySong={playSong}
-            currentSong={currentSong}
-            isPlaying={isPlaying}
-            onNavigateToPlaylist={handleNavigateToPlaylist}
           />
         );
 
@@ -1740,9 +1734,8 @@ function AppContent() {
               setMobileShowList(false);
               window.history.pushState({}, '', '/');
             } else if (v === 'library') {
+              setLibrarySearchQuery('');
               window.history.pushState({}, '', '/library');
-            } else if (v === 'search') {
-              window.history.pushState({}, '', '/search');
             } else if (v === 'news') {
               window.history.pushState({}, '', '/news');
             } else if (v === 'tools') {

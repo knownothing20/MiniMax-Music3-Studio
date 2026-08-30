@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Disc, FlaskConical, Library, Moon, Search, SlidersHorizontal, Sun } from 'lucide-react';
+import { Disc, FlaskConical, Library, Moon, SlidersHorizontal, Sun } from 'lucide-react';
 import { View } from '../types';
 import { useI18n } from '../context/I18nContext';
 import { ResourceMonitor } from './ResourceMonitor';
@@ -185,7 +185,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <nav className="flex min-h-0 w-full flex-1 flex-col gap-2 overflow-y-auto px-3 scrollbar-hide">
           <NavItem icon={<Disc size={20} />} label={t('create')} active={currentView === 'create'} onClick={() => onNavigate('create')} isExpanded={isOpen} />
           <NavItem icon={<Library size={20} />} label={t('library')} active={currentView === 'library'} onClick={() => onNavigate('library')} isExpanded={isOpen} />
-          <NavItem icon={<Search size={20} />} label={t('search')} active={currentView === 'search'} onClick={() => onNavigate('search')} isExpanded={isOpen} />
           <NavItem icon={<SlidersHorizontal size={20} />} label={t('studioTools')} active={currentView === 'tools'} onClick={() => onNavigate('tools')} isExpanded={isOpen} />
           <NavItem icon={<FlaskConical size={20} />} label={t('apiCase')} active={currentView === 'api-case'} onClick={() => onNavigate('api-case')} isExpanded={isOpen} />
 

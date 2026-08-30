@@ -98,7 +98,7 @@ type EngineCatalog = {
 /** 9000 acoustic frames at 25 frames per second, as the model card states. */
 const MAX_DURATION_SECONDS = 360;
 /** Exact OmniBridge MiniMax Music route limits (JavaScript length is UTF-16). */
-const MAX_CAPTION_CHARACTERS = 1900;
+const MAX_CAPTION_CHARACTERS = 2000;
 const MAX_LYRICS_CHARACTERS = 3500;
 
 const PROFILE_LABEL: Record<string, string> = {

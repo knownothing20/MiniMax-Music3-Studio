@@ -8,6 +8,7 @@ Windows build.
 ### Added
 
 - Added an independent `Story songwriting` lyric strategy alongside the Music3 Caption Rewriter switch. Simple mode runs the two contracts in sequence, Studio mode keeps them separately editable, accepted lyric section tags are normalized, and a caption-stage failure preserves the completed title and lyrics for a description-only retry.
+- Consolidated the standalone search screen into the music library while preserving query redirects and library filtering; its shared style suggestions now help fill the Studio description brief without triggering generation.
 - Added an editable Project Profile v2 strategy page: capability defaults and music-maker business roles select centrally published OmniBridge Routes, while Provider credentials, deployments and candidate order remain centrally managed.
 - Writing assistant cloud readiness is now independent from local model installation, and text/music calls resolve their Route from the project-owned business role.
 - Clarified the three writing-assistant jobs with independent visible briefs, lyric-language controls, explicit overwrite scopes, and fail-closed empty inputs.

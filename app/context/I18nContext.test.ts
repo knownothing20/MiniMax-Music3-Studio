@@ -29,8 +29,14 @@ describe('assistant discovery copy', () => {
       expect(copy.lyricsAssistantTitle).toBeTruthy();
       expect(copy.assistantCaptionScope).toBeTruthy();
       expect(copy.assistantLyricsScope).toBeTruthy();
+      expect(copy.simpleCaptionRewriterLabel).toBeTruthy();
+      expect(copy.simpleCaptionRewriterOnHint).toBeTruthy();
+      expect(copy.simpleCaptionRewriterOffHint).toBeTruthy();
+      expect(copy.simpleAssistantCompositionHint).toBeTruthy();
     }
     expect(translations.zh.captionRewriterEnabled).toBe('已启用');
+    expect(translations.zh.simpleCaptionRewriterLabel).toBe('使用 Music3 Caption Rewriter');
+    expect(translations.zh.simpleCaptionRewriterOffHint).toContain('歌词、标题和其他能力继续生成');
     expect(translations.zh.assistantCaptionScope).not.toBe(translations.zh.assistantLyricsScope);
   });
 });
