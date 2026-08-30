@@ -696,7 +696,7 @@ pub async fn serve_with_listener(listener: tokio::net::TcpListener) -> anyhow::R
         .route("/v1/music/replay", post(replay_music_job))
         .route(
             "/v1/music/jobs/{job_id}",
-            get(music_job_status).post(cancel_music_job),
+            get(music_job_status).post(cancel_music_job).delete(dismiss_music_job),
         )
         .with_state(state.clone())
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
@@ -808,6 +808,7 @@ async fn export_library_song_diagnostics(
             "status": record.status().unwrap_or("not_recorded"),
             "artifact": record.artifact(),
             "imported_song_id": record.imported_song_id().unwrap_or("not_recorded"),
+            "dismissed_from_list": record.is_dismissed_from_list(),
             "task_handle": "omitted_private_child_handle",
         })
     });
@@ -4549,6 +4550,9 @@ fn restore_omnibridge_jobs(
 ) -> Result<HashMap<String, MusicJob>, omnibridge::OmniBridgeError> {
     let mut jobs = HashMap::new();
     for mut record in store.list()? {
+        if record.is_dismissed_from_list() {
+            continue;
+        }
         if matches!(record.submit_state(), omnibridge::DurableSubmitState::IntentPersisted)
             && record.task_handle().is_none()
         {
@@ -4930,13 +4934,23 @@ async fn music_job_status(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<MusicJob>, (StatusCode, Json<ApiError>)> {
-    let existing = state
-        .jobs
-        .read()
-        .await
-        .get(&job_id)
-        .cloned()
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Music job was not found.".into()))?;
+    let existing = if let Some(job) = state.jobs.read().await.get(&job_id).cloned() {
+        job
+    } else {
+        let record = state
+            .omnibridge_store
+            .lock()
+            .await
+            .get(&job_id)
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Music job was not found.".into()))?;
+        music_job_from_durable_record(&record).ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "Music job has no recoverable public context.".into(),
+            )
+        })?
+    };
     if existing.engine_id == "omnibridge" {
         return poll_omnibridge_music_job(&state, existing).await;
     }
@@ -5046,6 +5060,44 @@ async fn import_completed_mm_result(state: &AppState, job: &MusicJob, job_id: &s
     Ok(imported)
 }
 
+fn require_omnibridge_cancel_handle(
+    record: &omnibridge::DurableMusicRecord,
+) -> Result<&omnibridge::PrivateTaskHandle, (StatusCode, Json<ApiError>)> {
+    record.task_handle().ok_or_else(|| {
+        api_error(
+            StatusCode::CONFLICT,
+            "Submission outcome is unknown; there is no remote handle to cancel. Hide the recovery card instead; automatic retry remains disabled."
+                .into(),
+        )
+    })
+}
+
+async fn dismiss_music_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    {
+        let store = state.omnibridge_store.lock().await;
+        let record = store
+            .get(&job_id)
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "OmniBridge job intent was not found.".into()))?;
+        if record.task_handle().is_some()
+            || !matches!(record.submit_state(), omnibridge::DurableSubmitState::SubmissionUnknown)
+        {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "Only a submission_unknown recovery card without a remote handle can be hidden."
+                    .into(),
+            ));
+        }
+        store.dismiss_recovery_card(&job_id)
+            .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
+    }
+    state.jobs.write().await.remove(&job_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn cancel_music_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
@@ -5061,7 +5113,7 @@ async fn cancel_music_job(
         let record = state.omnibridge_store.lock().await.get(&job_id)
             .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
             .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "OmniBridge job intent was not found.".into()))?;
-        let handle = record.task_handle().ok_or_else(|| api_error(StatusCode::CONFLICT, "Submission outcome is unknown; cancellation cannot be proven safe.".into()))?;
+        let handle = require_omnibridge_cancel_handle(&record)?;
         let client = omnibridge::OmniBridgeMusicClient::new(omnibridge::OmniBridgeConfig::from_env_with_route("route:music:recovery")
             .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?)
             .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
@@ -5611,6 +5663,81 @@ mod tests {
             &records,
             "route:music:minimax-3"
         ));
+    }
+
+    fn unknown_sidecar(path: &std::path::Path) -> omnibridge::OmniBridgeMusicStore {
+        let sidecar = serde_json::json!({
+            "schema": "music-maker.omnibridge-jobs.v1",
+            "records": [{
+                "local_job_id": "omnibridge-hidden-unknown",
+                "payload_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "idempotency_key": "music-maker:hidden-unknown:v1",
+                "submit_state": "submission_unknown",
+                "task_id": null,
+                "task_token": null,
+                "status": null,
+                "artifact": null,
+                "context": {
+                    "caption": "audit caption",
+                    "lyrics": "[Verse] audit",
+                    "duration_seconds": 60.0,
+                    "title": "Audit",
+                    "cover_prompt": null,
+                    "generation_settings": {"output_format": "mp3"}
+                },
+                "imported_song_id": null
+            }]
+        });
+        fs::write(path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+        omnibridge::OmniBridgeMusicStore::new(path)
+    }
+
+    #[test]
+    fn unknown_without_handle_stops_before_cancel_adapter() {
+        let path = env::temp_dir().join(format!(
+            "music-maker-cancel-gate-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = unknown_sidecar(&path);
+        let record = store.get("omnibridge-hidden-unknown").unwrap().unwrap();
+        let error = require_omnibridge_cancel_handle(&record).unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert!(error.1.0.error.contains("no remote handle"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn dismissed_unknown_is_not_restored_but_remains_queryable() {
+        let path = env::temp_dir().join(format!(
+            "music-maker-dismissed-recovery-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = unknown_sidecar(&path);
+        let before = store.get("omnibridge-hidden-unknown").unwrap().unwrap();
+        assert!(!before.is_dismissed_from_list());
+        let payload_digest = before.payload_digest().to_owned();
+        let idempotency_key = before.idempotency_key().as_str().to_owned();
+
+        store.dismiss_recovery_card("omnibridge-hidden-unknown").unwrap();
+        let restarted = omnibridge::OmniBridgeMusicStore::new(&path);
+        assert!(restore_omnibridge_jobs(&restarted).unwrap().is_empty());
+        let audit = restarted.get("omnibridge-hidden-unknown").unwrap().unwrap();
+        assert!(audit.is_dismissed_from_list());
+        assert_eq!(audit.payload_digest(), payload_digest);
+        assert_eq!(audit.idempotency_key().as_str(), idempotency_key);
+        let public = music_job_from_durable_record(&audit).unwrap();
+        assert!(matches!(public.status, MusicJobStatus::Unknown));
+        assert!(matches!(public.phase, MusicJobPhase::SubmissionUnknown));
+        assert!(public.message.contains("will not be submitted again automatically"));
+        fs::remove_file(path).unwrap();
     }
 
     /// Nothing stays in VRAM unless the user asked for it. This is the setting

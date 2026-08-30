@@ -1316,6 +1316,7 @@ pub struct DurableMusicRecord {
     artifact: Option<ArtifactRef>,
     context: Option<DurableMusicContext>,
     imported_song_id: Option<String>,
+    dismissed_from_list: bool,
 }
 
 impl DurableMusicRecord {
@@ -1346,6 +1347,9 @@ impl DurableMusicRecord {
     pub fn imported_song_id(&self) -> Option<&str> {
         self.imported_song_id.as_deref()
     }
+    pub fn is_dismissed_from_list(&self) -> bool {
+        self.dismissed_from_list
+    }
     pub fn poll_is_due(&self) -> bool {
         self.poll_not_before_ms
             .is_none_or(|deadline| now_ms() >= deadline)
@@ -1366,6 +1370,7 @@ impl fmt::Debug for DurableMusicRecord {
             .field("artifact", &self.artifact)
             .field("context", &self.context)
             .field("imported_song_id", &self.imported_song_id)
+            .field("dismissed_from_list", &self.dismissed_from_list)
             .finish()
     }
 }
@@ -1394,6 +1399,8 @@ struct StoredRecord {
     context: Option<DurableMusicContext>,
     #[serde(default)]
     imported_song_id: Option<String>,
+    #[serde(default)]
+    dismissed_from_list: bool,
 }
 
 impl TryFrom<StoredRecord> for DurableMusicRecord {
@@ -1434,6 +1441,7 @@ impl TryFrom<StoredRecord> for DurableMusicRecord {
             artifact: record.artifact,
             context: record.context,
             imported_song_id: record.imported_song_id,
+            dismissed_from_list: record.dismissed_from_list,
         })
     }
 }
@@ -1455,6 +1463,7 @@ impl From<&DurableMusicRecord> for StoredRecord {
             artifact: record.artifact.clone(),
             context: record.context.clone(),
             imported_song_id: record.imported_song_id.clone(),
+            dismissed_from_list: record.dismissed_from_list,
         }
     }
 }
@@ -1553,6 +1562,7 @@ impl OmniBridgeMusicStore {
             artifact: None,
             context: Some(context),
             imported_song_id: None,
+            dismissed_from_list: false,
         };
         records.push(record.clone());
         self.save_all(&records)?;
@@ -1582,6 +1592,26 @@ impl OmniBridgeMusicStore {
                 ));
             }
             record.submit_state = DurableSubmitState::SubmissionUnknown;
+            Ok(())
+        })
+    }
+
+    /// Hides an ambiguous no-handle submission from ordinary job listings while
+    /// retaining the full intent, digest and idempotency evidence for diagnosis.
+    pub fn dismiss_recovery_card(
+        &self,
+        local_job_id: &str,
+    ) -> Result<DurableMusicRecord, OmniBridgeError> {
+        self.update(local_job_id, |record| {
+            if record.handle.is_some()
+                || !matches!(record.submit_state, DurableSubmitState::SubmissionUnknown)
+            {
+                return Err(OmniBridgeError::InvalidInput(
+                    "only a submission_unknown job without a remote handle can be hidden"
+                        .to_owned(),
+                ));
+            }
+            record.dismissed_from_list = true;
             Ok(())
         })
     }
