@@ -218,39 +218,6 @@ pub fn instructions(request: &AssistRequest) -> (String, &'static [&'static str]
     }
 }
 
-/// Stable application-owned prompt contracts that may be exported in a song
-/// diagnostic bundle. These are product logic, not hidden model reasoning.
-pub fn diagnostic_prompt_contracts() -> Value {
-    serde_json::json!({
-        "schema_version": 1,
-        "note": "Effective prompts are assembled from these contracts plus the recorded user task and the song context. Hidden model reasoning is never requested or exported.",
-        "targets": {
-            "all": "lyrics + structured caption + title + cover prompt + suggested duration",
-            "prompt": "structured caption + title + cover prompt + suggested duration",
-            "lyrics": "lyrics coherent with the current structured caption"
-        },
-        "caption_contract": CAPTION_CONTRACT,
-        "standard_caption_contract": STANDARD_CAPTION_CONTRACT,
-        "simple_mode_caption_rewriter_default": true,
-        "lyrics_rules": LYRICS_RULES,
-        "story_songwriting_contract": STORY_SONGWRITING_CONTRACT,
-        "contract_versions": {
-            "standard_lyrics": STANDARD_LYRICS_VERSION,
-            "story_songwriting": STORY_SONGWRITING_VERSION,
-            "standard_caption": STANDARD_CAPTION_VERSION,
-            "caption_rewriter": CAPTION_REWRITER_VERSION,
-        },
-        "copy_output_contract": COPY_EXTRA,
-        "duration_output_contract": DURATION_EXTRA,
-        "validation_contract": VALIDATION,
-        "conditional_rules": {
-            "diction": DICTION_RULE,
-            "duet": DUET_RULE,
-            "instrumental": INSTRUMENTAL_RULE
-        }
-    })
-}
-
 /// The rules that only apply to some songs.
 ///
 /// Everything here costs prompt room and, on a small local model, attention.

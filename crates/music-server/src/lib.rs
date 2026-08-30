@@ -771,15 +771,59 @@ async fn export_library_song_diagnostics(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    let song = state.library.get_song(&id)
-        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "Song not found".into()))?;
+    let direct_song = state.library.get_song(&id)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let durable = {
+        let store = state.omnibridge_store.lock().await;
+        store.list()
+            .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .into_iter()
+            .find(|record| record.local_job_id() == id || record.imported_song_id() == Some(id.as_str()))
+    };
+    let durable_job_id = durable.as_ref().map(|record| record.local_job_id().to_owned());
+    let job = {
+        let jobs = state.jobs.read().await;
+        jobs.values().find(|job| {
+            job.id == id
+                || durable_job_id.as_deref() == Some(job.id.as_str())
+                || job.song.iter().chain(job.songs.iter()).any(|song| song.id == id)
+        }).cloned()
+    };
+    let song = direct_song.or_else(|| {
+        job.as_ref().and_then(|job| {
+            job.song.as_ref().or_else(|| job.songs.first()).map(|completed| completed.song.clone())
+        })
+    });
+    if song.is_none() && job.is_none() && durable.is_none() {
+        return Err(api_error(StatusCode::NOT_FOUND, "Song or music job not found".into()));
+    }
+    let job = job.map(|job| serde_json::to_value(job))
+        .transpose()
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let durable = durable.map(|record| {
+        serde_json::json!({
+            "local_job_id": record.local_job_id(),
+            "payload_digest": record.payload_digest(),
+            "submit_state": record.submit_state(),
+            "status": record.status().unwrap_or("not_recorded"),
+            "artifact": record.artifact(),
+            "imported_song_id": record.imported_song_id().unwrap_or("not_recorded"),
+            "task_handle": "omitted_private_child_handle",
+        })
+    });
     let library = state.library.clone();
-    let bytes = tokio::task::spawn_blocking(move || diagnostics::build_song_bundle(&library, &song))
+    let bundle_input = diagnostics::SongBundleInput {
+        requested_id: id.clone(),
+        song,
+        job,
+        durable,
+    };
+    let bytes = tokio::task::spawn_blocking(move || diagnostics::build_song_bundle(&library, bundle_input))
         .await
         .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("diagnostic bundle worker failed: {error}")))?
         .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     let safe_id = id.chars().filter(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_')).collect::<String>();
+    let safe_id = if safe_id.is_empty() { "song" } else { safe_id.as_str() };
     Ok(axum::response::Response::builder()
         .header(header::CONTENT_TYPE, "application/zip")
         .header(header::CONTENT_LENGTH, bytes.len())
