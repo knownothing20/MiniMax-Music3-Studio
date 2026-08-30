@@ -24,6 +24,7 @@ const ARTIFACT_SCHEMA: &str = "omnibridge.artifact-ref.v1";
 const CONTRACT_SCHEMA: &str = "omnibridge.contract-catalog.v1";
 const CONTRACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_JSON_BYTES: usize = 1024 * 1024;
+const MAX_ERROR_BYTES: usize = 16 * 1024;
 const OPERATION: &str = "audio.music.generate";
 const KIND: &str = "audio.music_generation";
 const MAX_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
@@ -404,7 +405,7 @@ impl OmniBridgeTextClient {
             .map_err(|error| OmniBridgeError::Transport(error.to_string()))?;
         let receipt = parse_request_receipt(response.headers());
         if !response.status().is_success() {
-            return Err(OmniBridgeError::HttpStatus(response.status().as_u16()));
+            return Err(http_status_error(response).await);
         }
         Ok((read_json_bounded(response).await?, receipt))
     }
@@ -434,7 +435,7 @@ impl OmniBridgeTextClient {
             .map_err(|error| OmniBridgeError::Transport(error.to_string()))?;
         let receipt = parse_request_receipt(response.headers());
         if !response.status().is_success() {
-            return Err(OmniBridgeError::HttpStatus(response.status().as_u16()));
+            return Err(http_status_error(response).await);
         }
         Ok(OmniBridgeTextStream { receipt, response })
     }
@@ -550,6 +551,7 @@ pub enum OmniBridgeError {
     Transport(String),
     RateLimited(u64),
     HttpStatus(u16),
+    HttpStatusDetail { status: u16, detail: String },
     Protocol(String),
     Integrity(String),
     NotCancellable,
@@ -575,6 +577,9 @@ impl fmt::Display for OmniBridgeError {
                 )
             }
             Self::HttpStatus(status) => write!(formatter, "OmniBridge returned HTTP {status}"),
+            Self::HttpStatusDetail { status, detail } => {
+                write!(formatter, "OmniBridge returned HTTP {status}: {detail}")
+            }
             Self::Protocol(message) => write!(formatter, "OmniBridge protocol error: {message}"),
             Self::Integrity(message) => {
                 write!(formatter, "OmniBridge artifact integrity error: {message}")
@@ -996,6 +1001,64 @@ async fn read_json_bounded(response: reqwest::Response) -> Result<Value, OmniBri
         body.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&body).map_err(Into::into)
+}
+
+async fn http_status_error(response: reqwest::Response) -> OmniBridgeError {
+    let status = response.status().as_u16();
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ERROR_BYTES as u64)
+    {
+        return OmniBridgeError::HttpStatus(status);
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            return OmniBridgeError::HttpStatus(status);
+        };
+        if body.len().saturating_add(chunk.len()) > MAX_ERROR_BYTES {
+            return OmniBridgeError::HttpStatus(status);
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    match safe_error_detail(&body) {
+        Some(detail) => OmniBridgeError::HttpStatusDetail { status, detail },
+        None => OmniBridgeError::HttpStatus(status),
+    }
+}
+
+fn safe_error_detail(body: &[u8]) -> Option<String> {
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let raw = parsed
+        .as_ref()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("message").and_then(Value::as_str))
+                .or_else(|| value.get("detail").and_then(Value::as_str))
+                .or_else(|| value.get("error").and_then(Value::as_str))
+        })
+        .map(str::to_owned)
+        .or_else(|| std::str::from_utf8(body).ok().map(str::to_owned))?;
+    let normalized = crate::security::redact_secrets(raw)
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized = normalized.chars().take(512).collect::<String>();
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> u64 {
@@ -1692,7 +1755,7 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn config() -> OmniBridgeConfig {
         OmniBridgeConfig::new(
@@ -2098,5 +2161,67 @@ mod tests {
         assert_eq!(body["model"], "route:text:quality");
         assert_eq!(body["stream"], true);
         assert_eq!(body["messages"][0]["content"], "hello");
+    }
+
+    #[tokio::test]
+    async fn text_client_surfaces_a_safe_gateway_error_body() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 16 * 1024];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..read])
+                .starts_with("POST /v1/chat/completions HTTP/1.1"));
+            let body = r#"{"error":{"message":"temperature is unsupported"}}"#;
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let config = OmniBridgeTextConfig::new(
+            format!("http://{address}"),
+            "text-gateway-secret",
+            "music-maker-client",
+            "music-maker-platform",
+            "music-maker",
+            "route:text:fast",
+            "route:text:quality",
+        )
+        .unwrap();
+        let client = OmniBridgeTextClient::new(config).unwrap();
+        let result = client
+            .stream_route_once(
+                "route:text:quality",
+                &serde_json::json!({"messages": [{"role": "user", "content": "hello"}]}),
+            )
+            .await;
+        server.await.unwrap();
+        let Err(OmniBridgeError::HttpStatusDetail { status, detail }) = result else {
+            panic!("expected a detailed HTTP error")
+        };
+        assert_eq!(status, 400);
+        assert_eq!(detail, "temperature is unsupported");
+    }
+
+    #[test]
+    fn text_http_error_detail_is_bounded_and_secret_free() {
+        let detail = safe_error_detail(
+            br#"{"error":{"message":"invalid temperature\nAuthorization: Bearer never-copy"}}"#,
+        )
+        .unwrap();
+        assert!(detail.starts_with("invalid temperature"));
+        assert!(!detail.contains("never-copy"));
+        assert!(detail.contains("<redacted>"));
+
+        let long = format!("{{\"message\":\"{}\"}}", "x".repeat(800));
+        assert_eq!(
+            safe_error_detail(long.as_bytes()).unwrap().chars().count(),
+            512
+        );
     }
 }

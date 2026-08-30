@@ -53,6 +53,7 @@ const AUDIO_BODY_LIMIT: usize = 256 * 1024 * 1024;
 enum MusicExecutionTarget {
     Configuration,
     OmniBridge,
+    OmniBridgeLocal,
 }
 
 fn music_execution_target() -> Result<MusicExecutionTarget, String> {
@@ -64,7 +65,8 @@ fn music_execution_target() -> Result<MusicExecutionTarget, String> {
     {
         "configuration" | "legacy" => Ok(MusicExecutionTarget::Configuration),
         "omnibridge" => Ok(MusicExecutionTarget::OmniBridge),
-        _ => Err("MUSIC_MAKER_MUSIC_EXECUTION_TARGET must be configuration or omnibridge".to_owned()),
+        "omnibridge-local" => Ok(MusicExecutionTarget::OmniBridgeLocal),
+        _ => Err("MUSIC_MAKER_MUSIC_EXECUTION_TARGET must be configuration, omnibridge, or omnibridge-local".to_owned()),
     }
 }
 
@@ -72,8 +74,9 @@ fn parse_requested_music_execution_target(value: Option<&str>) -> Result<Option<
     match value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase).as_deref() {
         None | Some("auto") => Ok(None),
         Some("cloud") | Some("omnibridge") => Ok(Some(MusicExecutionTarget::OmniBridge)),
-        Some("local") | Some("configuration") => Ok(Some(MusicExecutionTarget::Configuration)),
-        Some(_) => Err("execution_target must be auto, cloud, omnibridge, local, or configuration".to_owned()),
+        Some("local") | Some("omnibridge-local") => Ok(Some(MusicExecutionTarget::OmniBridgeLocal)),
+        Some("configuration") | Some("device-local") => Ok(Some(MusicExecutionTarget::Configuration)),
+        Some(_) => Err("execution_target must be auto, cloud, local, omnibridge, omnibridge-local, configuration, or device-local".to_owned()),
     }
 }
 
@@ -1973,6 +1976,7 @@ fn music_execution_target_name() -> &'static str {
     match music_execution_target() {
         Ok(MusicExecutionTarget::Configuration) => "configuration",
         Ok(MusicExecutionTarget::OmniBridge) => "omnibridge",
+        Ok(MusicExecutionTarget::OmniBridgeLocal) => "omnibridge-local",
         Err(_) => "invalid",
     }
 }
@@ -1994,6 +1998,12 @@ fn safe_omnibridge_diagnostic_error(error: &omnibridge::OmniBridgeError) -> Stri
         }
         omnibridge::OmniBridgeError::HttpStatus(status) => {
             format!("OmniBridge contract endpoint returned HTTP {status}.")
+        }
+        omnibridge::OmniBridgeError::HttpStatusDetail { status, detail } => {
+            format!(
+                "OmniBridge contract endpoint returned HTTP {status}: {}",
+                security::redact_secrets(detail)
+            )
         }
         omnibridge::OmniBridgeError::SubmissionUnknown(_) => {
             "OmniBridge contract check returned an unknown outcome.".to_owned()
@@ -4360,7 +4370,10 @@ async fn create_music_job(
 ) -> (StatusCode, Json<MusicJob>) {
     match requested_music_execution_target(&request) {
         Ok(MusicExecutionTarget::OmniBridge) => {
-            return create_omnibridge_music_job(state, request).await;
+            return create_omnibridge_music_job(state, request, "music_generation_cloud").await;
+        }
+        Ok(MusicExecutionTarget::OmniBridgeLocal) => {
+            return create_omnibridge_music_job(state, request, "music_generation_local").await;
         }
         Ok(MusicExecutionTarget::Configuration) => {}
         Err(error) => {
@@ -4539,9 +4552,15 @@ fn music_job_from_durable_record(record: &omnibridge::DurableMusicRecord) -> Opt
 async fn create_omnibridge_music_job(
     state: AppState,
     request: CreateMusicJobRequest,
+    role_id: &str,
 ) -> (StatusCode, Json<MusicJob>) {
     let engine_id = "omnibridge".to_owned();
-    let music_route = match state.model_port.music_route() {
+    let role_route = match role_id {
+        "music_generation_cloud" => state.model_port.music_route(),
+        "music_generation_local" => state.model_port.local_music_route(),
+        _ => Err("unknown music generation role".to_owned()),
+    };
+    let music_route = match role_route {
         Ok(route) => route,
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(failed_request_job(request, engine_id, error))),
     };
@@ -5376,8 +5395,10 @@ mod tests {
         assert_eq!(parse_requested_music_execution_target(Some("auto")).unwrap(), None);
         assert_eq!(parse_requested_music_execution_target(Some("cloud")).unwrap(), Some(MusicExecutionTarget::OmniBridge));
         assert_eq!(parse_requested_music_execution_target(Some("omnibridge")).unwrap(), Some(MusicExecutionTarget::OmniBridge));
-        assert_eq!(parse_requested_music_execution_target(Some("local")).unwrap(), Some(MusicExecutionTarget::Configuration));
+        assert_eq!(parse_requested_music_execution_target(Some("local")).unwrap(), Some(MusicExecutionTarget::OmniBridgeLocal));
+        assert_eq!(parse_requested_music_execution_target(Some("omnibridge-local")).unwrap(), Some(MusicExecutionTarget::OmniBridgeLocal));
         assert_eq!(parse_requested_music_execution_target(Some("configuration")).unwrap(), Some(MusicExecutionTarget::Configuration));
+        assert_eq!(parse_requested_music_execution_target(Some("device-local")).unwrap(), Some(MusicExecutionTarget::Configuration));
         assert!(parse_requested_music_execution_target(Some("other")).is_err());
     }
 
